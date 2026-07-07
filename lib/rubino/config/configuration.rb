@@ -286,7 +286,7 @@ module Rubino
 
       # Throttle interval (in turns) for memory.auto_extract (#412). Returns a
       # positive Integer; nil/<=1 (or absent) ⇒ 1 = every turn. The lifecycle
-      # only enqueues ExtractMemoryJob when turns-since-last >= this.
+      # only enqueues the background review fork when turns-since-last >= this.
       def memory_auto_extract_interval
         positive_interval(dig("memory", "auto_extract_interval"))
       end

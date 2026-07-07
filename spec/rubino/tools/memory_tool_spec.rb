@@ -47,6 +47,13 @@ RSpec.describe Rubino::Tools::MemoryTool do
       expect(backend.list(kind: "user_profile").size).to eq(1)
     end
 
+    it "stores into the project kind for target=project (surfaced as [Project Context])" do
+      result = tool.call("action" => "add", "target" => "project",
+                         "content" => "The app deploys with Kamal.")
+      expect(result).to include("kind=project")
+      expect(backend.list(kind: "project").size).to eq(1)
+    end
+
     it "errors when content is missing" do
       result = tool.call("action" => "add", "target" => "memory")
       expect(result).to start_with("Error:")

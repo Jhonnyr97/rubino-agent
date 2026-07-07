@@ -39,7 +39,7 @@ Sequel.migration do
       String :updated_at, null: false
       String :ended_at
       Integer :owner_pid # 010: reap orphaned sessions
-      String :memory_extracted_msg_id # 011: memory-extraction watermark
+      String :memory_extracted_msg_id # dead: former extraction watermark (011)
       String :cwd # 012: per-cwd resume scoping
 
       index :status # H6: session listing / status filter

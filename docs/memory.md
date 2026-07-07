@@ -32,12 +32,16 @@ One declarative **fact** per row. Facts carry a `kind` (`user_profile`, `prefere
 
 ### How facts are extracted (write path)
 
-When `memory.auto_extract` is on, auto-extraction runs as a post-turn job (`ExtractMemoryJob` — executed immediately after the turn in the default inline jobs mode): a single auxiliary-LLM call looks at the recent turn and returns `{add, supersede}`:
+Extraction is **agentic**, not a deterministic aux-LLM JSON call. When `memory.auto_extract` is on, a background **review fork** (`BackgroundReviewJob`) re-runs the just-finished conversation under a restricted toolset and lets the model decide, itself, which durable facts are worth persisting — writing them through the ordinary `memory` tool. The same fork also distils skills (see [skills.md](skills.md#creating-skills)); one warm-prefix fork covers both surfaces.
 
-- **add** — new atomic facts (deduplicated via a Jaccard near-dup check against the live set, no second LLM call).
-- **supersede** — a contradicted fact is **soft-retired** (its `valid_to` is set and `superseded_by` points at the replacement), not deleted — temporal correctness without losing provenance (Graphiti-style edge invalidation collapsed to one call).
+It fires at two points:
 
-When extraction stores facts, the chat prints a deterministic confirmation from the write path (`✓ saved to memory · 2 facts (e6bf776b, a91c03d2)`) — the agent's "I'll remember that" narration alone is not a save signal.
+- **Inter-turn**, throttled to roughly every `memory.auto_extract_interval` turns (default 10). Enqueued **detached** and drained by the interactive polishing worker off the live turn's critical path — the next prompt is never blocked.
+- **Session end**, a catch-all so a short session that ends before the interval still mines its facts. Interactive exit enqueues it detached (instant quit); a headless one-shot runs it **inline** before the process exits. There is no separate synchronous end-of-session or pre-compaction flush anymore.
+
+**Warm-prefix, no eviction.** The fork re-emits the parent turn's **byte-identical** system prompt, so its request *extends* the warm KV-cache prefix instead of evicting it — which is why it can run inter-turn in the REPL without the "freeze after N turns" the old divergent aux extractor caused. The facts already saved are in that system prompt, so the fork never re-writes one it already holds.
+
+The forked agent writes through the same `memory` tool the foreground agent uses: `action: add` for a new atomic fact, `action: replace` to supersede a contradicted one. Supersession is a **soft-retire** (the old fact's `valid_to` is set and `superseded_by` points at the replacement), not a delete — temporal correctness without losing provenance. Near-duplicate adds are collapsed via a Jaccard check against the live set. Each write is confirmed deterministically by the tool-result line (see below) — the agent's "I'll remember that" narration alone is not a save signal.
 
 Every write goes through the same injection-defense floor as the legacy store: a `ThreatScanner` (prompt-injection / exfiltration patterns) plus a character budget. A fact that trips a guard is skipped, not allowed to splice tainted/over-budget content into a future system prompt.
 
@@ -73,7 +77,7 @@ The agent persists facts autonomously via the `memory` tool (gated by `tools.mem
 - `action: add` — record a new fact.
 - `action: replace` — supersede an existing fact (`old_text` selects it).
 - `action: remove` — hard-delete a fact.
-- `target: user` writes the user profile; `target: memory` writes general memory.
+- `target: user` writes the user profile; `target: project` records a durable project/codebase fact (surfaced as `[Project Context]`); `target: memory` writes general memory.
 
 The tool stores **one atomic fact per call** — separate facts go in separate calls so each can be superseded or forgotten independently. Every write is confirmed deterministically in chat by the tool-result line, e.g.:
 

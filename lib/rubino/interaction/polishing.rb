@@ -9,10 +9,10 @@ module Rubino
     # Before this, the post-turn jobs drained INLINE inside the live turn
     # (Jobs::Queue#enqueue → Runner#run_job, synchronously), so `runner.run`
     # didn't return — and the REPL couldn't read the next input — until the aux
-    # work finished. A 429 storm running the bounded retry-with-backoff
-    # (Memory::AuxRetry, honouring Retry-After) could hold the user hostage for
-    # ~80s. No industry agent does this: Claude Code runs resume/recap as
-    # background jobs, Cursor indexes async, aider offloads to a weak model.
+    # work finished. A 429 storm running a bounded retry-with-backoff could
+    # hold the user hostage for ~80s. No industry agent does this: Claude Code
+    # runs resume/recap as background jobs, Cursor indexes async, aider offloads
+    # to a weak model.
     #
     # This object owns ONE managed worker thread that:
     #   * captures the live turn's UI + EventBus (both thread-local in Rubino)
@@ -130,7 +130,7 @@ module Rubino
       end
 
       # Drain the queued post-turn rows one at a time, checking the cancel token
-      # between each so an Esc stops promptly (and AuxRetry aborts mid-call).
+      # between each so an Esc stops promptly.
       def drain(token)
         runner = Jobs::Runner.new
         queue = Jobs::Queue.new

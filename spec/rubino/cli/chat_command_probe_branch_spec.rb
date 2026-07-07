@@ -11,11 +11,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   subject(:cmd) { described_class.new(provider: "fake", model: "fake/test") }
 
   let(:db)     { test_database }
-  # These specs exercise the probe/branch WIRING, not memory extraction. With
-  # the seeded default model (openai/gpt-4.1, provider auto), /branch's
-  # flush_parent_memory! fires a live aux memory-extraction call; disable
-  # auto-extract so the test never reaches the network (it has no business
-  # making a real model call here).
+  # These specs exercise the probe/branch WIRING, not memory extraction. Memory
+  # mining now rides the inter-turn review fork (no pre-branch flush), so /branch
+  # makes no aux call here; auto-extract is left off to keep it network-free.
   let(:config) { test_configuration("memory" => { "auto_extract" => false }) }
   let(:ui)     { Rubino::UI::Null.new }
   let(:store)  { Rubino::Session::Store.new(db: db.db) }

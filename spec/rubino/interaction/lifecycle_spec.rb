@@ -426,16 +426,12 @@ RSpec.describe Rubino::Interaction::Lifecycle do
   # the rows (drain_inline: false) and hands off to the detached worker.
   describe "#enqueue_post_turn_jobs detachment (#319)" do
     let(:db_connection) { test_database }
-    # A DISTINCT aux endpoint (its own server/slot): with it, post-turn
-    # extraction is NOT skipped by the single-slot KV-cache gate (#608c) even on
-    # the interactive REPL. Used by the gate's own describe block below.
-    let(:aux_offslot) { { "compression" => { "base_url" => "http://aux.test:9/v1" } } }
     let(:detach_config) do
       test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1,
                     "retry_backoff_seconds" => 0 },
         # interval 1 = every turn, so this DETACHMENT test (not the throttle
-        # test below) always enqueues the memory row regardless of turn number.
+        # test below) always enqueues the review row regardless of turn number.
         "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 1 },
         "skills" => { "auto_distill" => false }
       )
@@ -451,7 +447,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       allow(Rubino).to receive(:database).and_return(db_connection)
       db_connection.db[:jobs].delete
       # Stub the per-lifecycle message count (drives current_turn_index) so the
-      # memory-extract row is the only thing enqueued.
+      # review row is the only thing enqueued.
       [lifecycle].each { |lc| stub_message_count(lc, 1) }
     end
 
@@ -468,7 +464,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       lifecycle.send(:enqueue_post_turn_jobs)
 
       # The row is PERSISTED (queued), ready for the detached worker — not run.
-      row = db_connection.db[:jobs].where(type: "ExtractMemoryJob").first
+      row = db_connection.db[:jobs].where(type: "BackgroundReviewJob").first
       expect(row[:status]).to eq("queued")
     end
 
@@ -505,9 +501,10 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       no_worker.send(:enqueue_post_turn_jobs)
     end
 
-    # #412: memory auto-extract is now THROTTLED to ~every N turns instead of
-    # every turn — a non-boundary turn must NOT enqueue the aux extract.
-    it "does NOT enqueue ExtractMemoryJob on a non-interval turn (#412 throttle)" do
+    # #412: the post-turn review is THROTTLED to ~every N turns instead of every
+    # turn — a non-boundary turn (memory + skills both off-interval) enqueues no
+    # review row.
+    it "does NOT enqueue BackgroundReviewJob on a non-interval turn (#412 throttle)" do
       throttled = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
         "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
@@ -520,10 +517,10 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       # current_turn_index reads the persisted message_count; no session row =>
       # turn 1, and 1 % 10 != 0 => not due.
       lc.send(:enqueue_post_turn_jobs)
-      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).to be_nil
+      expect(db_connection.db[:jobs].where(type: "BackgroundReviewJob").first).to be_nil
     end
 
-    it "DOES enqueue ExtractMemoryJob on an interval-boundary turn (#412)" do
+    it "DOES enqueue BackgroundReviewJob on an interval-boundary turn (#412)" do
       throttled = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
         "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
@@ -536,23 +533,20 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       # Force turn index 10 (message_count 20 => 20/2 = 10, due: 10 % 10 == 0).
       allow(lc).to receive(:current_turn_index).and_return(10)
       lc.send(:enqueue_post_turn_jobs)
-      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
+      expect(db_connection.db[:jobs].where(type: "BackgroundReviewJob").first).not_to be_nil
     end
 
-    # #608c: when the aux model shares the MAIN model's server slot (the DEFAULT —
-    # provider:"main", no distinct base_url), an inter-turn extraction overwrites
-    # the live conversation's KV-cache prefix, so the next user turn re-prefills
-    # the whole context (the "freeze after N turns" on a single-slot local server).
-    # The enqueue is therefore SKIPPED even on an interval-boundary turn; the
-    # session-end flush + compaction still mine memory. A distinct aux endpoint
-    # (own slot) is unaffected — see the interval-boundary test above, which DOES
-    # enqueue precisely because it points the aux at an off-slot endpoint.
-    it "skips ExtractMemoryJob on the INTERACTIVE REPL when the aux shares the main slot (#608c)" do
+    # The review fork reuses the parent turn's warm KV prefix (byte-identical
+    # system prompt + snapshot), so it EXTENDS the cache instead of evicting it.
+    # There is therefore NO shared-slot / off-slot gate anymore: an interval-due
+    # turn enqueues the review on BOTH the interactive REPL and a headless run.
+    it "enqueues the review inter-turn on the INTERACTIVE REPL regardless of the aux slot (#608c)" do
       shared = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
         "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
         "skills" => { "auto_distill" => false }
-        # NB: no "auxiliary" override → compression resolves to the main endpoint.
+        # NB: no "auxiliary" override → compression resolves to the main endpoint,
+        # which used to SUPPRESS the extract; the warm-prefix fork does not.
       )
       lc = described_class.new(session: { id: "sess-shared", model: "gpt-4o" },
                                event_bus: event_bus, ui: null_ui, config: shared,
@@ -560,38 +554,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       stub_message_count(lc, 1)
       allow(lc).to receive(:current_turn_index).and_return(10) # interval-due
       lc.send(:enqueue_post_turn_jobs)
-      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).to be_nil
-    end
-
-    it "STILL extracts on a headless one-shot (interactive:false) even on the shared slot (#358)" do
-      shared = test_configuration(
-        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
-        "skills" => { "auto_distill" => false }
-      )
-      lc = described_class.new(session: { id: "sess-oneshot", model: "gpt-4o" },
-                               event_bus: event_bus, ui: null_ui, config: shared,
-                               polishing: polishing, interactive: false)
-      stub_message_count(lc, 1)
-      allow(lc).to receive(:current_turn_index).and_return(10)
-      lc.send(:enqueue_post_turn_jobs)
-      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
-    end
-
-    it "extracts inter-turn even on the INTERACTIVE REPL when the aux is OFF-slot (#608c)" do
-      offslot = test_configuration(
-        "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
-        "skills" => { "auto_distill" => false },
-        "auxiliary" => aux_offslot
-      )
-      lc = described_class.new(session: { id: "sess-offslot", model: "gpt-4o" },
-                               event_bus: event_bus, ui: null_ui, config: offslot,
-                               polishing: polishing, interactive: true)
-      stub_message_count(lc, 1)
-      allow(lc).to receive(:current_turn_index).and_return(10)
-      lc.send(:enqueue_post_turn_jobs)
-      expect(db_connection.db[:jobs].where(type: "ExtractMemoryJob").first).not_to be_nil
+      expect(db_connection.db[:jobs].where(type: "BackgroundReviewJob").first).not_to be_nil
     end
 
     # #59: the polish must NOT fire on every turn. The interval/length gates mean

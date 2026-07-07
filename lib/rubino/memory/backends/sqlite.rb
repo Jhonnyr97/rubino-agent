@@ -7,13 +7,15 @@ require "time"
 module Rubino
   module Memory
     module Backends
-      # LLM-extracted, bi-temporal fact store on embedded SQLite with hybrid
-      # recall — minus a graph DB, a server, or a multi-LLM-call pipeline.
+      # Bi-temporal fact store on embedded SQLite with hybrid recall — minus a
+      # graph DB, a server, or a multi-LLM-call pipeline.
+      #
+      # Facts are WRITTEN by the agent-callable memory tool and by the post-turn
+      # background review fork (BackgroundReviewJob), the single extraction path;
+      # this backend owns storage + recall, not a per-turn aux-LLM extractor.
       #
       # Three ideas drive the design:
-      #   * ATOMIC LLM-extracted facts (one declarative fact per row), via a
-      #     single aux-LLM call per turn that both ADDs new facts and SUPERSEDES
-      #     contradicted ones (Graphiti edge-invalidation, collapsed to 1 call).
+      #   * ATOMIC facts — one declarative fact per row.
       #   * BI-TEMPORAL supersession — a contradicted fact is soft-retired
       #     (valid_to set), not deleted; "live" memory = valid_to IS NULL, so we
       #     get temporal correctness without losing provenance.
@@ -28,21 +30,11 @@ module Rubino
       # tainted or over-budget content into a future system prompt.
       class Sqlite < Backend
         include SqliteGraph
-        include SqliteExtraction
-        include SalienceGate
-        include AuxRetry
 
         TABLE = :memory_facts
         FTS   = :memory_facts_fts
         RRF_K = 60
         DEFAULT_K = 20
-
-        # Bounded retry budget for the aux extraction call on a transient error
-        # (429/overloaded/5xx). Small by design: extraction is best-effort
-        # background work, and the per-session cursor re-feeds an exhausted turn
-        # next time, so we ride out a brief rate-limit window without piling up
-        # background backoff. Overridable via `memory.extract_max_retries`.
-        DEFAULT_EXTRACT_MAX_RETRIES = 3
 
         # Weighted-RRF list weights for the DIRECT relevance signals (FTS/BM25 and
         # vector KNN). Graph (1-hop) and recency are no longer fused here — they
@@ -79,10 +71,9 @@ module Rubino
           "sqlite"
         end
 
-        def initialize(config: nil, db: nil, aux_client: nil)
+        def initialize(config: nil, db: nil)
           super(config: config)
           @db = db || Rubino.database.db
-          @aux_client = aux_client
         end
 
         # FTS5 ships with the sqlite3 gem, so the backend is always available.
@@ -138,42 +129,6 @@ module Rubino
 
           @db[TABLE].where(id: target[:id]).delete
           target
-        end
-
-        # ONE aux-LLM call over the turn's NEW messages: returns {add, supersede}.
-        # Apply is pure Ruby — insert adds (deduped + guarded), retire
-        # superseded rows and insert their replacement.
-        #
-        # Per-session cursor (#249): only messages newer than the session's
-        # `memory_extracted_msg_id` watermark are fed, so each turn's extraction
-        # is bounded to that turn's new messages instead of an overlapping
-        # recency window. When a turn added nothing new past the cursor, we skip
-        # the aux-LLM call entirely (no redundant duplicate extraction pass), and
-        # advance the cursor only once the apply has landed.
-        def extract(session_id)
-          new_messages = unextracted_messages(session_id)
-          turn = turn_text(new_messages)
-          return [] if turn.strip.empty?
-
-          # Salience gate (r5 F5/F6/F7): a greeting, a one-word "help", or any
-          # turn whose USER text asserts nothing durable is a NOOP — skip the aux
-          # call AND advance the cursor so it never mints a fact nor gets re-fed.
-          unless salient?(turn)
-            advance_extraction_cursor(session_id, new_messages)
-            return []
-          end
-
-          result = call_llm(session_id: session_id, turn: turn)
-          # A nil result means the aux call failed/parsed to nothing — leave the
-          # cursor put so this turn's messages are retried next time rather than
-          # silently dropped. A parsed result (even an empty {add,supersede})
-          # means these messages WERE processed: advance the watermark so they're
-          # never re-fed, which is the overlapping-window re-work #249 removes.
-          return [] unless result
-
-          stored = apply(result, session_id)
-          advance_extraction_cursor(session_id, new_messages)
-          stored
         end
 
         # -- READ path --
@@ -352,103 +307,6 @@ module Rubino
           words.first(12).map { |w| "\"#{w}\"" }.join(" OR ")
         end
 
-        # ---- extraction apply ----
-
-        def apply(result, session_id)
-          stored = []
-          now = Time.now.utc.iso8601
-
-          Array(result["supersede"]).each do |s|
-            old = resolve_supersede_target(s)
-            # A self-supersede is a no-op (#223): when the replacement text is
-            # IDENTICAL to the very row it would retire — e.g. the memory tool
-            # already wrote this fact in-turn and the extractor "updates" it to
-            # itself — retire-and-reinsert would just mint a byte-identical twin
-            # and a useless 1-link chain. The #157 exclude guard hides this row
-            # from the duplicate_of check below, so it has to be caught here
-            # first. Identity only, not near-dup: a genuine rephrase of the
-            # retired row must still land (the #157 exclude-guard case).
-            next if old && old[:text].to_s.strip == s["by_text"].to_s.strip
-
-            # The replacement passes the SAME near-dup check a plain add runs
-            # (#157): when the new fact already exists live (e.g. the memory
-            # tool stored it in-turn), retire the old row pointing at it
-            # instead of inserting a byte-identical twin.
-            if (existing_id = duplicate_of(s["by_text"], exclude_id: old && old[:id]))
-              retire!(old[:id], existing_id) if old
-              next
-            end
-
-            # Retire the contradicted fact before inserting its replacement so
-            # the old row's chars free up for the budget check.
-            new_id = SecureRandom.uuid
-            retire!(old[:id], new_id) if old
-            replacement = guarded_insert(
-              text: s["by_text"], kind: s["kind"],
-              entities: s["entities"], session_id: session_id, valid_from: now, id: new_id
-            )
-            stored << replacement if replacement
-          end
-
-          Array(result["add"]).each do |a|
-            next if duplicate_of(a["text"])
-
-            row = guarded_insert(
-              text: a["text"], kind: a["kind"], entities: a["entities"],
-              session_id: session_id, valid_from: a["valid_from"]
-            )
-            stored << row if row
-          end
-
-          # Turn-level TYPED relations (the extractor's optional edges[]) are
-          # indexed once for the whole turn, tied to the first stored fact for
-          # provenance. Co-occurrence edges are already laid down per-fact in
-          # insert_fact from each fact's own entity tags.
-          index_typed_edges(result["edges"], stored.first)
-
-          stored.compact
-        end
-
-        def index_typed_edges(edges, anchor)
-          edges = Array(edges)
-          return if edges.empty?
-
-          index_fact_graph(anchor && (anchor[:id] || anchor["id"]), [], typed: edges)
-        rescue StandardError => e
-          log_skip(e)
-        end
-
-        # Insert through the injection-defense floor; swallow refusals so one
-        # bad fact never aborts the whole extraction batch (mirrors the
-        # default extractor, which silently skips dups).
-        def guarded_insert(text:, kind:, entities:, session_id:, valid_from:, id: nil)
-          return nil if text.to_s.strip.empty?
-          # NOOP error-derived tool-limitation claims (#69): after a transient
-          # tool failure the aux model can mint a durable-looking "the tool can't
-          # edit non-ASCII files" — a meta claim that is often wrong and primes
-          # future refusals. Drop it here, the single insert choke point shared by
-          # add[] and supersede[], so neither path can persist one.
-          return nil if tool_limitation_claim?(text)
-
-          insert_fact(
-            text: text, kind: normalize_kind(kind), entities: Array(entities),
-            source_session_id: session_id, confidence: 1.0, valid_from: valid_from, id: id
-          )
-        rescue Store::ThreatDetectedError, Store::BudgetExceededError => e
-          log_skip(e)
-          nil
-        end
-
-        def resolve_supersede_target(spec)
-          id = spec["id"].to_s
-          return live_dataset.where(Sequel.like(:id, "#{id}%")).first unless id.empty?
-
-          match = spec["match"].to_s
-          return nil if match.empty?
-
-          live_dataset.where(Sequel.like(:text, "%#{match}%")).first
-        end
-
         # ---- low-level fact ops ----
 
         def insert_fact(text:, kind:, entities: [], source_session_id: nil,
@@ -494,29 +352,6 @@ module Rubino
           @db[TABLE].where(valid_to: nil)
         end
 
-        # Jaccard near-dup check against the live set (Deduplicator threshold,
-        # no second LLM call): id of the first live near-dup, nil when none.
-        # +exclude_id+ skips the row being superseded so a rephrased
-        # replacement never matches its own retirement target (#157).
-        def duplicate_of(text, exclude_id: nil)
-          words_b = word_set(text)
-          return nil if words_b.empty?
-
-          ds = exclude_id ? live_dataset.exclude(id: exclude_id) : live_dataset
-          ds.select_map(%i[id text]).find do |(_, existing)|
-            words_a = word_set(existing)
-            next false if words_a.empty?
-
-            inter = (words_a & words_b).size
-            union = (words_a | words_b).size
-            (inter.to_f / union) >= Deduplicator::SIMILARITY_THRESHOLD
-          end&.first
-        end
-
-        def word_set(str)
-          str.to_s.downcase.split(/\W+/).reject(&:empty?).to_set
-        end
-
         # First LIVE fact of `kind` whose normalized-verbatim form equals the
         # candidate's (trim/collapse-whitespace + case-fold, #Y4), or nil.
         def verbatim_duplicate(kind, content)
@@ -558,37 +393,6 @@ module Rubino
           ds = live_dataset
           ds = group == "user" ? ds.where(kind: USER_KIND) : ds.exclude(kind: USER_KIND)
           ds.sum(Sequel.function(:length, :text)).to_i
-        end
-
-        # ---- LLM ----
-
-        # ONE aux-LLM extraction call, retried on a transient error via AuxRetry
-        # (r5 C-2): a 429/overloaded/5xx backs off (honouring Retry-After) and
-        # retries up to `memory.extract_max_retries` instead of dropping the fact
-        # on the first RateLimitError. Only after the budget is exhausted (or on a
-        # non-retryable error) do we rescue and return nil — and the caller leaves
-        # the cursor put on nil, so even an exhausted turn is re-fed next time
-        # rather than silently lost.
-        def call_llm(session_id:, turn:)
-          with_aux_retry do
-            response = aux_client.call(
-              task: :compression,
-              messages: [
-                { role: "system", content: SqliteExtractionPrompt::SYSTEM },
-                { role: "user", content: SqliteExtractionPrompt.user_message(
-                  now: Time.now.utc.iso8601, live_facts: live_facts_for_prompt, turn: turn
-                ) }
-              ]
-            )
-            parse_json(response&.content)
-          end
-        rescue StandardError => e
-          log_skip(e)
-          nil
-        end
-
-        def aux_client
-          @aux_client ||= LLM::AuxiliaryClient.new(config: @config)
         end
 
         # ---- embeddings (best-effort) ----

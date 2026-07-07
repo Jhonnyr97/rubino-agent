@@ -276,7 +276,8 @@ compression:
 memory:
   enabled: true
   backend: "sqlite"          # SQLite FTS5/BM25 + graph-lite recall (default). "default" = legacy non-ranked store
-  auto_extract: true
+  auto_extract: true         # agentic fact mining via the review fork (BackgroundReviewJob)
+  auto_extract_interval: 10  # throttle inter-turn extraction to ~every N turns (nil/<=1 = every turn)
   auto_save: true
   user_profile_enabled: true
   project_context_enabled: true
@@ -591,7 +592,8 @@ Experimental. Configuring servers is the opt-in; `mcp.enabled: false` switches M
 ```yaml
 skills:
   enabled: true
-  auto_distill: true        # post-turn skill distillation (DistillSkillJob); separate from `enabled`
+  auto_distill: true        # agentic post-turn skill distillation via the review fork; separate from `enabled`
+  auto_distill_interval: 10 # throttle inter-turn distillation to ~every N turns (nil/<=1 = every turn)
   include_builtin: true     # also scan the gem-bundled skills/ catalogue (e.g. ruby-expert)
   paths:
     - ".rubino/skills"
@@ -600,11 +602,12 @@ skills:
 
 The agent loads a skill's instructions on demand (`tools.skill` gates the loading
 tool). With `skills.enabled` (default true) the agent also creates skills: the
-deterministic post-turn `DistillSkillJob` distils complex, repeatable runs into a
-new skill (gated on a tool-count threshold, default 5 — set
-`RA_DISTILL_TOOL_THRESHOLD` to tune), and the agent can author one on demand via
-`skill(action: "create", ...)`. Setting `skills.enabled: false` turns off both
-the distillation cost and the create affordance.
+warm-prefix review fork (`BackgroundReviewJob`, shared with memory extraction)
+lets the agent agentically distil complex, repeatable runs into a new skill —
+inter-turn every `skills.auto_distill_interval` turns and once at session end —
+and the agent can author one on demand via `skill(action: "create", ...)`.
+Setting `skills.enabled: false` turns off both the distillation cost and the
+create affordance.
 
 Skill activity is exported on `GET /v1/metrics` as two Prometheus counters:
 

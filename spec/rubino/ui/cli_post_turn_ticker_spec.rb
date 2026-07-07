@@ -155,14 +155,14 @@ RSpec.describe Rubino::UI::CLI do
       begin
         ui = described_class.new
         ui.turn_started
-        ui.job_started("ExtractMemoryJob")
-        sleep 0.15
-        expect($stdout.string).to include("polishing · memory · 0")
-
-        ui.job_finished("ExtractMemoryJob")
         ui.job_started("BackgroundReviewJob")
         sleep 0.15
-        expect($stdout.string).to include("polishing · skills · 0")
+        expect($stdout.string).to include("polishing · review · 0")
+
+        ui.job_finished("BackgroundReviewJob")
+        ui.job_started("BackgroundReviewJob")
+        sleep 0.15
+        expect($stdout.string).to include("polishing · review · 0")
 
         ui.turn_finished
         expect(ui.instance_variable_get(:@thinking_thread)).to be_nil

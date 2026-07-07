@@ -2026,9 +2026,10 @@ module Rubino
       end
 
       # Short human labels for the post-turn inline jobs the status row tracks.
+      # BackgroundReviewJob is the single fork that mines memory AND distills
+      # skills, so it reads simply "review".
       JOB_STATUS_LABELS = {
-        "ExtractMemoryJob" => "memory",
-        "BackgroundReviewJob" => "skills"
+        "BackgroundReviewJob" => "review"
       }.freeze
 
       def job_enqueued(type)

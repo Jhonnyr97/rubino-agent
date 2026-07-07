@@ -106,11 +106,10 @@ Rubino::Jobs::Queue.new.enqueue("MyJob", session_id: "abc")
 
 | Type | Handler | Payload | Side-effect |
 |---|---|---|---|
-| `ExtractMemoryJob` | `Handlers::ExtractMemoryJob` | `{session_id}` | `Memory::Extractor#extract_from_session` |
+| `BackgroundReviewJob` | `Handlers::BackgroundReviewJob` | `{session_id, surfaces?}` | the single post-turn / session-end **review fork** — forks the session, re-emits the parent turn's byte-identical system prompt (extends the warm KV prefix, no eviction), and runs a restricted-toolset agent that mines durable **memory** (via the `memory` tool) **and** distils **skills** (via the `skill` tool). Gated on `memory.auto_extract` / `skills.auto_distill`; see [memory.md](memory.md#how-facts-are-extracted-write-path) and [skills.md](skills.md#creating-skills) |
 | `CompactSessionJob` | `Handlers::CompactSessionJob` | `{session_id}` | `Context::Compressor#compact!` |
 | `SummarizeSessionJob` | `Handlers::SummarizeSessionJob` | `{session_id}` | `Context::SummaryBuilder#build_and_save!` |
 | `CleanupSessionsJob` | `Handlers::CleanupSessionsJob` | `{retention_days?}` | deletes `sessions` rows with `status="ended"` older than retention (default 30d) |
-| `DistillSkillJob` | `Handlers::DistillSkillJob` | `{session_id}` | post-turn skill distillation — one aux-LLM call distils a tool-heavy turn into a reusable `SKILL.md` (gated on `skills.auto_distill`; see [skills.md](skills.md#creating-skills)) |
 
 ### CLI
 

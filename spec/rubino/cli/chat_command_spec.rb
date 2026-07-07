@@ -1799,6 +1799,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
       cmd.send(:session_resolver).print_resume_hint(ui, nil)
       expect(ui.messages.select { |m| m[:level] == :info }).to be_empty
     end
+
+    it "uses the launcher command from RUBINO_INVOKED_AS so a dev launcher resumes itself" do
+      prev = ENV["RUBINO_INVOKED_AS"]
+      ENV["RUBINO_INVOKED_AS"] = "rubino-dev"
+      cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: "audit work" })
+      msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
+      expect(msg[:message]).to eq(%(Resume with: rubino-dev chat --resume "audit work"))
+    ensure
+      ENV["RUBINO_INVOKED_AS"] = prev
+    end
   end
 
   # Image input — attach an image from the terminal (@image, dropped/quoted

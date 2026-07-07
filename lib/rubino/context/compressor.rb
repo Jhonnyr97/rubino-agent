@@ -61,8 +61,9 @@ module Rubino
         # Industry norm (Claude Code / Codex): /compact below threshold is a no-op.
         return no_op_result(:below_threshold) unless needs_compaction?(messages)
 
-        # 1. Flush memory before compaction
-        flush_memory!
+        # No memory pre-flush here: the inter-turn review fork already mines
+        # durable facts (and the compaction summary preserves the tail), so
+        # compaction no longer runs a special extraction pass — Hermes-style.
 
         # 2. Split messages into head / middle / tail
         boundary = MessageBoundary.new(messages: messages, config: @config)
@@ -150,11 +151,6 @@ module Rubino
         [summary_id, child_session]
       end
 
-      def flush_memory!
-        flusher = Memory::Flusher.new
-        flusher.flush_before_compaction!(@session_id)
-      end
-
       def create_child_session(parent_session, head, summary, tail)
         child = @session_repo.create(
           source: "compaction",
@@ -184,12 +180,11 @@ module Rubino
         # Copy tail messages (same faithful copy as head)
         @message_store.copy_into(child[:id], tail)
 
-        # Seed the child's memory-extraction watermark to the copied tail (MEM-2):
-        # the child starts with a NULL cursor, and the pre-compaction flush
-        # already mined the parent — without this the child would re-extract the
-        # ENTIRE copied head+summary+tail on its first turn (unbounded, and able
-        # to resurrect a just-forgotten fact). Seeding pins it past the copy so
-        # only genuinely new turns are fed.
+        # Seed the child's memory-extraction watermark past the copied tail so it
+        # starts sealed rather than NULL. The structured extractor that consumed
+        # this watermark is gone (the review fork mines facts directly now), so
+        # this is inert bookkeeping on a retained column — kept only so the
+        # fork/branch/undo paths that share seed_extraction_cursor stay uniform.
         @message_store.seed_extraction_cursor(child[:id])
 
         # Sync the child's cached message_count (R1-M1): copy_into/create write

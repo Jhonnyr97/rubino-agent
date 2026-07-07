@@ -185,25 +185,29 @@ Beyond loading existing skills, the agent can author new ones so a complex,
 repeatable task is captured once and reused. There are two mechanisms — both
 gated by `skills.enabled` (default true).
 
-### 1. Deterministic post-turn distillation (primary)
+### 1. Agentic review-fork distillation (primary)
 
-After every turn, `DistillSkillJob` runs alongside `ExtractMemoryJob`. Its gate
-is **fully deterministic** (no model call): it fires only when
+Skill distillation rides the **same warm-prefix review fork as memory**:
+`BackgroundReviewJob` runs at two points — **inter-turn**, throttled to roughly
+every `skills.auto_distill_interval` turns (default 10), and once at
+**session end** as a catch-all. It forks the session and re-emits the parent
+turn's **byte-identical** system prompt, so the review request *extends* the
+warm KV-cache prefix instead of evicting it (no "freeze after N turns" — the
+reason the old divergent `DistillSkillJob` aux call had to be suppressed in
+interactive). The one fork runs both surfaces under a restricted toolset: the
+`skill` tool for distillation and the `memory` tool for fact capture.
 
-- the run produced a non-empty final answer (succeeded), **and**
-- the turn used at least `RA_DISTILL_TOOL_THRESHOLD` tool calls (default **5**,
-  mirroring the reference "5+"), **and**
-- no existing skill already covers the work.
-
-Only on a gate-pass does it spend **one** auxiliary-LLM call to distil the
-transcript into a `SKILL.md` candidate, which it writes to the first
-`skills.paths` dir. Trivial sessions pass the gate zero times, so they cost zero
-extra calls. Raise or lower the bound with `RA_DISTILL_TOOL_THRESHOLD`.
+The forked agent decides **agentically** whether the just-finished work is a
+reusable technique worth capturing — updating an existing skill (`patch` / `edit`),
+adding a support file (`write_file`), or creating a new class-level skill
+(`create`). A trivial one-off or an already-covered task simply yields no write.
+The existing skill catalogue is already in the fork's system prompt, so it never
+duplicates a skill it already holds. Gated on `skills.auto_distill` (default true).
 
 This is the mechanism that actually creates skills in practice: an A/B bench
 found that a prompt nudge or an on-demand tool alone are ignored under load
-(F1 = 0), while the deterministic post-turn job created good, reusable skills
-with no false positives.
+(F1 = 0), while a dedicated post-turn review reliably created good, reusable
+skills with no false positives.
 
 ### 2. On-demand `skill(action: "create")` (manual)
 

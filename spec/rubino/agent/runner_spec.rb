@@ -338,34 +338,38 @@ RSpec.describe Rubino::Agent::Runner do
       reacquired&.release
     end
 
-    it "flushes un-extracted memory on end_session! so short sessions are mined — #554" do
-      parent = seed_session_with_history(owner_pid: nil)
-      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
-
-      flusher = instance_double(Rubino::Memory::Flusher)
-      allow(Rubino::Memory::Flusher).to receive(:new).and_return(flusher)
-      expect(flusher).to receive(:flush_on_session_end!).with(parent[:id])
-
-      runner.end_session!
-    end
-
-    it "on a handoff end_session! enqueues a DETACHED extract instead of the blocking flush (/new stays instant)" do
+    it "runs the review fork INLINE on a headless end_session! so short sessions are mined — #554" do
       parent = seed_session_with_history(owner_pid: nil)
       runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
 
       cfg = runner.instance_variable_get(:@config)
-      allow(cfg).to receive_messages(memory_enabled?: true, memory_auto_extract?: true)
+      allow(cfg).to receive_messages(memory_auto_extract?: true, skills_auto_distill?: false)
 
-      # The synchronous aux-LLM flush (what froze the prompt 2-3s) must NOT run...
-      expect(Rubino::Memory::Flusher).not_to receive(:new)
-      # ...instead the SAME ExtractMemoryJob is enqueued detached (drain_inline: false),
-      # at the user-visible save priority (#79) so it jumps the summary backlog,
-      # to be drained by the next runner's worker off the process-global queue.
+      # Headless/one-shot exits after this, so a detached job would never drain:
+      # the warm-prefix review fork (memory + skills) runs INLINE & synchronously.
+      review = instance_double(Rubino::Jobs::Handlers::BackgroundReviewJob)
+      allow(Rubino::Jobs::Handlers::BackgroundReviewJob).to receive(:new).and_return(review)
+      expect(review).to receive(:perform).with(session_id: parent[:id])
+
+      runner.end_session!
+    end
+
+    it "enqueues the review DETACHED on the INTERACTIVE REPL end_session! (/new stays instant)" do
+      parent = seed_session_with_history(owner_pid: nil)
+      runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o",
+                                   ui: null_ui, interactive: true)
+
+      cfg = runner.instance_variable_get(:@config)
+      allow(cfg).to receive_messages(memory_auto_extract?: true, skills_auto_distill?: false)
+
+      # Interactive: the process stays alive, so the fork must NOT run inline —
+      # it is enqueued detached (drain_inline: false) for the next runner's
+      # polishing worker to drain off the process-global queue.
+      expect(Rubino::Jobs::Handlers::BackgroundReviewJob).not_to receive(:new)
       queue = instance_double(Rubino::Jobs::Queue)
       allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
       expect(queue).to receive(:enqueue)
-        .with("ExtractMemoryJob", { session_id: parent[:id] },
-              priority: Rubino::Interaction::Lifecycle::PRIORITY_EXTRACT_MEMORY, drain_inline: false)
+        .with("BackgroundReviewJob", { session_id: parent[:id] }, drain_inline: false)
 
       runner.end_session!(handoff: true)
     end

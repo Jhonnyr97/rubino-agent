@@ -106,9 +106,99 @@ module Rubino
           technique, say "Nothing to save." and stop. Otherwise, act.
         PROMPT
 
+        # The memory half of the review (the SINGLE automatic memory-extraction
+        # path now that the structured aux-LLM extractor is gone). Same
+        # warm-prefix fork, same restricted toolset — just the `memory` tool
+        # instead of `skill`. The forked agent decides agentically which durable
+        # facts from the conversation are worth persisting; the existing memories
+        # are ALREADY in the system prompt, so it never re-writes them.
+        MEMORY_REVIEW_PROMPT = <<~PROMPT
+          Review the conversation above and persist any DURABLE facts worth
+          recalling in a FUTURE session, using the `memory` tool. Emit real tool
+          calls, not text.
+
+          For each durable fact, call the tool with action=add and the right
+          target:
+            • target=user — a stable fact about the USER: their name, identity,
+              role, or a lasting preference/convention they hold ("I prefer X",
+              "always do Y", "call me Z").
+            • target=project — a durable fact about THIS project/codebase: its
+              stack, conventions, layout, build/test commands, or an
+              architectural decision that will still be true next session.
+            • target=memory — anything else durable that doesn't fit the two
+              slots above.
+
+          Rules:
+            • ONE atomic fact per call — make separate calls for separate facts so
+              each can be superseded or forgotten independently.
+            • The facts you already saved are listed in your system prompt (user
+              profile, project context, and relevant memories). Do NOT re-write a
+              fact that is already there.
+            • Skip transient or environment-dependent details: one-off task state,
+              a value that only mattered this session, missing binaries, path
+              mismatches, "command not found", unconfigured credentials. Those are
+              not durable rules.
+            • If a previously-stored fact was contradicted this session, use
+              action=replace to update it (substring match on the old text).
+
+          "Nothing durable to save." is a valid outcome — if the conversation
+          produced no lasting fact about the user or project, say so and stop.
+        PROMPT
+
+        # Both surfaces in ONE turn (port of Hermes' _COMBINED_REVIEW_PROMPT).
+        # Used when skill distillation AND memory mining are both due — spelling
+        # out the skill/memory boundary in a single pass makes the model route a
+        # style/workflow correction to a SKILL and a durable identity fact to
+        # MEMORY, instead of the two separate turns collapsing everything into one
+        # bucket (verified: ~1.0 skill + ~1.0 memory per run vs ~0.33 / ~0.0).
+        COMBINED_REVIEW_PROMPT = <<~PROMPT
+          Review the conversation above and update two things.
+
+          **Memory** (the `memory` tool): who the user is. Did the user reveal
+          persona, preferences, personal details, environment, or a durable
+          expectation about how you should behave? Save durable facts — target=user
+          for identity/preferences, target=project for durable codebase facts.
+
+          **Skills** (the `skill` tool): how to do this class of task. Be ACTIVE —
+          most sessions produce at least one skill update, even a small one.
+
+          Signals that warrant a SKILL update (any one is enough):
+            • The user corrected your style, tone, format, verbosity, workflow, or
+              approach. Frustration ("stop doing X", "don't format like this",
+              "always do Y") is a FIRST-CLASS SKILL signal, not just a memory one —
+              embed the lesson in the skill that governs that task so the next
+              session starts already fixed.
+            • A non-trivial technique, fix, workaround, or debugging path emerged.
+            • A consulted skill turned out wrong or outdated — patch it now.
+
+          Preference order for skills: (1) "patch"/"edit" an existing relevant
+          skill (skills are listed under "## Skills" in your system prompt); (2)
+          add a support file via "write_file"; (3) "create" a new CLASS-LEVEL skill
+          (kebab-case name, one-line description, markdown body) when nothing
+          covers it.
+
+          Boundary: Memory says "WHO the user is and the current state"; skills say
+          "HOW to do this class of task for this user". When the user complains
+          about HOW you handled a task, the SKILL that governs that task must carry
+          the lesson — memory alone is not enough. A style/workflow correction
+          belongs in a skill body.
+
+          Do NOT capture as skills: environment-dependent failures ("command not
+          found", missing binaries, unconfigured credentials), negative tool claims,
+          or one-off task narratives. Emit real tool calls, not text. Act on
+          whichever dimension has real signal; say "Nothing to save." only if
+          neither does — but don't reach for that as a default.
+        PROMPT
+
         def perform(payload)
           session_id = payload[:session_id] || payload["session_id"]
           return unless session_id
+
+          # Which halves to run: an array of surface strings ("skill" / "memory").
+          # nil ⇒ both. Lets a caller invoke ONE surface inline (e.g. the one-shot
+          # session-end fork requests both; a targeted caller can request just
+          # "memory"). Intersected with the config-enabled surfaces in #run_review.
+          surfaces = payload[:surfaces] || payload["surfaces"]
 
           parent = Session::Repository.new.find(session_id)
           return unless parent
@@ -123,7 +213,7 @@ module Rubino
           system_prompt = Context::PromptAssembler.system_prompt_for(session_id)
           return unless system_prompt
 
-          run_review(parent, system_prompt)
+          run_review(parent, system_prompt, surfaces)
         rescue StandardError => e
           Rubino.logger.warn(event: "jobs.background_review.error",
                              error_class: e.class.name, message: e.message)
@@ -139,7 +229,26 @@ module Rubino
           messages.reverse.any? { |m| m.role == "assistant" && !m.content.to_s.strip.empty? }
         end
 
-        def run_review(parent, system_prompt)
+        def run_review(parent, system_prompt, requested_surfaces = nil)
+          # Intersect the config-enabled surfaces with what the caller asked for.
+          # A nil request means "whatever config enables" (the queue/polishing
+          # path); an explicit array narrows it (the inline callers). Each half
+          # runs only when BOTH its config gate is on AND it was requested.
+          requested = requested_surfaces && Array(requested_surfaces).to_set(&:to_s)
+          skills_on = Rubino.configuration.skills_auto_distill? &&
+                      (requested.nil? || requested.include?("skill"))
+          memory_on = Rubino.configuration.memory_auto_extract? &&
+                      (requested.nil? || requested.include?("memory"))
+          return unless skills_on || memory_on
+
+          # The request still carries the FULL tools[] (so the prefix stays
+          # byte-identical to the parent turn's warm cache), but only these tools
+          # may actually execute — pre-approved sandboxed writes to HOME/skills +
+          # the memory store, so the human-less thread never parks on approval.
+          allowed = []
+          allowed << "skill" if skills_on
+          allowed << "memory" if memory_on
+
           child = fork_child(parent)
           runner = Agent::Runner.new(
             session_id: child[:id],
@@ -165,11 +274,28 @@ module Rubino
             event_bus: Rubino.event_bus
           )
 
-          # Skill-only whitelist: memory has its OWN dedicated pipeline
-          # (ExtractMemoryJob + session-end flush), so the review stays focused
-          # on the skill library and can't double-write memory.
-          Rubino.with_review_toolset(%w[skill]) do
-            runner.run!(SKILL_REVIEW_PROMPT)
+          # This fork is the SINGLE extraction mechanism for BOTH surfaces: the
+          # structured aux-LLM memory extractor was deleted, so memory mining now
+          # rides the same warm-prefix review as skills.
+          #
+          # When BOTH surfaces are due, run ONE combined turn (Hermes'
+          # _COMBINED_REVIEW_PROMPT) rather than two sequential focused turns.
+          # A/B against the local model showed the combined turn both distils a
+          # skill AND mines a memory fact reliably (~1.0 each per run), while two
+          # separate turns under-produced (skills ~0.33, memory ~0.0): with the
+          # skill/memory boundary spelled out in ONE prompt the model routes a
+          # style/workflow correction to a SKILL and a durable identity fact to
+          # MEMORY instead of collapsing everything into one bucket — and it is
+          # also HALF the cost (one fork turn, not two) on a slow local backend.
+          # A single enabled surface keeps its own focused prompt.
+          Rubino.with_review_toolset(allowed) do
+            if skills_on && memory_on
+              runner.run!(COMBINED_REVIEW_PROMPT)
+            elsif skills_on
+              runner.run!(SKILL_REVIEW_PROMPT)
+            else
+              runner.run!(MEMORY_REVIEW_PROMPT)
+            end
           end
         ensure
           destroy_child(child) if child

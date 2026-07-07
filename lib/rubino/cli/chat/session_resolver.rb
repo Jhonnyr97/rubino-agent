@@ -94,7 +94,7 @@ module Rubino
 
         # On exit, hand the user back the exact command to return to this chat.
         # Claude Code prints no equivalent hint; without this, the session id
-        # is buried in ~/.claude state and the user has to guess at --resume
+        # is buried in ~/.rubino state and the user has to guess at --resume
         # or scroll back through history. Prefer the human-friendly title when
         # one is set; fall back to the id otherwise.
         def print_resume_hint(ui, session)
@@ -105,7 +105,18 @@ module Rubino
           handle = title && !title.to_s.strip.empty? ? %("#{title}") : id
           return unless handle
 
-          ui.info("Resume with: rubino chat --resume #{handle}")
+          ui.info("Resume with: #{launch_command} chat --resume #{handle}")
+        end
+
+        # The command the user should type to relaunch — normally `rubino`, but
+        # a dev launcher (e.g. `rubino-dev`, which runs THIS checkout while the
+        # installed `rubino` gem is an older build) exports RUBINO_INVOKED_AS so
+        # the resume hint points back at the SAME binary the session ran under,
+        # not a stale installed one. Absent that env var it stays "rubino", so a
+        # normal install prints "rubino chat --resume" unchanged.
+        def launch_command
+          invoked = ENV["RUBINO_INVOKED_AS"].to_s.strip
+          invoked.empty? ? "rubino" : invoked
         end
 
         # --- Session history replay (resume / continue) ---
