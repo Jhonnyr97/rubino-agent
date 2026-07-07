@@ -525,7 +525,31 @@ module Rubino
           # unreachable network DEGRADES gracefully (the tool is hidden / its
           # call returns an error string) rather than crashing a turn.
           "web" => true,
-          "memory" => true
+          "memory" => true,
+
+          # Headless-browser fallback for JS-rendered pages (SPAs) in the
+          # webfetch tool. Only ever engages when the OPTIONAL `ferrum` gem AND a
+          # Chrome/Chromium binary are present — both installed on demand, never
+          # bundled (see install.sh). With ferrum absent this whole block is
+          # inert and every fetch uses the static Net::HTTP path.
+          #   "auto"   — render only when the static response SCORES as a
+          #              client-rendered shell (empty app-shell root div, hydration
+          #              state, thin extracted text — a weighted multi-signal
+          #              classifier, not one threshold). Cheap: no browser on
+          #              normal server-rendered pages.
+          #   "off"    — never render.
+          #   "always" — render every page (slower; for debugging).
+          "webfetch" => {
+            "js_rendering" => "auto",
+
+            # Let webfetch reach loopback/LAN addresses (localhost dev servers,
+            # internal services) — rubino is a LOCAL dev agent, so blocking its
+            # own localhost is user-hostile. The cloud-metadata floor
+            # (169.254.169.254 etc.) stays blocked regardless. Set to false to
+            # restore strict public-only fetching (e.g. running the OSS gem on a
+            # shared/cloud host where a fetched page must not probe the network).
+            "allow_private_network" => true
+          }
         },
         "tool_output" => {
           "max_bytes" => 50_000,

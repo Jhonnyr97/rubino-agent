@@ -114,7 +114,9 @@ RSpec.describe Rubino::Tools::WebFetchTool do
     it "decodes entities and formats headings/lists" do
       result = fetch_text(rich_page)
       expect(result).to include("with an & entity")
-      expect(result).to include("## The Real Headline")
+      # reverse_markdown preserves the heading LEVEL (h1 -> "# ") instead of the
+      # legacy serializer's flat "## ", and renders bullets with "- ".
+      expect(result).to include("# The Real Headline")
       expect(result).to include("- first bullet point")
     end
 
@@ -164,6 +166,97 @@ RSpec.describe Rubino::Tools::WebFetchTool do
     end
   end
 
+  describe "JS-rendering tier (tools.webfetch.js_rendering)" do
+    # A client-rendered SPA shell: an empty root div + a script. The static
+    # extraction is thin, so the tier-2 renderer should engage.
+    let(:spa_shell) do
+      "<html><body><div id='root'></div><script src='/app.js'></script></body></html>"
+    end
+    # A fully-rendered page the headless browser would return for that shell.
+    let(:rendered_html) do
+      "<html><body><main><h1>Loaded By JS</h1>" \
+        "<p>#{"Real content that only appears after JavaScript runs. " * 4}</p>" \
+        "</main></body></html>"
+    end
+
+    def fetch(body)
+      stub_http(fake_success(body: body, content_type: "text/html; charset=utf-8"))
+      tool.call("url" => "https://example.com")
+    end
+
+    before { allow(Rubino::Web::JsRenderer).to receive(:available?).and_return(true) }
+
+    it "renders a thin SPA shell and returns the post-JS content" do
+      allow(Rubino::Web::JsRenderer).to receive(:render).and_return(rendered_html)
+      result = fetch(spa_shell)
+      expect(result).to include("Loaded By JS")
+      expect(result).to include("only appears after JavaScript runs")
+    end
+
+    it "renders only the URL the static fetch already validated" do
+      allow(Rubino::Web::JsRenderer).to receive(:render).and_return(rendered_html)
+      fetch(spa_shell)
+      expect(Rubino::Web::JsRenderer).to have_received(:render).with("https://example.com")
+    end
+
+    it "does NOT render a substantial static page (no browser cost)" do
+      substantial = "<html><body><script>x()</script><main><p>" \
+                    "#{"Server-rendered body text. " * 10}</p></main></body></html>"
+      expect(Rubino::Web::JsRenderer).not_to receive(:render)
+      result = fetch(substantial)
+      expect(result).to include("Server-rendered body text")
+    end
+
+    it "does NOT render a merely-short page (short content is not enough alone)" do
+      # Below the content floor (+2) but no app-shell / framework / state signal,
+      # so the score stays under the threshold -> no browser.
+      expect(Rubino::Web::JsRenderer).not_to receive(:render)
+      fetch("<html><body><p>tiny</p></body></html>")
+    end
+
+    it "renders on hydration/framework signals even above the content floor" do
+      # Plenty of static text (over the 500-char floor, so content-length does
+      # NOT fire) but a __NEXT_DATA__ blob + data-reactroot with no real article
+      # -> the framework/state signals alone push the score over the threshold.
+      body = "<html><body><main><p>#{"x " * 300}</p></main>" \
+             "<script id='__NEXT_DATA__' type='application/json'>{}</script>" \
+             "<div data-reactroot></div></body></html>"
+      # Realistic render: MORE content than the static filler, so it wins.
+      rich_rendered = "<html><body><main><h1>Loaded By JS</h1>" \
+                      "<p>#{"Real hydrated article body text. " * 30}</p></main></body></html>"
+      allow(Rubino::Web::JsRenderer).to receive(:render).and_return(rich_rendered)
+      result = fetch(body)
+      expect(result).to include("Loaded By JS")
+    end
+
+    it "falls back to the static text when the renderer fails (returns nil)" do
+      allow(Rubino::Web::JsRenderer).to receive(:render).and_return(nil)
+      result = fetch(spa_shell)
+      expect(result).to be_a(String) # no crash; whatever the static tier produced
+    end
+
+    it "keeps the static result when the rendered DOM has no more content" do
+      allow(Rubino::Web::JsRenderer).to receive(:render).and_return(spa_shell)
+      result = fetch(spa_shell)
+      expect(result).not_to include("Loaded By JS")
+    end
+
+    it "never renders when disabled (js_rendering=off)" do
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig)
+        .with("tools", "webfetch", "js_rendering").and_return("off")
+      expect(Rubino::Web::JsRenderer).not_to receive(:render)
+      fetch(spa_shell)
+    end
+
+    it "is inert when the ferrum gem is absent (available? false)" do
+      allow(Rubino::Web::JsRenderer).to receive(:available?).and_return(false)
+      expect(Rubino::Web::JsRenderer).not_to receive(:render)
+      result = fetch(spa_shell)
+      expect(result).to be_a(String)
+    end
+  end
+
   describe "format:html keeps the raw body verbatim (escape hatch)" do
     it "returns the full raw HTML completely unchanged" do
       raw = <<~HTML
@@ -194,7 +287,27 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       expect(result).to match(/metadata|private|internal/i)
     end
 
-    it "refuses a loopback URL" do
+    it "allows a loopback URL by DEFAULT (rubino is a local dev agent)" do
+      # 127.0.0.1 now passes validation; stub the socket so we don't really dial
+      # it. Getting an "Error fetching" (not "Refused for safety") proves the
+      # guard let it through.
+      http = instance_double(Net::HTTP)
+      %i[use_ssl= ipaddr= open_timeout= read_timeout= instance_variable_set].each do |m|
+        allow(http).to receive(m)
+      end
+      allow(http).to receive(:use_ssl?).and_return(false)
+      allow(http).to receive(:request).and_raise(Errno::ECONNREFUSED)
+      allow(Net::HTTP).to receive(:new).and_return(http)
+
+      result = tool.call("url" => "http://127.0.0.1/admin")
+      expect(result).not_to start_with("Refused for safety:")
+      expect(result).to start_with("Error fetching URL")
+    end
+
+    it "refuses a loopback URL when allow_private_network is disabled" do
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig)
+        .with("tools", "webfetch", "allow_private_network").and_return(false)
       expect(Net::HTTP).not_to receive(:new)
       result = tool.call("url" => "http://127.0.0.1/admin")
       expect(result).to start_with("Refused for safety:")
@@ -207,7 +320,12 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       expect(result).to match(/scheme/i)
     end
 
-    it "re-validates each redirect hop and blocks one that lands on a private IP" do
+    it "re-validates each redirect hop and blocks one that lands on a private IP (strict mode)" do
+      # With private access OFF, a redirect to a private IP must still be refused.
+      allow(Rubino.configuration).to receive(:dig).and_call_original
+      allow(Rubino.configuration).to receive(:dig)
+        .with("tools", "webfetch", "allow_private_network").and_return(false)
+
       # First hop: a public host that 302-redirects to a private address.
       redirect = Class.new(Net::HTTPRedirection) do
         def initialize = super("1.1", "302", "Found")
@@ -216,7 +334,7 @@ RSpec.describe Rubino::Tools::WebFetchTool do
 
       allow(Rubino::Security::UrlSafety).to receive(:validate!).and_call_original
       allow(Rubino::Security::UrlSafety).to receive(:validate!)
-        .with("https://public.example/").and_return(
+        .with("https://public.example/", allow_private: false).and_return(
           { uri: URI.parse("https://public.example/"), host: "public.example",
             port: 443, addresses: ["93.184.216.34"] }
         )
