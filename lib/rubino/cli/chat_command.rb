@@ -2151,7 +2151,11 @@ module Rubino
       # The budget is the single token-count authority; we don't re-add the
       # provider usage on top (that would double-count against this estimate).
       def context_tokens(messages, budget)
-        budget.estimate_tokens(messages.map { |m| { content: m.content } })
+        # Size the Message objects whole (content + replayed reasoning + tool_calls
+        # via to_context), so the gauge reflects the REAL context the model sees —
+        # a reasoning-heavy session is ~1.8x its visible content, and the footer
+        # must agree with what needs_compaction? decides (same measure, one source).
+        budget.estimate_tokens(messages)
       end
 
       # Commits the just-dequeued prompt as a normal "<prompt><line>" transcript

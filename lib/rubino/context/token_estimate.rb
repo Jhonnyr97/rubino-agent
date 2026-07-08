@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Rubino
   module Context
     # Character-length of a message's content for the cheap chars/4 token
@@ -11,6 +13,62 @@ module Rubino
     # the ONE place that knows how to size each content shape.
     module TokenEstimate
       module_function
+
+      # Character length of the FULL wire payload a message contributes to the
+      # model context — not just its visible +content+ but the +reasoning+ and
+      # +tool_calls+ that Message#to_context ALSO replays on every later turn
+      # (message.rb:61). The compaction gate (TokenBudget#needs_compaction?) and
+      # the context gauge estimate over this, so both reflect what the model
+      # actually receives. Counting content alone undercounts a reasoning-heavy
+      # session badly — the replayed reasoning lives in metadata_json, invisible
+      # to a content-only sum — so a long restored session read ~110k tokens
+      # (content) while the real context was ~197k, and /compact wrongly reported
+      # "under threshold" on a nearly-full window.
+      #
+      # Accepts either a Session::Message (reasoning/tool_calls read from its
+      # metadata) or an already-assembled to_context hash (the PromptAssembler
+      # output the auto-compaction path passes, with reasoning/tool_calls as
+      # top-level keys), with symbol OR string keys. Reasoning/tool_calls are
+      # sourced from whichever place they live; a row without either sizes to
+      # just its content, so system/user rows are unchanged.
+      def message_char_length(message)
+        reasoning = field(message, :reasoning) || metadata_field(message, :reasoning)
+        tool_calls = field(message, :tool_calls) || metadata_field(message, :tool_calls)
+        content_char_length(field(message, :content)) +
+          content_char_length(reasoning) +
+          tool_calls_char_length(tool_calls)
+      end
+
+      # Reads a top-level +key+ from a to_context/{content:} hash (symbol OR
+      # string key) or an attribute off a Session::Message-like object. Returns
+      # nil when absent (an unstubbed verifying double included).
+      def field(message, key)
+        if message.is_a?(Hash)
+          message[key] || message[key.to_s]
+        elsif message.respond_to?(key)
+          message.public_send(key)
+        end
+      end
+
+      # Reads +key+ out of a Session::Message's metadata hash (where reasoning /
+      # tool_calls live on a raw persisted row, before to_context lifts them to
+      # top-level keys). Nil when there's no metadata hash.
+      def metadata_field(message, key)
+        meta = field(message, :metadata)
+        return nil unless meta.is_a?(Hash)
+
+        meta[key] || meta[key.to_s]
+      end
+
+      # Serialized size of the assistant's tool_calls (an array of call hashes),
+      # measured as the JSON the adapter rebuilds onto the wire. Nil/empty ⇒ 0.
+      def tool_calls_char_length(tool_calls)
+        return 0 unless tool_calls.is_a?(Array) && !tool_calls.empty?
+
+        JSON.generate(tool_calls).length
+      rescue StandardError
+        tool_calls.to_s.length
+      end
 
       # Returns the character count of +content+ across the shapes a message's
       # content can take:

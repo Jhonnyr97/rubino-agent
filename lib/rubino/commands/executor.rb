@@ -586,7 +586,10 @@ module Rubino
       # run on, over a session's stored messages.
       def estimate_session_tokens(store, session_id, model_id:)
         budget = Context::TokenBudget.new(model_id: model_id, config: Rubino.configuration)
-        budget.estimate_tokens(store.for_session(session_id).map { |m| { content: m.content } })
+        # Pass the Message objects whole: the budget sizes each over its full
+        # to_context payload (content + reasoning + tool_calls), so the before→after
+        # report matches what the model actually receives, not just visible content.
+        budget.estimate_tokens(store.for_session(session_id))
       end
 
       # `/export [path]` — write the session transcript as clean markdown via
