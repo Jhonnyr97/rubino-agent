@@ -236,6 +236,63 @@ RSpec.describe Rubino::Agent::Loop do
     end
   end
 
+  # KV-cache prefix stability when the interrupt lands WHILE a tool call is still
+  # streaming. A half-streamed tool_use block is malformed — replaying it would
+  # 400 a strict provider (#351) AND diverge from the prefix the server cached —
+  # so the adapter discards the partial call (tool_calls: []) and the Loop
+  # persists a CLEAN assistant message: content + reasoning only, replay-safe.
+  describe "user interrupt DURING tool-call streaming (#608b tool path)" do
+    let(:token) { Rubino::Interaction::CancelToken.new }
+
+    it "persists a clean assistant partial with NO tool_calls (discards the half-streamed call)" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[let me read],
+                                             reasoning: "need the file first",
+                                             tool_stream: ["read", '{"file_path":"foo'])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      assistant = message_store.for_session(session[:id]).select { |m| m.role == "assistant" }
+      expect(assistant.size).to eq(1)
+      expect(assistant.last.content).to eq("let me read")
+      expect(assistant.last.metadata[:interrupted]).to be true
+      # No dangling tool_use — neither in metadata nor in the replayed wire msg.
+      expect(assistant.last.metadata[:tool_calls]).to be_nil
+      expect(assistant.last.to_context).not_to have_key(:tool_calls)
+    end
+
+    it "leaves NO orphan tool row for the interrupted call (no tool_use ⇒ no tool_result)" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[reading now],
+                                             tool_stream: ["read", '{"file_path":"x'])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+
+      stored = message_store.for_session(session[:id])
+      expect(stored.select { |m| m.role == "tool" }).to be_empty
+    end
+
+    it "replays byte-identically to a completed turn — the interrupted flag never reaches the wire" do
+      fake_llm.enqueue_user_interrupt(token, shown: %w[partial answer],
+                                             reasoning: "thinking it through",
+                                             tool_stream: ["read", '{"f'])
+      expect do
+        build_loop(cancel_token: token).run(messages: user_messages, tools: [])
+      end.to raise_error(Rubino::Interrupted)
+      partial = message_store.for_session(session[:id]).last
+
+      # A COMPLETED assistant turn with the SAME content + reasoning and no tool
+      # calls must produce the IDENTICAL wire message: to_context omits the
+      # interrupted flag, so the prefix the server cached during the aborted
+      # generation replays unchanged and is reused instead of re-prefilled.
+      completed = Rubino::Session::Message.new(
+        session_id: session[:id], role: "assistant", content: "partial answer",
+        metadata: { reasoning: "thinking it through" }
+      )
+      expect(partial.to_context).to eq(completed.to_context)
+    end
+  end
+
   describe "plain text response (no tool calls)" do
     it "returns the assistant content" do
       fake_llm.enqueue_text("Hello, world!")
