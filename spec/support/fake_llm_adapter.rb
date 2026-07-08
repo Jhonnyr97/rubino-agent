@@ -115,8 +115,17 @@ class FakeLLMAdapter
   # Ctrl+C that runs on another thread) and raise Rubino::Interrupted — so any
   # +late_words+ are NEVER yielded. The Loop must persist exactly the shown words
   # (marked interrupted) and drop the late ones.
-  def enqueue_user_interrupt(cancel_token, shown:, late: [], reasoning: nil)
-    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late, reasoning: reasoning }
+  #
+  # +tool_stream+ (optional) mirrors an interrupt that lands WHILE a tool call is
+  # still streaming: a [name, partial_args] pair the adapter emits as
+  # :tool_preparing / :tool_args UI events before the cancel. The real adapter
+  # NEVER accumulates these into the partial (announce_tool_stream only emits) —
+  # a truncated tool_use block would be malformed — so the attached
+  # partial_response still carries tool_calls: [] and the persisted partial is a
+  # clean, replay-safe assistant message.
+  def enqueue_user_interrupt(cancel_token, shown:, late: [], reasoning: nil, tool_stream: nil)
+    @stream_interrupt = { cancel_token: cancel_token, shown: shown, late: late,
+                          reasoning: reasoning, tool_stream: tool_stream }
     self
   end
 
@@ -200,6 +209,15 @@ class FakeLLMAdapter
         scenario[:shown].each_with_index do |word, idx|
           text = idx.zero? ? word : " #{word}"
           yield({ type: :content, text: text, message_id: 0 })
+        end
+        # A tool call half-streamed at the interrupt point: emit the same
+        # :tool_preparing (name) + :tool_args (partial JSON) UI events the real
+        # adapter emits. These are display-only — never accumulated — so the
+        # partial stays tool_calls: [].
+        if (ts = scenario[:tool_stream])
+          name, partial_args = ts
+          yield({ type: :tool_preparing, text: name.to_s, message_id: 0 })
+          yield({ type: :tool_args, text: partial_args.to_s, message_id: 0 })
         end
       end
       # The interrupt arrives between chunks (another thread flipped it).
