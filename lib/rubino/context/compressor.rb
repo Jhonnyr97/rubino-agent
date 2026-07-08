@@ -266,10 +266,7 @@ module Rubino
       end
 
       def estimate_tokens(messages)
-        total = messages.sum do |m|
-          content = m.respond_to?(:content) ? m.content : m[:content]
-          TokenEstimate.content_char_length(content)
-        end
+        total = messages.sum { |m| TokenEstimate.message_char_length(m) }
         (total / 4.0).ceil
       end
 
@@ -283,12 +280,13 @@ module Rubino
       # budget here closes the bypass that let a below-threshold /compact run a
       # paid summary and grow context.
       def needs_compaction?(messages)
+        # Pass the Session::Message objects straight through: the budget sizes
+        # each over its full to_context payload (content + reasoning + tool_calls)
+        # via TokenEstimate.message_char_length, so the manual /compact gate reads
+        # the SAME real context size the model receives — a reasoning-heavy
+        # restored session no longer reports a false "under threshold".
         TokenBudget.new(model_id: @session_model, config: @config)
-                   .needs_compaction?(messages.map { |m| { content: content_of(m) } })
-      end
-
-      def content_of(message)
-        message.respond_to?(:content) ? message.content : message[:content]
+                   .needs_compaction?(messages)
       end
 
       # Carry the threshold (#420) so the CLI / in-chat "too few messages" notice

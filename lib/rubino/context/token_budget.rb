@@ -35,8 +35,14 @@ module Rubino
       # Estimates token count for a set of messages. Routes through
       # TokenEstimate so a Content::Raw system block (#311) is sized correctly
       # instead of crashing on a missing #length.
+      # Sizes each message over its FULL to_context payload (content + replayed
+      # reasoning + tool_calls), not the visible content alone — otherwise a
+      # reasoning-heavy session's real context (~1.8x its content) is undercounted
+      # and the gate/gauge disagree with what the model receives (see
+      # TokenEstimate.message_char_length). Accepts Session::Message objects OR
+      # assembled to_context hashes; both normalize through the same sizer.
       def estimate_tokens(messages)
-        total_chars = messages.sum { |m| TokenEstimate.content_char_length(m[:content]) }
+        total_chars = messages.sum { |m| TokenEstimate.message_char_length(m) }
         (total_chars.to_f / CHARS_PER_TOKEN).ceil
       end
 
