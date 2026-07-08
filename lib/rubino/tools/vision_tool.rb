@@ -20,42 +20,19 @@ module Rubino
     # Tools::Registry#aux_dependency_satisfied?), since the model may still
     # prefer to delegate to a better-suited aux model.
     class VisionTool < Base
-      def name
-        "vision"
-      end
+      tool_name   "vision"
+      description "Ask a multimodal model to describe or interpret an image. " \
+                  "Use when you need to understand visual content (charts, screenshots, " \
+                  "diagrams, photos). Provide an optional focused question to direct the " \
+                  "analysis; default is a full markdown description."
+      risk_level :low
 
-      def description
-        "Ask a multimodal model to describe or interpret an image. " \
-          "Use when you need to understand visual content (charts, screenshots, " \
-          "diagrams, photos). Provide an optional focused question to direct the " \
-          "analysis; default is a full markdown description."
-      end
+      param :file_path, desc: "Absolute path to an image file (.png .jpg .jpeg .webp .gif .bmp)"
+      param :question,  desc: "Optional focused question. Default: 'Describe what you see in markdown.'", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: {
-              type: "string",
-              description: "Absolute path to an image file (.png .jpg .jpeg .webp .gif .bmp)"
-            },
-            question: {
-              type: "string",
-              description: "Optional focused question. Default: 'Describe what you see in markdown.'"
-            }
-          },
-          required: %w[file_path]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        path     = (arguments["file_path"] || arguments[:file_path]).to_s
-        question = (arguments["question"]  || arguments[:question] ||
-                    "Describe what you see in markdown.").to_s
+      def execute(file_path:, question: "Describe what you see in markdown.")
+        path     = file_path.to_s
+        question = question.to_s
 
         return "Error: file_path is required" if path.empty?
 

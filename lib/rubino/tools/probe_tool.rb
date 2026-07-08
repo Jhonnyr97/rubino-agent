@@ -40,9 +40,7 @@ module Rubino
         @probe = probe
       end
 
-      def name
-        "probe"
-      end
+      tool_name   "probe"
 
       # Gated by the same `tools.task` delegation key — probing a child is
       # meaningless without the delegation substrate.
@@ -50,50 +48,39 @@ module Rubino
         "task"
       end
 
-      def description
-        "Check on one of YOUR OWN running subagents WITHOUT disturbing it (this " \
-          "is read-only — it changes nothing about what the child does). By default " \
-          "(live:false) it returns a FREE instant snapshot: the child's status, how " \
-          "many tools it has run, its last activity, and a few recent lines — no " \
-          "model call. Set live:true to ask the child a specific question answered " \
-          "from its current context by a one-shot model peek (this costs a billed " \
-          "round-trip and is budgeted per child; prefer the free snapshot). You can " \
-          "ONLY probe subagents you started (your direct children)."
-      end
+      description "Check on one of YOUR OWN running subagents WITHOUT disturbing it (this " \
+                  "is read-only — it changes nothing about what the child does). By default " \
+                  "(live:false) it returns a FREE instant snapshot: the child's status, how " \
+                  "many tools it has run, its last activity, and a few recent lines — no " \
+                  "model call. Set live:true to ask the child a specific question answered " \
+                  "from its current context by a one-shot model peek (this costs a billed " \
+                  "round-trip and is budgeted per child; prefer the free snapshot). You can " \
+                  "ONLY probe subagents you started (your direct children)."
+      risk_level :low
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            task_id: { type: "string", description: "The id (sa_…) of YOUR subagent to probe." },
-            question: { type: "string",
-                        description: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context." },
-            live: {
-              type: "boolean",
-              description: "false (default) = FREE instant snapshot from the registry, no model call. " \
-                           "true = billed one-shot model peek over the child's transcript (budgeted per child)."
-            }
-          },
-          required: %w[task_id question]
-        }
-      end
+      params({
+        type: "object",
+        properties: {
+          task_id: { type: "string", description: "The id (sa_…) of YOUR subagent to probe." },
+          question: { type: "string",
+                      description: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context." },
+          live: {
+            type: "boolean",
+            description: "false (default) = FREE instant snapshot from the registry, no model call. " \
+                         "true = billed one-shot model peek over the child's transcript (budgeted per child)."
+          }
+        },
+        required: %w[task_id question]
+      })
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        task_id  = (arguments["task_id"]  || arguments[:task_id]).to_s.strip
-        question = (arguments["question"] || arguments[:question]).to_s.strip
-        live     = live_arg(arguments)
-
+      def execute(task_id:, question:, live: false)
         caller_id = Rubino.current_subagent_id
         registry  = BackgroundTasks.instance
-        entry     = task_id.empty? ? nil : registry.find(task_id)
+        entry     = task_id.to_s.strip.empty? ? nil : registry.find(task_id.to_s.strip)
 
         return "Cannot probe #{task_id} — no such subagent." unless entry
-        return "Error: question is required" if question.empty?
-        unless registry.owned_by?(caller_id, task_id)
+        return "Error: question is required" if question.to_s.strip.empty?
+        unless registry.owned_by?(caller_id, task_id.to_s.strip)
           return "Error: #{task_id} is not one of your subagents — you can only probe children you started."
         end
 

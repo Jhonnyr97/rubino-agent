@@ -5,6 +5,127 @@ module Rubino
     # Abstract base class for all tools.
     # Each tool must implement: name, description, input_schema, risk_level, call.
     class Base
+      # ── Class-level DSL ──────────────────────────────────────────────
+      class << self
+        # Stores class-level declarations that instance methods read.
+        # NOTE: we use `tool_name` (not `name`) to avoid shadowing Ruby's
+        # built-in Class#name which Zeitwerk / Rails / inspections rely on.
+        def tool_name(value = :not_set)
+          return @tool_name || default_tool_name if value == :not_set
+
+          @tool_name = value.to_s.freeze
+        end
+
+        def description(value = :not_set)
+          return @tool_description if value == :not_set
+
+          @tool_description = value.to_s.freeze
+        end
+        alias desc description
+
+        def risk_level(value = :not_set)
+          return @tool_risk_level || :low if value == :not_set
+
+          @tool_risk_level = value.to_sym
+        end
+
+        # Registers a single parameter. Generates JSON Schema automatically.
+        # Options: type (string/integer/number/boolean/array/object),
+        #          desc/description, required (default true).
+        def param(name, type: "string", desc: nil, description: nil, required: true)
+          tool_params[name.to_s] = Parameter.new(
+            name.to_s, type: type.to_s,
+            description: desc || description,
+            required: required
+          )
+        end
+
+        # Registers a raw JSON Schema hash for the tool's parameters, used as-is
+        # (deep-duped so a mutable literal can't leak). Prefer `param` for simple
+        # schemas; use this for shapes the `param` DSL can't express (nested
+        # objects, enums, unions). Tools whose schema depends on runtime state
+        # (e.g. ReadTool's conditional compress param) override #input_schema as
+        # an instance method instead.
+        def params(schema)
+          @tool_schema = schema
+        end
+
+        def tool_params
+          @tool_params ||= {}
+        end
+
+        def tool_schema
+          @tool_schema
+        end
+
+        # Returns a class whose name can be overridden by `name "custom"`.
+        def default_tool_name
+          raw = name.split("::").last # "ReadTool"
+          return raw unless raw.end_with?("Tool")
+
+          raw = raw.sub(/Tool\z/, "")   # "Read"
+          # Insert underscore between consecutive uppercase + uppercase+lowercase:
+          # "Read" stays "read"; "URLTool" → "url"
+          raw.gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+             .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+             .downcase
+        end
+
+        # Instance of Parameter for schema generation.
+        class Parameter
+          attr_reader :name, :type, :description, :required
+
+          def initialize(name, type: "string", description: nil, required: true)
+            @name = name
+            @type = type
+            @description = description
+            @required = required
+          end
+        end
+
+        # Builds the JSON Schema from a raw `params` hash or `param` declarations.
+        # Returns nil when nothing is declared (tool uses an #input_schema
+        # override). Uses symbol keys — ruby_llm stringifies them before sending
+        # to the provider, and tests assert against symbol keys.
+        def build_input_schema
+          return deep_dup(tool_schema) if tool_schema
+          return nil if tool_params.empty?
+
+          properties = tool_params.to_h do |_name, param|
+            schema = {
+              type: map_param_type(param.type),
+              description: param.description
+            }.compact
+            schema[:items] = { type: "string" } if schema[:type] == "array"
+            [param.name, schema]
+          end
+
+          required = tool_params.values.select(&:required).map(&:name)
+
+          { type: "object", properties: properties, required: required }
+        end
+
+        # Recursive deep dup for hashes/arrays/values.
+        def deep_dup(value)
+          case value
+          when Hash  then value.each_with_object({}) { |(k, v), h| h[k] = deep_dup(v) }
+          when Array then value.map { |v| deep_dup(v) }
+          else value
+          end
+        end
+
+        def map_param_type(type)
+          case type.to_s
+          when "integer", "int" then "integer"
+          when "number", "float", "double" then "number"
+          when "boolean" then "boolean"
+          when "array" then "array"
+          when "object" then "object"
+          else "string"
+          end
+        end
+      end
+
       # Set by ToolExecutor before each call so long-running tools (shell,
       # http, watchers) can poll for user cancellation. Default is nil — the
       # tool should treat that as "no cancellation possible" and not crash.
@@ -46,9 +167,12 @@ module Rubino
         @cancel_token&.cancelled?
       end
 
-      # Returns the tool name (used in LLM tool definitions)
+      # Returns the tool name (used in LLM tool definitions).
+      # Reads from class-level `tool_name` declaration, falls back to deriving
+      # from the class name (ReadTool → "read"). Override with an instance
+      # method for full control.
       def name
-        raise NotImplementedError, "#{self.class}#name not implemented"
+        self.class.tool_name
       end
 
       # The `tools.<key>` config gate that enables/disables this tool. Single
@@ -62,19 +186,24 @@ module Rubino
         name
       end
 
-      # Returns a description for the LLM
+      # Returns a description for the LLM.
+      # Reads from class-level `description` declaration.
       def description
-        raise NotImplementedError, "#{self.class}#description not implemented"
+        self.class.description
       end
 
-      # Returns the JSON schema for input parameters
+      # Returns the JSON schema for input parameters.
+      # Auto-generates from `param` declarations or `params` block when present.
+      # Tools with dynamic schemas (ReadTool's conditional compress param)
+      # override this method.
       def input_schema
-        raise NotImplementedError, "#{self.class}#input_schema not implemented"
+        self.class.build_input_schema
       end
 
-      # Returns the risk level: :low, :medium, :high
+      # Returns the risk level: :low, :medium, :high.
+      # Reads from class-level `risk_level` declaration (default :low).
       def risk_level
-        :low
+        self.class.risk_level
       end
 
       # True only for tools whose code runs on an external MCP server
@@ -93,9 +222,30 @@ module Rubino
         name
       end
 
-      # Executes the tool with given arguments, returns output string
+      # Executes the tool with given arguments, returns output string.
+      # Normalizes string/symbol keys into keyword arguments and delegates
+      # to execute(**kwargs). Every built-in tool now implements execute(),
+      # so this method is the single entry point used by ToolExecutor.
+      #
+      # When a required keyword is missing from the LLM's hash, we inject
+      # nil instead of letting Ruby raise ArgumentError — the tool's own
+      # nil checks produce a clear error message, and the method dispatch
+      # never fails.
       def call(arguments)
-        raise NotImplementedError, "#{self.class}#call not implemented"
+        kwargs = normalize_call_args(arguments)
+        # Introspect execute's parameter list and pad missing required
+        # keywords with nil so the dispatch never raises.
+        method(:execute).parameters.each do |type, name|
+          next unless type == :keyreq
+          kwargs[name] = nil unless kwargs.key?(name)
+        end
+        execute(**kwargs)
+      end
+
+      # Tools implement their logic here, receiving keyword arguments that
+      # are already normalized from the LLM's JSON hash.
+      def execute(**)
+        raise NotImplementedError, "#{self.class}#execute not implemented"
       end
 
       # Returns true if this tool requires user confirmation
@@ -146,6 +296,15 @@ module Rubino
       end
 
       protected
+
+      # Normalizes the hash from the LLM (string keys from JSON) into symbol
+      # keys, so tools using call(**kwargs) don't need to check both.
+      def normalize_call_args(arguments)
+        return {} if arguments.nil?
+        return arguments.transform_keys(&:to_sym) if arguments.respond_to?(:transform_keys)
+
+        {}
+      end
 
       # Walks up from +expanded+ to the deepest ancestor that exists and is a
       # directory. The target is a not-yet-created file (the common widen case)

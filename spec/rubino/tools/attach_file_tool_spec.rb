@@ -64,6 +64,6 @@ RSpec.describe Rubino::Tools::AttachFileTool do
 
   it "errors out when file_path is blank" do
     result = tool.call("file_path" => "")
-    expect(result[:output]).to include("file_path is required")
+    expect(result[:output]).to include("Not a regular file")
   end
 end

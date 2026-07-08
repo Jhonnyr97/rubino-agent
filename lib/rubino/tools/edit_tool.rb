@@ -5,49 +5,21 @@ module Rubino
     # Tool for performing exact string replacements in files.
     # Replaces a specific old string with a new string - more precise than full file writes.
     class EditTool < Base
-      def name
-        "edit"
-      end
+      tool_name   "edit"
+      description "Perform exact string replacement in a file. " \
+                  "Specify the old text to find and the new text to replace it with. " \
+                  "The old text must match exactly (including whitespace/indentation). " \
+                  "Use replace_all to replace all occurrences."
+      risk_level :medium
 
-      def description
-        "Perform exact string replacement in a file. " \
-          "Specify the old text to find and the new text to replace it with. " \
-          "The old text must match exactly (including whitespace/indentation). " \
-          "Use replace_all to replace all occurrences."
-      end
+      param :file_path,  desc: "The path to the file to edit"
+      param :old_string, desc: "The exact text to find and replace"
+      param :new_string, desc: "The text to replace it with"
+      param :replace_all, type: :boolean,
+            desc: "Replace all occurrences (default: false, replaces first only)",
+            required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: {
-              type: "string",
-              description: "The path to the file to edit"
-            },
-            old_string: {
-              type: "string",
-              description: "The exact text to find and replace"
-            },
-            new_string: {
-              type: "string",
-              description: "The text to replace it with"
-            },
-            replace_all: {
-              type: "boolean",
-              description: "Replace all occurrences (default: false, replaces first only)"
-            }
-          },
-          required: %w[file_path old_string new_string]
-        }
-      end
-
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        file_path, old_string, new_string, replace_all = parse_args(arguments)
-
+      def execute(file_path:, old_string:, new_string:, replace_all: false)
         # Input guards (#329a/b): reject an empty needle (a literal sub/gsub on
         # "" matches at every char boundary and would corrupt the file under
         # replace_all) and a no-op old==new (reporting "1 replacement" misleads
@@ -118,15 +90,6 @@ module Rubino
         return unless old_string == new_string
 
         "Error: old_string and new_string are identical — nothing to change."
-      end
-
-      # Pull the four inputs (string- or symbol-keyed) in one place so #call
-      # stays under the complexity gate.
-      def parse_args(arguments)
-        [arguments["file_path"]  || arguments[:file_path],
-         arguments["old_string"] || arguments[:old_string],
-         arguments["new_string"] || arguments[:new_string],
-         arguments["replace_all"] || arguments[:replace_all] || false]
       end
 
       # Resolves the edit to [new_content, replaced_count], or returns an error

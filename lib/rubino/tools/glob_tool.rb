@@ -5,50 +5,20 @@ module Rubino
     # Tool for finding files by glob patterns.
     # Returns matching file paths sorted by modification time.
     class GlobTool < Base
-      def name
-        "glob"
-      end
+      tool_name   "glob"
+      description "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
+                  "Returns matching file paths sorted by modification time."
+      risk_level :low
 
-      def description
-        "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
-          "Returns matching file paths sorted by modification time."
-      end
+      param :pattern, desc: "The glob pattern to match files against (e.g., '**/*.rb')"
+      param :path,    desc: "Base directory to search in (defaults to current directory)", required: false
+      param :max_results, type: :integer, desc: "Maximum number of results (default: 100)", required: false
+      param :include_ignored, type: :boolean,
+            desc: "Include files git ignores (.gitignore, build artifacts). " \
+                  "Default false — results honor .gitignore like grep does.",
+            required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            pattern: {
-              type: "string",
-              description: "The glob pattern to match files against (e.g., '**/*.rb')"
-            },
-            path: {
-              type: "string",
-              description: "Base directory to search in (defaults to current directory)"
-            },
-            max_results: {
-              type: "integer",
-              description: "Maximum number of results (default: 100)"
-            },
-            include_ignored: {
-              type: "boolean",
-              description: "Include files git ignores (.gitignore, build artifacts). " \
-                           "Default false — results honor .gitignore like grep does."
-            }
-          },
-          required: %w[pattern]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        pattern     = arguments["pattern"] || arguments[:pattern]
-        path        = arguments["path"]    || arguments[:path] || "."
-        max_results = arguments["max_results"] || arguments[:max_results] || 100
-        include_ignored = arguments["include_ignored"] || arguments[:include_ignored] || false
+      def execute(pattern:, path: ".", max_results: 100, include_ignored: false)
 
         # Glob is BROAD (#406): it resolves any path like Hermes/Claude/Codex.
         # The read allowlist was never the data-loss boundary (that's on the

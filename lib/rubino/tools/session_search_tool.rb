@@ -14,68 +14,61 @@ module Rubino
       DEFAULT_LIMIT = 20
       MAX_LIMIT     = 100
 
-      def name
-        "session_search"
-      end
+      tool_name   "session_search"
+      description "Full-text search across past session messages. " \
+                  "Returns matched messages with highlighted snippets and the owning session id. " \
+                  "Use to recall earlier conversations or look up what a tool returned previously."
+      risk_level :low
 
-      def description
-        "Full-text search across past session messages. " \
-          "Returns matched messages with highlighted snippets and the owning session id. " \
-          "Use to recall earlier conversations or look up what a tool returned previously."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Free-text search query (FTS5 MATCH)."
-            },
-            since: {
-              type: "string",
-              description: "ISO8601 lower bound on message created_at."
-            },
-            until: {
-              type: "string",
-              description: "ISO8601 upper bound on message created_at."
-            },
-            role: {
-              type: "string",
-              enum: %w[user assistant tool],
-              description: "Restrict to a single message role."
-            },
-            tool: {
-              type: "string",
-              description: "Restrict to a specific tool_name (when role=tool)."
-            },
-            limit: {
-              type: "integer",
-              description: "Max results to return (default 20, max 100)."
-            }
+      # Raw schema hash because `until` is a Ruby reserved keyword
+      params({
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Free-text search query (FTS5 MATCH)."
           },
-          required: %w[query]
-        }
-      end
+          since: {
+            type: "string",
+            description: "ISO8601 lower bound on message created_at."
+          },
+          until: {
+            type: "string",
+            description: "ISO8601 upper bound on message created_at."
+          },
+          role: {
+            type: "string",
+            enum: %w[user assistant tool],
+            description: "Restrict to a single message role."
+          },
+          tool: {
+            type: "string",
+            description: "Restrict to a specific tool_name (when role=tool)."
+          },
+          limit: {
+            type: "integer",
+            description: "Max results to return (default 20, max 100)."
+          }
+        },
+        required: %w[query]
+      })
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        query = arguments["query"] || arguments[:query]
+      def execute(query:, since: nil, role: nil, tool: nil, limit: DEFAULT_LIMIT, **other_kwargs)
         return "Error: query is required" if query.nil? || query.to_s.strip.empty?
 
-        limit = (arguments["limit"] || arguments[:limit] || DEFAULT_LIMIT).to_i
+        # Extract `until` from the kwargs hash since it's a Ruby reserved keyword
+        until_val = other_kwargs[:until] || other_kwargs["until"]
+
+        limit = limit.to_i
         limit = DEFAULT_LIMIT if limit <= 0
         limit = MAX_LIMIT if limit > MAX_LIMIT
 
         rows = store.search(
           query: query,
-          since: arguments["since"] || arguments[:since],
-          until_: arguments["until"] || arguments[:until],
-          role: arguments["role"] || arguments[:role],
-          tool: arguments["tool"] || arguments[:tool],
+          since: since,
+          until_: until_val,
+          role: role,
+          tool: tool,
           limit: limit
         )
 

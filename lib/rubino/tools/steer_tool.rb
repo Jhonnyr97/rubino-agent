@@ -20,9 +20,7 @@ module Rubino
     # Mechanism reuse: it wraps BackgroundTasks#steer verbatim (the SAME wire the
     # human CLI uses) — no new transport, no new state.
     class SteerTool < Base
-      def name
-        "steer"
-      end
+      tool_name   "steer"
 
       # Gated by the same `tools.task` delegation key — steering a child is
       # meaningless without the delegation substrate. Disabling delegation
@@ -31,37 +29,28 @@ module Rubino
         "task"
       end
 
-      def description
-        "Steer one of YOUR OWN running subagents: park a short note that is " \
-          "folded into that child's context at its NEXT turn (it persists and " \
-          "changes what the child does). Use it to course-correct a child you " \
-          "started — add a constraint, narrow the scope, flag something it missed. " \
-          "You can ONLY steer subagents you started (your direct children); you " \
-          "cannot steer yourself, a sibling, or a finished child. The note is " \
-          "queued, not delivered instantly — the child sees it between turns."
-      end
+      description "Steer one of YOUR OWN running subagents: park a short note that is " \
+                  "folded into that child's context at its NEXT turn (it persists and " \
+                  "changes what the child does). Use it to course-correct a child you " \
+                  "started — add a constraint, narrow the scope, flag something it missed. " \
+                  "You can ONLY steer subagents you started (your direct children); you " \
+                  "cannot steer yourself, a sibling, or a finished child. The note is " \
+                  "queued, not delivered instantly — the child sees it between turns."
+      risk_level :low
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            task_id: { type: "string", description: "The id (sa_…) of YOUR running subagent to steer." },
-            note: { type: "string",
-                    description: "The steering note to fold into the child's next turn. Keep it short and self-contained." }
-          },
-          required: %w[task_id note]
-        }
-      end
+      params({
+        type: "object",
+        properties: {
+          task_id: { type: "string", description: "The id (sa_…) of YOUR running subagent to steer." },
+          note: { type: "string",
+                  description: "The steering note to fold into the child's next turn. Keep it short and self-contained." }
+        },
+        required: %w[task_id note]
+      })
 
-      # Steering a child is a low-risk, non-destructive nudge (the child carries
-      # its own approval/risk gates for anything it does next).
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        task_id = (arguments["task_id"] || arguments[:task_id]).to_s.strip
-        note    = (arguments["note"]    || arguments[:note]).to_s.strip
+      def execute(task_id:, note:)
+        task_id = task_id.to_s.strip
+        note    = note.to_s.strip
         return "Error: note is required" if note.empty?
 
         caller_id = Rubino.current_subagent_id

@@ -6,44 +6,21 @@ module Rubino
   module Tools
     # Tool for applying unified diff patches to files.
     class PatchTool < Base
-      def name
-        "apply_patch"
-      end
+      tool_name   "apply_patch"
+      description "Apply a unified diff patch to one or more files. " \
+                  "Accepts standard unified diff format (like output from 'git diff')."
+      risk_level :medium
 
-      def description
-        "Apply a unified diff patch to one or more files. " \
-          "Accepts standard unified diff format (like output from 'git diff')."
-      end
+      param :patch,     desc: "The unified diff patch content to apply"
+      param :base_path, desc: "Base directory for relative paths in the patch (defaults to cwd)", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            patch: {
-              type: "string",
-              description: "The unified diff patch content to apply"
-            },
-            base_path: {
-              type: "string",
-              description: "Base directory for relative paths in the patch (defaults to cwd)"
-            }
-          },
-          required: %w[patch]
-        }
-      end
-
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        patch     = arguments["patch"]     || arguments[:patch]
+      def execute(patch:, base_path: nil)
         # Anchor relative patch paths at the SESSION cwd (Workspace.current_cwd
         # via the shared seam), not Dir.pwd: a `cd subdir` in the shell is then
         # honoured by apply_patch too (#544/#545). An explicit base_path is
         # resolved relative to the same seam (absolute passes through); with no
         # base_path the hunk paths anchor straight at the session cwd.
-        raw_base  = arguments["base_path"] || arguments[:base_path]
+        raw_base  = base_path
         base_path = raw_base.nil? || raw_base.to_s.empty? ? Workspace.current_cwd : expand_workspace_path(raw_base)
 
         hunks = parse_patch(patch)

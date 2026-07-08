@@ -85,9 +85,7 @@ module Rubino
           "work yourself."
       end
 
-      def name
-        "task"
-      end
+      tool_name   "task"
 
       # `task` is the config gate; absent from config ⇒ enabled (opt-out model),
       # same as every other tool.
@@ -122,6 +120,11 @@ module Rubino
           "reported as new ones. Available subagents: #{available_subagents_description}."
       end
 
+      risk_level :low
+
+      # Dynamic schema: the `subagent` enum text depends on the subagents
+      # registered at runtime, so this stays an instance-level override (the
+      # DSL's documented escape hatch) rather than a static class-level `params`.
       def input_schema
         {
           type: "object",
@@ -144,17 +147,15 @@ module Rubino
         }
       end
 
-      # Spawns a gated nested run, not a destructive op — the nested tools carry
-      # their own approval/risk gates. Low risk keeps it auto-available so the
-      # model can auto-delegate from the description.
-      def risk_level
-        :low
+      # Optional injection point for tests — a callable taking the resolved
+      # Definition and returning something that responds to #run!(prompt).
+      def initialize(runner_factory: nil)
+        @runner_factory = runner_factory
       end
 
-      def call(arguments)
-        subagent   = (arguments["subagent"] || arguments[:subagent]).to_s.strip
-        prompt     = (arguments["prompt"]   || arguments[:prompt]).to_s
-        background = background_arg(arguments)
+      def execute(subagent:, prompt:, background: false)
+        subagent = subagent.to_s.strip
+        prompt   = prompt.to_s
 
         return "Error: subagent is required" if subagent.empty?
         return "Error: prompt is required"   if prompt.strip.empty?
@@ -774,12 +775,6 @@ module Rubino
         # never wedge a live-slot leak; #call's rescue phrases the message.
         registry_bg.complete(entry, status: :failed, error: e.message) if entry
         raise
-      end
-
-      # Optional injection point for tests — a callable taking the resolved
-      # Definition and returning something that responds to #run!(prompt).
-      def initialize(runner_factory: nil)
-        @runner_factory = runner_factory
       end
 
       def registry

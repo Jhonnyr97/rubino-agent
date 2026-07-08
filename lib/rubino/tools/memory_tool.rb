@@ -27,71 +27,45 @@ module Rubino
         @backend = backend
       end
 
-      def name
-        "memory"
-      end
+      tool_name   "memory"
+      description "Persist facts across sessions. Use action=add to record a new fact, " \
+                  "replace to update an existing fact (substring match on old_text), " \
+                  "or remove to delete one. target=user writes to the user profile; " \
+                  "target=project records a durable project/codebase fact (surfaced as " \
+                  "[Project Context]); target=memory writes to general memory. " \
+                  "Store ONE atomic fact per call — make separate calls for separate " \
+                  "facts so each can be superseded or forgotten independently. " \
+                  "Content is scanned for prompt-injection / exfiltration patterns and " \
+                  "subject to a character budget — refusals are reported in the output."
+      risk_level :low
 
-      def description
-        "Persist facts across sessions. Use action=add to record a new fact, " \
-          "replace to update an existing fact (substring match on old_text), " \
-          "or remove to delete one. target=user writes to the user profile; " \
-          "target=project records a durable project/codebase fact (surfaced as " \
-          "[Project Context]); target=memory writes to general memory. " \
-          "Store ONE atomic fact per call — make separate calls for separate " \
-          "facts so each can be superseded or forgotten independently. " \
-          "Content is scanned for prompt-injection / exfiltration patterns and " \
-          "subject to a character budget — refusals are reported in the output."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            action: {
-              type: "string",
-              enum: VALID_ACTIONS,
-              description: "add, replace, or remove"
-            },
-            target: {
-              type: "string",
-              enum: VALID_TARGETS,
-              description: "memory (general), user (user profile), or " \
-                           "project (durable project/codebase fact)"
-            },
-            content: {
-              type: "string",
-              description: "New content (required for add and replace)"
-            },
-            old_text: {
-              type: "string",
-              description: "Substring of existing memory to match " \
-                           "(required for replace and remove)"
-            }
+      # Enum params require a raw JSON schema hash
+      params({
+        type: "object",
+        properties: {
+          action: {
+            type: "string", enum: VALID_ACTIONS,
+            description: "add, replace, or remove"
           },
-          required: %w[action target]
-        }
-      end
+          target: {
+            type: "string", enum: VALID_TARGETS,
+            description: "memory (general), user (user profile), or " \
+                         "project (durable project/codebase fact)"
+          },
+          content: {
+            type: "string",
+            description: "New content (required for add and replace)"
+          },
+          old_text: {
+            type: "string",
+            description: "Substring of existing memory to match " \
+                         "(required for replace and remove)"
+          }
+        },
+        required: %w[action target]
+      })
 
-      def risk_level
-        # Memory store/retrieve/update is an internal, low-risk operation:
-        # an autonomous "scratchpad" the agent maintains, not an external
-        # side-effect like editing the user's files or running a shell
-        # command. It must not trip the approval gate. Every write is
-        # already threat-scanned and char-budgeted inside Memory::Store,
-        # and the only destructive action (remove) deletes a SINGLE entry
-        # by substring match — there is no full-wipe op exposed here — so
-        # there is nothing left for an approval prompt to guard.
-        # :low keeps it autonomous even under approvals.mode: manual
-        # (Base#risky? only flags :medium/:high), matching how todo_tool
-        # and other internal state-mutating tools stay unprompted.
-        :low
-      end
-
-      def call(arguments)
-        args = symbolize(arguments)
-        action = args[:action].to_s
-        target = args[:target].to_s
-
+      def execute(action:, target:, content: nil, old_text: nil)
         return error("invalid action '#{action}'; expected one of #{VALID_ACTIONS.join(", ")}") \
           unless VALID_ACTIONS.include?(action)
         return error("invalid target '#{target}'; expected one of #{VALID_TARGETS.join(", ")}") \
@@ -100,9 +74,9 @@ module Rubino
         kind = TARGET_TO_KIND.fetch(target)
 
         case action
-        when "add"     then do_add(kind, args[:content])
-        when "replace" then do_replace(kind, args[:old_text], args[:content])
-        when "remove"  then do_remove(kind, args[:old_text])
+        when "add"     then do_add(kind, content)
+        when "replace" then do_replace(kind, old_text, content)
+        when "remove"  then do_remove(kind, old_text)
         end
       end
 
@@ -176,13 +150,6 @@ module Rubino
         s.length > max ? "#{s[0, max]}..." : s
       end
 
-      def symbolize(arguments)
-        return {} unless arguments.is_a?(Hash)
-
-        arguments.each_with_object({}) do |(k, v), acc|
-          acc[k.to_sym] = v
-        end
-      end
     end
   end
 end

@@ -28,46 +28,34 @@ module Rubino
       # ARIA landmark roles that mark page chrome rather than content.
       BOILERPLATE_ROLES = %w[navigation banner contentinfo search complementary].freeze
 
-      def name
-        "webfetch"
-      end
+      tool_name   "webfetch"
 
       # Gated by `tools.web` (shared with websearch), not `tools.webfetch`.
       def config_key
         "web"
       end
 
-      def description
-        "Fetch content from a URL and return it as text. " \
-          "Useful for reading documentation, API references, and web pages."
-      end
+      description "Fetch content from a URL and return it as text. " \
+                  "Useful for reading documentation, API references, and web pages."
+      risk_level :low
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            url: {
-              type: "string",
-              description: "The URL to fetch content from"
-            },
-            format: {
-              type: "string",
-              enum: %w[text html],
-              description: "Output format: 'text' (default, strips HTML) or 'html' (raw)"
-            }
+      params({
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "The URL to fetch content from"
           },
-          required: %w[url]
-        }
-      end
+          format: {
+            type: "string",
+            enum: %w[text html],
+            description: "Output format: 'text' (default, strips HTML) or 'html' (raw)"
+          }
+        },
+        required: %w[url]
+      })
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        url = arguments["url"] || arguments[:url]
-        format = arguments["format"] || arguments[:format] || "text"
-
+      def execute(url:, format: "text")
         fetch_url(url, format: format)
       end
 

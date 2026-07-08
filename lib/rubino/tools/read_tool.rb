@@ -17,9 +17,7 @@ module Rubino
       # past this we stop and tell the model to narrow the range or grep.
       MAX_OUTPUT_BYTES = 100_000
 
-      def name
-        "read"
-      end
+      tool_name   "read"
 
       def description
         base = "Read a text file from the filesystem with line numbers (cat -n style). " \
@@ -29,6 +27,8 @@ module Rubino
         base + compression_note
       end
 
+      # Dynamic schema: the compress param is only added when compression is enabled.
+      # Override input_schema to handle conditional params.
       def input_schema
         props = {
           file_path: { type: "string", description: "Absolute or relative file path" },
@@ -61,20 +61,13 @@ module Rubino
         false
       end
 
-      def risk_level
-        :low
-      end
+      risk_level :low
 
-      def call(arguments)
-        file_path  = arguments["file_path"] || arguments[:file_path]
-        raw_offset = arguments["offset"] || arguments[:offset]
-        raw_limit  = arguments["limit"]  || arguments[:limit]
-        offset     = (raw_offset || 1).to_i
-        limit      = (raw_limit  || DEFAULT_LIMIT).to_i
+      def execute(file_path:, offset: 1, limit: DEFAULT_LIMIT, compress: nil)
         # A WHOLE-file read (no offset AND no limit supplied) is exploration and
         # the ONLY thing compression touches. A read carrying EITHER is a
         # targeted window — the drill-in path — which always returns verbatim.
-        full_file = raw_offset.nil? && raw_limit.nil?
+        full_file = offset == 1 && limit == DEFAULT_LIMIT
 
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
