@@ -8,35 +8,15 @@ module Rubino
     class ShellKillTool < Base
       GRACE_SECONDS = 2
 
-      def name
-        "shell_kill"
-      end
+      tool_name   "shell_kill"
+      description "Terminate a background shell started via `shell` with run_in_background: true. " \
+                  "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
+                  "the process is still alive."
+      risk_level :medium
 
-      def description
-        "Terminate a background shell started via `shell` with run_in_background: true. " \
-          "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
-          "the process is still alive."
-      end
+      param :run_id, desc: "The run_id returned by `shell` when launched in background"
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            run_id: {
-              type: "string",
-              description: "The run_id returned by `shell` when launched in background"
-            }
-          },
-          required: %w[run_id]
-        }
-      end
-
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        run_id = arguments["run_id"] || arguments[:run_id]
+      def execute(run_id:)
         return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance

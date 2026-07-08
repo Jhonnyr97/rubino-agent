@@ -10,50 +10,38 @@ module Rubino
     # Each subsequent edit sees the result of prior edits in the same call,
     # so you can rename A→B and then change a line that contains B.
     class MultiEditTool < Base
-      def name
-        "multi_edit"
-      end
+      tool_name   "multi_edit"
+      description "Apply multiple exact string replacements to a single file atomically. " \
+                  "Edits are applied sequentially in the given order; later edits see " \
+                  "the result of earlier ones. If any edit fails, NO changes are written."
+      risk_level :medium
 
-      def description
-        "Apply multiple exact string replacements to a single file atomically. " \
-          "Edits are applied sequentially in the given order; later edits see " \
-          "the result of earlier ones. If any edit fails, NO changes are written."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: {
-              type: "string",
-              description: "Path to the file to edit"
-            },
-            edits: {
-              type: "array",
-              description: "Ordered list of edits to apply",
-              items: {
-                type: "object",
-                properties: {
-                  old_string: { type: "string",  description: "Exact text to find" },
-                  new_string: { type: "string",  description: "Replacement text" },
-                  replace_all: { type: "boolean", description: "Replace all occurrences (default false)" }
-                },
-                required: %w[old_string new_string]
-              }
-            }
+      # Nested edits array — uses params block for the complex structure
+      params({
+        type: "object",
+        properties: {
+          file_path: {
+            type: "string",
+            description: "Path to the file to edit"
           },
-          required: %w[file_path edits]
-        }
-      end
+          edits: {
+            type: "array",
+            description: "Ordered list of edits to apply",
+            items: {
+              type: "object",
+              properties: {
+                old_string: { type: "string",  description: "Exact text to find" },
+                new_string: { type: "string",  description: "Replacement text" },
+                replace_all: { type: "boolean", description: "Replace all occurrences (default false)" }
+              },
+              required: %w[old_string new_string]
+            }
+          }
+        },
+        required: %w[file_path edits]
+      })
 
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        file_path = arguments["file_path"] || arguments[:file_path]
-        edits     = arguments["edits"]     || arguments[:edits] || []
-
+      def execute(file_path:, edits: [])
         return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
         return "Error: edits must be a non-empty array" if !edits.is_a?(Array) || edits.empty?
 

@@ -7,48 +7,33 @@ module Rubino
     # Tool that asks the user interactive questions with predefined options.
     # Allows the agent to gather clarification or preferences from the user.
     class QuestionTool < Base
-      def name
-        "question"
-      end
+      tool_name   "question"
+      description "Ask the user a question with optional predefined choices. " \
+                  "Use this when you need clarification, user preferences, or a decision. " \
+                  "The user can select from options or type a custom answer."
+      risk_level :low
 
-      def description
-        "Ask the user a question with optional predefined choices. " \
-          "Use this when you need clarification, user preferences, or a decision. " \
-          "The user can select from options or type a custom answer."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            question: {
-              type: "string",
-              description: "The question to ask the user"
-            },
-            options: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  label: { type: "string", description: "Short display text for the option" },
-                  description: { type: "string", description: "Explanation of this choice" }
-                },
-                required: %w[label]
+      # Nested options array — uses params block for the complex structure
+      params({
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question to ask the user" },
+          options: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string", description: "Short display text for the option" },
+                description: { type: "string", description: "Explanation of this choice" }
               },
-              description: "Available choices (optional). A 'Type your own' option is added automatically."
+              required: %w[label]
             },
-            multiple: {
-              type: "boolean",
-              description: "Allow selecting multiple choices (default: false)"
-            }
+            description: "Available choices (optional). A 'Type your own' option is added automatically."
           },
-          required: %w[question]
-        }
-      end
-
-      def risk_level
-        :low
-      end
+          multiple: { type: "boolean", description: "Allow selecting multiple choices (default: false)" }
+        },
+        required: %w[question]
+      })
 
       # Deterministic result when no user answer is available — the UI's #ask
       # returned nil (non-interactive / piped session, or the user gave no
@@ -78,11 +63,7 @@ module Rubino
       # NO_ANSWER "no interactive input available" message.
       EXPIRED = Object.new.freeze
 
-      def call(arguments)
-        question = arguments["question"] || arguments[:question]
-        options = arguments["options"] || arguments[:options]
-        multiple = arguments["multiple"] || arguments[:multiple] || false
-
+      def execute(question:, options: nil, multiple: false)
         ui = Rubino.ui
 
         if options && !options.empty?

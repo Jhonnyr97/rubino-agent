@@ -45,49 +45,24 @@ module Rubino
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       }.freeze
 
-      def name
-        "attach_file"
-      end
+      tool_name   "attach_file"
+      description "Attach a previously-written file to the current turn as a downloadable artifact " \
+                  "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
+                  "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
+                  "it just registers it as a deliverable. Use for final user-facing outputs " \
+                  "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
+      risk_level :low
 
-      def description
-        "Attach a previously-written file to the current turn as a downloadable artifact " \
-          "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
-          "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
-          "it just registers it as a deliverable. Use for final user-facing outputs " \
-          "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
-      end
+      param :file_path, desc: "Path to the file to attach. Must exist and live inside the workspace."
+      param :filename,  desc: "Optional display name; defaults to the basename of file_path.", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: {
-              type: "string",
-              description: "Path to the file to attach. Must exist and live inside the workspace."
-            },
-            filename: {
-              type: "string",
-              description: "Optional display name; defaults to the basename of file_path."
-            }
-          },
-          required: %w[file_path]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        file_path = (arguments["file_path"] || arguments[:file_path]).to_s
-        return error("file_path is required") if file_path.empty?
-
+      def execute(file_path:, filename: nil)
         expanded = File.expand_path(file_path)
         return error("File not found: #{file_path}") unless File.exist?(expanded)
         return error("Not a regular file: #{file_path}") unless File.file?(expanded)
         return error("Path escapes the workspace: #{file_path}") unless within_workspace?(expanded)
 
-        display = (arguments["filename"] || arguments[:filename]).to_s
+        display = filename.to_s
         display = File.basename(expanded) if display.empty?
 
         size = File.size(expanded)

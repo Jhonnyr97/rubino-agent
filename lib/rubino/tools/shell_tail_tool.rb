@@ -17,38 +17,19 @@ module Rubino
       MAX_TIMEOUT     = 300
       POLL_INTERVAL   = 0.1
 
-      def name
-        "shell_tail"
-      end
+      tool_name   "shell_tail"
+      description "Follow a background shell — block until new stdout/stderr bytes " \
+                  "arrive on its run_id, the process exits, or `timeout` seconds " \
+                  "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
+                  "Returns the new bytes plus a status header. Use for `tail -F`-style " \
+                  "following; use shell_output for a one-shot read."
+      risk_level :low
 
-      def description
-        "Follow a background shell — block until new stdout/stderr bytes " \
-          "arrive on its run_id, the process exits, or `timeout` seconds " \
-          "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
-          "Returns the new bytes plus a status header. Use for `tail -F`-style " \
-          "following; use shell_output for a one-shot read."
-      end
+      param :run_id,  desc: "run_id from shell run_in_background:true"
+      param :timeout, type: :integer, desc: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            run_id: { type: "string", description: "run_id from shell run_in_background:true" },
-            timeout: { type: "integer",
-                       description: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})" }
-          },
-          required: %w[run_id]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        run_id  = arguments["run_id"] || arguments[:run_id]
-        timeout = (arguments["timeout"] || arguments[:timeout] || DEFAULT_TIMEOUT).to_i
-        timeout = timeout.clamp(1, MAX_TIMEOUT)
+      def execute(run_id:, timeout: DEFAULT_TIMEOUT)
+        timeout = timeout.to_i.clamp(1, MAX_TIMEOUT)
 
         return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 

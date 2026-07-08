@@ -5,52 +5,41 @@ module Rubino
     # Tool for managing a task/todo list during a session.
     # Allows the agent to track progress on complex multi-step tasks.
     class TodoTool < Base
-      def name
-        "todowrite"
-      end
+      tool_name   "todowrite"
+      description "Create and manage a structured task list for the current session. " \
+                  "Use this to track progress on complex multi-step tasks. " \
+                  "Tasks have content, status (pending/in_progress/completed/cancelled), and priority."
+      risk_level :low
 
-      def description
-        "Create and manage a structured task list for the current session. " \
-          "Use this to track progress on complex multi-step tasks. " \
-          "Tasks have content, status (pending/in_progress/completed/cancelled), and priority."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            todos: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  content: { type: "string", description: "Brief description of the task" },
-                  status: {
-                    type: "string",
-                    enum: %w[pending in_progress completed cancelled],
-                    description: "Current task status"
-                  },
-                  priority: {
-                    type: "string",
-                    enum: %w[high medium low],
-                    description: "Task priority level"
-                  }
+      params({
+        type: "object",
+        properties: {
+          todos: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                content: { type: "string", description: "Brief description of the task" },
+                status: {
+                  type: "string",
+                  enum: %w[pending in_progress completed cancelled],
+                  description: "Current task status"
                 },
-                required: %w[content status priority]
+                priority: {
+                  type: "string",
+                  enum: %w[high medium low],
+                  description: "Task priority level"
+                }
               },
-              description: "The complete updated todo list"
-            }
-          },
-          required: %w[todos]
-        }
-      end
+              required: %w[content status priority]
+            },
+            description: "The complete updated todo list"
+          }
+        },
+        required: %w[todos]
+      })
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        todos = arguments["todos"] || arguments[:todos]
+      def execute(todos:)
         return "Error: No todos provided" unless todos.is_a?(Array)
 
         format_todo_summary(todos)

@@ -31,46 +31,22 @@ module Rubino
       BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-      def name
-        "websearch"
-      end
+      tool_name   "websearch"
 
       # Gated by `tools.web` (shared with webfetch), not `tools.websearch`.
       def config_key
         "web"
       end
 
-      def description
-        "Search the web for information. Returns relevant results with titles, " \
-          "URLs, and snippets. Useful for finding documentation, researching " \
-          "dependencies, and answering questions about external topics."
-      end
+      description "Search the web for information. Returns relevant results with titles, " \
+                  "URLs, and snippets. Useful for finding documentation, researching " \
+                  "dependencies, and answering questions about external topics."
+      risk_level :low
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "The search query"
-            },
-            max_results: {
-              type: "integer",
-              description: "Maximum number of results (default: 5)"
-            }
-          },
-          required: %w[query]
-        }
-      end
+      param :query,       desc: "The search query"
+      param :max_results, type: :integer, desc: "Maximum number of results (default: 5)", required: false
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        query = arguments["query"] || arguments[:query]
-        max_results = arguments["max_results"] || arguments[:max_results] || 5
-
+      def execute(query:, max_results: 5)
         if ENV["TAVILY_API_KEY"]
           search_tavily(query, max_results)
         elsif ENV["SEARXNG_URL"]

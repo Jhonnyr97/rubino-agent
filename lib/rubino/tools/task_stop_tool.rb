@@ -7,9 +7,7 @@ module Rubino
     # Run::Executor's stop-watcher uses for top-level runs), which unwinds the
     # child loop cooperatively at its next cancel checkpoint.
     class TaskStopTool < Base
-      def name
-        "task_stop"
-      end
+      tool_name   "task_stop"
 
       def config_key
         "task"
@@ -22,31 +20,15 @@ module Rubino
       # excluded: a second stop is honestly "already stopping — nothing to stop".
       STOPPABLE = %i[running needs_approval].freeze
 
-      def description
-        "Stop a running background subagent started by `task` — including one " \
-          "parked on an approval. Cancels the " \
-          "subagent's nested run; its task_result will then report failed/cancelled."
-      end
+      description "Stop a running background subagent started by `task` — including one " \
+                  "parked on an approval. Cancels the " \
+                  "subagent's nested run; its task_result will then report failed/cancelled."
+      risk_level :medium
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            task_id: {
-              type: "string",
-              description: "The task id (sa_…) returned by `task`."
-            }
-          },
-          required: %w[task_id]
-        }
-      end
+      param :task_id, desc: "The task id (sa_…) returned by `task`."
 
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        task_id = (arguments["task_id"] || arguments[:task_id]).to_s.strip
+      def execute(task_id:)
+        task_id = task_id.to_s.strip
         return "Error: task_id is required" if task_id.empty?
 
         registry = BackgroundTasks.instance

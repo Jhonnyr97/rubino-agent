@@ -30,45 +30,26 @@ module Rubino
       # guards the post-conversion Markdown, which a converter can balloon.
       MAX_SPILL_BYTES = 20_000_000
 
-      def name
-        "read_attachment"
-      end
+      tool_name   "read_attachment"
 
       def config_key
         "read_attachment"
       end
 
-      def description
-        "Read an attached document on demand, converting it to Markdown IN-PROCESS " \
-          "(PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, plain/code) and returning the " \
-          "text framed as untrusted user data. Prefer this over shelling out to " \
-          "`markitdown`/`pdftotext`. Pass the path the attachment was staged at. A " \
-          "document too large to inline is written to a file you then page with " \
-          "`read` (offset/limit) or `grep`, instead of flooding this conversation. " \
-          "If the format has no in-process converter, you get an actionable " \
-          "shell-extraction hint instead."
-      end
+      description "Read an attached document on demand, converting it to Markdown IN-PROCESS " \
+                  "(PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, plain/code) and returning the " \
+                  "text framed as untrusted user data. Prefer this over shelling out to " \
+                  "`markitdown`/`pdftotext`. Pass the path the attachment was staged at. A " \
+                  "document too large to inline is written to a file you then page with " \
+                  "`read` (offset/limit) or `grep`, instead of flooding this conversation. " \
+                  "If the format has no in-process converter, you get an actionable " \
+                  "shell-extraction hint instead."
+      risk_level :low
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            file_path: {
-              type: "string",
-              description: "Path to the attachment to read (absolute or workspace-relative)."
-            }
-          },
-          required: %w[file_path]
-        }
-      end
+      param :file_path, desc: "Path to the attachment to read (absolute or workspace-relative)."
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        file_path = (arguments["file_path"] || arguments[:file_path]).to_s
-        return "Error: file_path is required" if file_path.empty?
+      def execute(file_path:)
+        return "Error: file_path is required" if file_path.to_s.empty?
 
         # Classify runs the fail-closed safety pipeline (lstat rejects symlink/
         # FIFO/device, size cap, magic-bytes-wins MIME). We then confine to the

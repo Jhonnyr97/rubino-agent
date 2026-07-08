@@ -110,9 +110,7 @@ module Rubino
         DIFF_COMMAND.match?(command.to_s)
       end
 
-      def name
-        "shell"
-      end
+      tool_name   "shell"
 
       def description
         base = "Execute a shell command. " \
@@ -144,6 +142,8 @@ module Rubino
         false
       end
 
+      # Dynamic schema: conditional params (disable_sandbox, compress) depend on
+      # config state at schema-build time. Keep input_schema override.
       def input_schema
         props = {
           command: {
@@ -182,16 +182,10 @@ module Rubino
         { type: "object", properties: props, required: %w[command] }
       end
 
-      def risk_level
-        :high
-      end
+      risk_level :high
 
-      def call(arguments)
-        command    = arguments["command"]           || arguments[:command]
-        cwd        = arguments["cwd"]               || arguments[:cwd]
-        background = arguments["run_in_background"] || arguments[:run_in_background] || false
-        timeout    = arguments["timeout"]           || arguments[:timeout] || DEFAULT_TIMEOUT
-        timeout    = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
+      def execute(command:, cwd: nil, run_in_background: false, timeout: DEFAULT_TIMEOUT, disable_sandbox: nil, compress: nil)
+        timeout = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
         # Escape hatch (§B): run outside the OS write-jail after explicit
         # approval. Honoured only when the operator hasn't disabled the hatch
         # (tools.sandbox.escalation != off) — otherwise the flag is refused and
@@ -199,12 +193,12 @@ module Rubino
         # told (so it doesn't keep retrying the flag) and the card is labelled
         # for the human (matching Claude Code allowUnsandboxedCommands:false).
         # Foreground only.
-        requested_escalation = truthy?(arguments["disable_sandbox"] || arguments[:disable_sandbox])
+        requested_escalation = truthy?(disable_sandbox)
         escalate             = requested_escalation && Security::Sandbox.escalation_allowed?
         escalation_refused   = requested_escalation && !escalate
 
         return "Error: command is required" if command.nil? || command.to_s.empty?
-        if escalate && background
+        if escalate && run_in_background
           return { output: "Error: disable_sandbox is not supported for background commands — " \
                            "run it in the foreground.", error_code: :denied_command }
         end
@@ -234,7 +228,7 @@ module Rubino
           return { output: "Error: #{refusal}", error_code: :denied_command }
         end
 
-        if background
+        if run_in_background
           # Background shells are detached and outlive the turn; the persistent
           # session cwd (a per-call carry-over) deliberately does NOT apply to
           # them — they run in the explicitly resolved cwd, like before (#544/#545).

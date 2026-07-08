@@ -9,42 +9,29 @@ module Rubino
     # repeated polling shows incremental progress like `tail -F`. Pass
     # `mode: "all"` for the full buffer (bounded by ShellRegistry::RING_BYTES).
     class ShellOutputTool < Base
-      def name
-        "shell_output"
-      end
+      tool_name   "shell_output"
+      description "Read output from a background shell started via `shell` with " \
+                  "run_in_background: true. By default returns only new bytes since " \
+                  "the previous read. Pass mode: 'all' for the full buffered output."
+      risk_level :low
 
-      def description
-        "Read output from a background shell started via `shell` with " \
-          "run_in_background: true. By default returns only new bytes since " \
-          "the previous read. Pass mode: 'all' for the full buffered output."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            run_id: {
-              type: "string",
-              description: "The run_id returned by `shell` when launched in background"
-            },
-            mode: {
-              type: "string",
-              enum: %w[new all],
-              description: "'new' (default) = bytes since last read; 'all' = full buffer"
-            }
+      params({
+        type: "object",
+        properties: {
+          run_id: {
+            type: "string",
+            description: "The run_id returned by `shell` when launched in background"
           },
-          required: %w[run_id]
-        }
-      end
+          mode: {
+            type: "string",
+            enum: %w[new all],
+            description: "'new' (default) = bytes since last read; 'all' = full buffer"
+          }
+        },
+        required: %w[run_id]
+      })
 
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        run_id = arguments["run_id"] || arguments[:run_id]
-        mode   = (arguments["mode"]  || arguments[:mode] || "new").to_s
-
+      def execute(run_id:, mode: "new")
         return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance

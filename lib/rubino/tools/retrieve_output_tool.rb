@@ -16,9 +16,13 @@ module Rubino
     # tool-results dir, sanitizing the id the SAME way ToolExecutor#spill_full_output
     # sanitizes the call_id, so a `../` in the id can't traverse out.
     class RetrieveOutputTool < Base
-      def name
-        "retrieve_output"
-      end
+      tool_name   "retrieve_output"
+      description "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
+                  "use ONLY when a specific hidden line is needed; the compressed view already " \
+                  "keeps the important content (errors/failures, summary, changes)."
+      risk_level :low
+
+      param :id, desc: "The id printed in a compression pointer (retrieve_output id=…)."
 
       # Gate on the SAME key the compression feature uses, so it disappears from
       # the registry whenever compression is off (the default).
@@ -26,44 +30,20 @@ module Rubino
         "tool_output_compression"
       end
 
-      def description
-        "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
-          "use ONLY when a specific hidden line is needed; the compressed view already " \
-          "keeps the important content (errors/failures, summary, changes)."
-      end
-
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            id: {
-              type: "string",
-              description: "The id printed in a compression pointer (retrieve_output id=…)."
-            }
-          },
-          required: %w[id]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        raw = arguments["id"] || arguments[:id]
-        return "Error: id is required" if raw.nil? || raw.to_s.strip.empty?
+      def execute(id: nil)
+        return "Error: id is required" if id.nil? || id.to_s.strip.empty?
 
         # Sanitize identically to ToolExecutor#spill_full_output so the id maps
         # to the same file, and a traversal attempt collapses to underscores.
-        id = raw.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
-        return "Error: id is required" if id.empty?
+        safe_id = id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")
+        return "Error: id is required" if safe_id.empty?
 
-        path = File.join(Rubino.home_path, "tool-results", "#{id}.txt")
-        return "No stored output for id=#{id} (it may have expired)." unless File.file?(path)
+        path = File.join(Rubino.home_path, "tool-results", "#{safe_id}.txt")
+        return "No stored output for id=#{safe_id} (it may have expired)." unless File.file?(path)
 
         File.read(path)
       rescue StandardError => e
-        "Error: could not retrieve output for id=#{arguments["id"] || arguments[:id]}: #{e.message}"
+        "Error: could not retrieve output for id=#{safe_id}: #{e.message}"
       end
     end
   end

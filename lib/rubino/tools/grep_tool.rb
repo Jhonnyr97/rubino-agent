@@ -5,70 +5,28 @@ module Rubino
     # Tool for searching file contents using regex patterns.
     # Backed by ripgrep (rg) if available, falls back to Ruby grep.
     class GrepTool < Base
-      def name
-        "grep"
-      end
+      tool_name   "grep"
+      description "Search file contents using regular expressions. " \
+                  "Returns matching file paths and line numbers. " \
+                  "Supports include patterns to filter by file type."
+      risk_level :low
 
-      def description
-        "Search file contents using regular expressions. " \
-          "Returns matching file paths and line numbers. " \
-          "Supports include patterns to filter by file type."
-      end
+      param :pattern,     desc: "The regex pattern to search for"
+      param :path,        desc: "Directory to search in (defaults to current directory)", required: false
+      param :include,     desc: "File pattern to include (e.g., '*.rb', '*.{ts,tsx}')", required: false
+      param :max_results, type: :integer, desc: "Maximum number of results to return (default: 50)", required: false
+      param :before,      type: :integer, desc: "Lines of leading context to include before each match (-B). Default 0.", required: false
+      param :after,       type: :integer, desc: "Lines of trailing context to include after each match (-A). Default 0.", required: false
+      param :context,     type: :integer, desc: "Symmetric context (-C): sets both before and after. Wins over before/after when given.", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            pattern: {
-              type: "string",
-              description: "The regex pattern to search for"
-            },
-            path: {
-              type: "string",
-              description: "Directory to search in (defaults to current directory)"
-            },
-            include: {
-              type: "string",
-              description: "File pattern to include (e.g., '*.rb', '*.{ts,tsx}')"
-            },
-            max_results: {
-              type: "integer",
-              description: "Maximum number of results to return (default: 50)"
-            },
-            before: {
-              type: "integer",
-              description: "Lines of leading context to include before each match (-B). Default 0."
-            },
-            after: {
-              type: "integer",
-              description: "Lines of trailing context to include after each match (-A). Default 0."
-            },
-            context: {
-              type: "integer",
-              description: "Symmetric context (-C): sets both before and after. Wins over before/after when given."
-            }
-          },
-          required: %w[pattern]
-        }
-      end
-
-      def risk_level
-        :low
-      end
-
-      def call(arguments)
-        pattern = arguments["pattern"] || arguments[:pattern]
-        path = arguments["path"] || arguments[:path] || "."
-        include_pattern = arguments["include"] || arguments[:include]
-        max_results = arguments["max_results"] || arguments[:max_results] || 50
-
+      def execute(pattern:, path: ".", include: nil, max_results: 50, before: 0, after: 0, context: nil)
         # -A/-B/-C semantics, mirroring ripgrep: `context` (-C) overrides
         # both halves; otherwise each side defaults to 0. Clamp at 50 lines
         # per side so a runaway model can't ask for 10_000 lines of context
         # per match and overrun the output budget.
-        ctx     = arguments["context"] || arguments[:context]
-        before  = (ctx || arguments["before"] || arguments[:before] || 0).to_i.clamp(0, 50)
-        after   = (ctx || arguments["after"]  || arguments[:after]  || 0).to_i.clamp(0, 50)
+        ctx     = context
+        before  = (ctx || before || 0).to_i.clamp(0, 50)
+        after   = (ctx || after  || 0).to_i.clamp(0, 50)
 
         expanded_path = expand_workspace_path(path)
         # Search is BROAD (#406): grep resolves any path like Hermes/Claude/
@@ -81,9 +39,9 @@ module Rubino
         return "Error: Path not found: #{path}" unless File.exist?(expanded_path)
 
         if ripgrep_available?
-          search_with_ripgrep(pattern, expanded_path, include_pattern, max_results, before, after)
+          search_with_ripgrep(pattern, expanded_path, include, max_results, before, after)
         else
-          search_with_ruby(pattern, expanded_path, include_pattern, max_results, before, after)
+          search_with_ruby(pattern, expanded_path, include, max_results, before, after)
         end
       end
 

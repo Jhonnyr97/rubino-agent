@@ -19,54 +19,21 @@ module Rubino
     # that require a real terminal) are out of scope: the background shell uses
     # a plain pipe, not a pseudo-terminal.
     class ShellInputTool < Base
-      def name
-        "shell_input"
-      end
+      tool_name   "shell_input"
+      description "Send input to a background shell started via `shell` with " \
+                  "run_in_background: true — answer an interactive prompt (Y/N, menu " \
+                  "selection, password) of a running command. A newline is appended by " \
+                  "default (like pressing Enter); pass enter: false for raw bytes, or " \
+                  "eof: true to close stdin (EOF). Read the prompt and the result with " \
+                  "`shell_output`."
+      risk_level :medium
 
-      def description
-        "Send input to a background shell started via `shell` with " \
-          "run_in_background: true — answer an interactive prompt (Y/N, menu " \
-          "selection, password) of a running command. A newline is appended by " \
-          "default (like pressing Enter); pass enter: false for raw bytes, or " \
-          "eof: true to close stdin (EOF). Read the prompt and the result with " \
-          "`shell_output`."
-      end
+      param :run_id, desc: "The run_id returned by `shell` when launched in background"
+      param :text,   desc: "The text to write to the process's stdin (e.g. \"y\", \"2\")", required: false
+      param :enter,  type: :boolean, desc: "Append a newline like pressing Enter (default true)", required: false
+      param :eof,    type: :boolean, desc: "Close stdin / send EOF after writing (default false)", required: false
 
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            run_id: {
-              type: "string",
-              description: "The run_id returned by `shell` when launched in background"
-            },
-            text: {
-              type: "string",
-              description: "The text to write to the process's stdin (e.g. \"y\", \"2\")"
-            },
-            enter: {
-              type: "boolean",
-              description: "Append a newline like pressing Enter (default true)"
-            },
-            eof: {
-              type: "boolean",
-              description: "Close stdin / send EOF after writing (default false)"
-            }
-          },
-          required: %w[run_id]
-        }
-      end
-
-      def risk_level
-        :medium
-      end
-
-      def call(arguments)
-        run_id = arguments["run_id"] || arguments[:run_id]
-        text   = arguments["text"]   || arguments[:text] || ""
-        enter  = arguments.fetch("enter", arguments.fetch(:enter, true))
-        eof    = arguments["eof"] || arguments[:eof] || false
-
+      def execute(run_id:, text: "", enter: true, eof: false)
         return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance
