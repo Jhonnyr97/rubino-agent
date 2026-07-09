@@ -665,6 +665,43 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
       expect(captured).to have_received(:openai_api_key=).with("client_abc")
     end
 
+    it "forces the `system` role so servers that reject `developer` (DeepSeek) work" do
+      captured = nil
+      allow(RubyLLM).to receive(:configure).and_wrap_original do |orig, &blk|
+        captured = double("rubyllm-config").as_null_object
+        blk.call(captured)
+        orig.call { |_| }
+      end
+
+      described_class.new(model_id: "auto", config: cfg)
+
+      expect(captured).to have_received(:openai_use_system_role=).with(true)
+    end
+
+    it "honors an explicit use_system_role: false opt-out" do
+      opt_out = test_configuration(
+        "model" => { "provider" => "gateway", "default" => "auto",
+                     "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "gateway" => {
+          "openai_compatible" => true,
+          "assume_model_exists" => true,
+          "api_key" => "client_abc",
+          "base_url" => "https://proxy.example.test/v1",
+          "use_system_role" => false
+        } }
+      )
+      captured = nil
+      allow(RubyLLM).to receive(:configure).and_wrap_original do |orig, &blk|
+        captured = double("rubyllm-config").as_null_object
+        blk.call(captured)
+        orig.call { |_| }
+      end
+
+      described_class.new(model_id: "auto", config: opt_out)
+
+      expect(captured).to have_received(:openai_use_system_role=).with(false)
+    end
+
     it "passes model:auto + provider:openai + assume_model_exists to RubyLLM.chat" do
       adapter = described_class.new(model_id: "auto", config: cfg)
       expect(RubyLLM).to receive(:chat).with(

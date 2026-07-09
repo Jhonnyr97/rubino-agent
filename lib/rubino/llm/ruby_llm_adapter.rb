@@ -630,6 +630,13 @@ module Rubino
         if openai_compatible_provider?
           c.openai_api_base = required_base_url!(prov_cfg)
           c.openai_api_key  = openai_compatible_api_key!(prov_cfg)
+          # Third-party OpenAI-compatible servers (DeepSeek, local gateways, …)
+          # follow the classic chat schema and expect the `system` role.
+          # ruby_llm's OpenAI provider instead defaults to emitting `developer`
+          # (an OpenAI reasoning-model-ism) for the system message, which these
+          # servers reject with "unknown variant `developer`". Force `system`
+          # unless the provider explicitly opts out via use_system_role: false.
+          c.openai_use_system_role = prov_cfg.fetch("use_system_role", true)
         elsif anthropic_compatible_provider?
           base = present_base_url(prov_cfg)
           c.anthropic_api_base = base if base
