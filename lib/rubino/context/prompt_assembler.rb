@@ -193,15 +193,25 @@ module Rubino
             repaired << msg
           elsif sanitizer.assistant_tool_call?(msg)
             ids = sanitizer.tool_call_ids(msg)
-            if ids.any? { |id| answered_ids.include?(id) }
-              # At least one result present → keep the call intact. Partial
-              # answers stay as-is (pruning would re-orphan the kept result).
+            answered = ids.select { |id| answered_ids.include?(id) }
+            if answered.length == ids.length
+              # Every declared call has a result → keep intact.
               repaired << msg
-            else
+            elsif answered.empty?
               # No results at all → strip tool_calls so we don't emit a toolUse
               # with no following toolResult. Keep the surrounding prose if any.
               stripped = strip_tool_calls(msg)
               repaired << stripped if stripped
+            else
+              # PARTIALLY answered (interrupted parallel turn: N tool_calls fired,
+              # only some results persisted before a new user turn cut in). Keep
+              # ONLY the calls whose results are present. Pruning the UNANSWERED
+              # ids cannot orphan the kept results — they are distinct ids — so
+              # this is safe, and it stops strict OpenAI-compatible providers
+              # (DeepSeek) 400ing with "insufficient tool messages following
+              # tool_calls message". Anthropic tolerated the orphan; OpenAI-strict
+              # does not.
+              repaired << prune_tool_calls(msg, answered)
             end
           else
             repaired << msg
@@ -209,6 +219,36 @@ module Rubino
         end
 
         repaired
+      end
+
+      # Returns a copy of an assistant message keeping ONLY the tool_calls whose
+      # ids are in +keep_ids+ (the answered subset). Used to repair a partially
+      # answered parallel-tool turn so every emitted tool_call has a matching
+      # result. Handles both symbol- and string-keyed metadata (loaded rows are
+      # symbolized; in-memory rows may be string-keyed), mirroring
+      # ToolPairSanitizer#tool_call_ids.
+      def prune_tool_calls(msg, keep_ids)
+        keep = keep_ids.to_set
+        metadata = msg.metadata.is_a?(Hash) ? msg.metadata.dup : {}
+        %i[tool_calls].each do |sym_key|
+          str_key = sym_key.to_s
+          key = metadata.key?(sym_key) ? sym_key : (metadata.key?(str_key) ? str_key : nil)
+          next unless key
+
+          metadata[key] = Array(metadata[key]).select { |tc| keep.include?(tc[:id] || tc["id"]) }
+        end
+
+        Session::Message.new(
+          id: msg.id,
+          session_id: msg.session_id,
+          role: msg.role,
+          content: msg.content,
+          tool_name: msg.tool_name,
+          tool_call_id: msg.tool_call_id,
+          token_count: msg.token_count,
+          metadata: metadata,
+          created_at: msg.created_at
+        )
       end
 
       # Returns a copy of an assistant message with tool_calls removed, or nil

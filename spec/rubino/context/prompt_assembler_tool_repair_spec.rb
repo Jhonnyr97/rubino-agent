@@ -73,6 +73,32 @@ RSpec.describe Rubino::Context::PromptAssembler do
     expect(result_ids(wire) - declared_ids(wire)).to be_empty
   end
 
+  it "prunes only the UNANSWERED ids from a partially answered parallel turn" do
+    # An interrupted parallel turn: the assistant fired 3 tool_calls, only the
+    # first got a result before a new user turn cut in. Strict OpenAI-compatible
+    # providers (DeepSeek) 400 unless every emitted tool_call has a result.
+    store.create(session_id: session[:id], role: "user", content: "hi")
+    store.create(
+      session_id: session[:id], role: "assistant", content: "running three",
+      metadata: { tool_calls: [
+        { id: "call_a", name: "shell", arguments: {} },
+        { id: "call_b", name: "grep",  arguments: {} },
+        { id: "call_c", name: "read",  arguments: {} }
+      ] }
+    )
+    store.create(session_id: session[:id], role: "tool", content: "out_a", tool_call_id: "call_a")
+    store.create(session_id: session[:id], role: "user", content: "continua")
+
+    wire = assembler.build
+
+    # Only the answered call survives; the two unanswered ids are pruned.
+    expect(declared_ids(wire)).to eq(%w[call_a])
+    # No emitted tool_call id lacks a matching result (the invariant DeepSeek checks).
+    expect(declared_ids(wire) - result_ids(wire)).to be_empty
+    # The assistant message (and its prose) is kept.
+    expect(wire.any? { |m| m[:role] == "assistant" && m[:content] == "running three" }).to be true
+  end
+
   # A persisted `[harness control]` nudge (the iteration-cap summary request)
   # must NOT re-enter the model context on the next turn — re-feeding the
   # synthetic "you've hit the tool-call checkpoint" user turn made the model
