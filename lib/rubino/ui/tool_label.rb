@@ -14,10 +14,12 @@ module Rubino
 
       # Picks the most-identifying [key, value] pair from a tool's arguments,
       # in priority order. Returns nil when none of the known keys carry a value.
+      # `url`/`query` cover the web tools (webfetch/websearch), so a
+      # `● webfetch https://…` row names the target instead of a bare `● webfetch`.
       def pick_hint(arguments)
         return nil unless arguments.is_a?(Hash)
 
-        %i[pattern file_path path command].each do |k|
+        %i[pattern file_path path command url query].each do |k|
           v = arguments[k] || arguments[k.to_s]
           return [k, v] if v && !v.to_s.empty?
         end

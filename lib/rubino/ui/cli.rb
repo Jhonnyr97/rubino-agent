@@ -1722,6 +1722,22 @@ module Rubino
         status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
       end
 
+      # Tools whose arguments carry a LARGE free-text payload the user wants to
+      # watch land line-by-line (a file's `content`, an edit's replacement, a
+      # patch's hunks). Only these open the live streaming-args card (#608): for
+      # them the argument stream IS the thing being authored. Every OTHER tool
+      # has short, structured args (webfetch's `url`, read's `file_path`,
+      # websearch's `query`) — streaming those as body lines only surfaced noise
+      # (a bare `text` from `format:"text"`, the two args of two same-name calls
+      # merged under one header) and split the pre-tool answer text across the
+      # call. Short-arg tools skip the streaming card entirely and render the
+      # compact `● name hint` row at execution (#tool_started) instead.
+      STREAMING_ARGS_TOOLS = %w[write edit multi_edit apply_patch].freeze
+
+      def streams_args?(name)
+        STREAMING_ARGS_TOOLS.include?(name.to_s)
+      end
+
       # The streaming tool call just started (its NAME arrived, #608). Open the
       # tool card at the START — before the arguments finish — so the user sees
       # the invocation and its params stream in, rather than a frozen footer.
@@ -1733,6 +1749,11 @@ module Rubino
         # `task` (subagent delegation) has a bespoke card (#delegation_started);
         # don't pre-open a generic `● task` that would clash with it.
         return if name == "task"
+        # Short-arg tools don't stream a live body: leaving the in-flight answer
+        # stream OPEN here (no #finalize_stream) lets a model that emits text
+        # AROUND the call ("…scrivono gli" → call → " altri.") keep it as one
+        # block, and the compact `● name hint` row lands cleanly at #tool_started.
+        return unless streams_args?(name)
 
         # Close any open answer block first (the normal #tool_started path does
         # this via #finalize_stream) so the card never opens under a live tail.
@@ -3344,7 +3365,7 @@ module Rubino
       def subagent_args_hint(arguments)
         return nil unless arguments.is_a?(Hash)
 
-        %i[file_path path pattern command].each do |k|
+        %i[file_path path pattern command url query].each do |k|
           v = arguments[k] || arguments[k.to_s]
           return Util::Output.first_line(v, 60) if v && !v.to_s.strip.empty?
         end
