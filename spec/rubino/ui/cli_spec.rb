@@ -1621,6 +1621,34 @@ RSpec.describe Rubino::UI::CLI do
       expect(status[:label]).to eq("write")
     end
 
+    # A SHORT-arg tool (webfetch) must NOT open the live streaming-args card:
+    # doing so surfaced a bare `text` (the `format:"text"` value), merged two
+    # same-name calls under one header, and split the pre-tool answer text.
+    # It should render the compact `● webfetch <url>` row at execution instead,
+    # and leave the surrounding answer text as one uninterrupted block.
+    it "does not stream args for a short-arg tool; text around it stays one block" do
+      allow(ui).to receive(:thinking_painter).and_return(->(_f) {})
+      out = capture_stdout do
+        ui.turn_started
+        ui.stream(type: :content, text: "Faccio un paio di fetch per vedere come scrivono gli")
+        ui.stream(type: :tool_preparing, text: "webfetch")
+        ui.stream(type: :tool_args, text: '{"format":"text","url":"https://a.example/doc"}')
+        ui.stream(type: :tool_preparing, text: "webfetch")
+        ui.stream(type: :tool_args, text: '{"format":"text","url":"https://b.example/doc"}')
+        ui.stream(type: :content, text: " altri.")
+        ui.tool_started("webfetch", arguments: { "url" => "https://a.example/doc", "format" => "text" })
+        ui.tool_started("webfetch", arguments: { "url" => "https://b.example/doc", "format" => "text" })
+        ui.turn_finished
+      end
+      # The bare `format` value never leaks as a body line.
+      expect(out).not_to match(/^\s*text\s*$/)
+      # The sentence is not split around the call.
+      expect(out).to include("scrivono gli altri.")
+      # Each call names its url on its own compact row.
+      expect(out).to include("● webfetch https://a.example/doc")
+      expect(out).to include("● webfetch https://b.example/doc")
+    end
+
     # #608e: the persistent `ctx ~Xk/…` gauge must climb DURING a turn, not sit
     # frozen until it ends. The REPL host installs a render lambda; the ticker
     # feeds it the live chars/4 estimate (@turn_tok_chars) and repaints the bar.

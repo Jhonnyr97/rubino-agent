@@ -17,6 +17,13 @@ RSpec.describe Rubino::UI::ToolLabel do
       expect(described_class.pick_hint({ "command" => "ls" })).to eq([:command, "ls"])
     end
 
+    it "names the web tools by their url / query so the card isn't bare" do
+      expect(described_class.pick_hint({ url: "https://example.com/doc" }))
+        .to eq([:url, "https://example.com/doc"])
+      expect(described_class.pick_hint({ query: "ruby streaming" }))
+        .to eq([:query, "ruby streaming"])
+    end
+
     it "returns nil when no identifying key carries a value" do
       expect(described_class.pick_hint({})).to be_nil
       expect(described_class.pick_hint({ file_path: "" })).to be_nil
