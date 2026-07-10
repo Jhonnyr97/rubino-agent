@@ -125,6 +125,13 @@ module Rubino
           wrapped = MCPToolWrapper.new(mcp_tool, server_name: name.to_s)
           Tools::Registry.register(wrapped)
         end
+
+        # Per-server resource tool — registered alongside the tool wrappers so
+        # per-agent mcp_servers scoping drops it by construction (same
+        # #mcp_server seam).  Skip if a real tool's prefixed name would collide.
+        resource_tool = McpResourceTool.new(client, server_name: name.to_s)
+        Tools::Registry.register(resource_tool) unless Tools::Registry.find(resource_tool.name)
+
         # A clean tools/list clears any prior failure so a recovered server
         # stops showing degraded (mirrors start_server clearing on success).
         @last_errors.delete(name.to_s)
@@ -162,11 +169,11 @@ module Rubino
 
       private
 
-      # Drops a stopped server's wrappers from the registry (keyed by the
-      # prefixed tool name, so only that server's entries match).
+      # Drops a stopped server's wrappers AND resource tool from the registry
+      # (keyed by the prefixed name, so only that server's entries match).
       def deregister_tools(server_name)
         Tools::Registry.all.each do |tool|
-          next unless tool.is_a?(MCPToolWrapper) && tool.server_name == server_name
+          next unless tool.respond_to?(:mcp_server) && tool.mcp_server == server_name
 
           Tools::Registry.unregister(tool.name)
         end

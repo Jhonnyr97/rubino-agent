@@ -65,6 +65,15 @@ RSpec.describe Rubino::Agent::Definition do
       Rubino::Tools::Registry.register(
         Rubino::MCP::MCPToolWrapper.new(fake_mcp_tool("query"), server_name: "api")
       )
+      # Per-server resource tools
+      fs_client = double("mcp_client_fs", resources: [])
+      api_client = double("mcp_client_api", resources: [])
+      Rubino::Tools::Registry.register(
+        Rubino::MCP::McpResourceTool.new(fs_client, server_name: "filesystem")
+      )
+      Rubino::Tools::Registry.register(
+        Rubino::MCP::McpResourceTool.new(api_client, server_name: "api")
+      )
     end
 
     it "exposes no MCP tools to an agent scoped to [] in config" do
@@ -76,21 +85,22 @@ RSpec.describe Rubino::Agent::Definition do
       expect(names).to include("read")
     end
 
-    it "exposes only the allowed server's tools to a scoped agent" do
+    it "exposes only the allowed server's tools and resource tool to a scoped agent" do
       stub_configuration("agents" => { "explore" => { "mcp_servers" => ["filesystem"] } })
 
       names = described_class.new(name: "explore").resolved_tools.map(&:name)
 
-      expect(names).to include("filesystem_read_file")
-      expect(names).not_to include("api_query")
+      expect(names).to include("filesystem_read_file", "filesystem_resources")
+      expect(names).not_to include("api_query", "api_resources")
     end
 
-    it "exposes every server's tools to an unscoped agent" do
+    it "exposes every server's tools and resource tools to an unscoped agent" do
       stub_configuration({})
 
       names = described_class.new(name: "build").resolved_tools.map(&:name)
 
-      expect(names).to include("filesystem_read_file", "api_query")
+      expect(names).to include("filesystem_read_file", "api_query",
+                               "filesystem_resources", "api_resources")
     end
 
     it "applies the scoping even when tools are an explicit name list" do

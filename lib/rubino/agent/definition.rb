@@ -90,14 +90,15 @@ module Rubino
 
       private
 
-      # Drops MCPToolWrapper instances whose server is not in this agent's
-      # mcp_servers allowlist (:all keeps everything). Built-in tools pass
-      # through untouched.
+      # Drops ANY tool that responds to :mcp_server (MCPToolWrapper,
+      # McpResourceTool) whose server is not in this agent's mcp_servers
+      # allowlist (:all keeps everything). Built-in tools (which don't
+      # respond to :mcp_server) pass through untouched.
       def reject_unscoped_mcp_tools(tools)
         allowed = mcp_servers
         return tools if allowed == :all
 
-        tools.reject { |t| t.is_a?(MCP::MCPToolWrapper) && !allowed.include?(t.server_name.to_s) }
+        tools.reject { |t| t.respond_to?(:mcp_server) && !allowed.include?(t.mcp_server.to_s) }
       end
     end
   end
