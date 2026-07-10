@@ -22,8 +22,8 @@ RSpec.describe Rubino::Tools::VisionTool do
   end
 
   describe "input validation" do
-    it "rejects empty file_path" do
-      expect(tool.call("file_path" => "")).to include("file_path is required")
+    it "rejects missing file_path" do
+      expect(tool.call({})).to include("missing keyword")
     end
 
     it "rejects non-existent file inside the workspace" do

@@ -322,7 +322,7 @@ tools:
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
                           # dangerous commands are still gated by security.confirm_policy
   ruby: true
-  web: true               # ON by default (keyless DuckDuckGo backend); gates BOTH the webfetch and websearch tools
+  web: true               # ON by default (keyless DuckDuckGo backend); gates BOTH the web_fetch and web_search tools
   memory: true
 ```
 
@@ -331,8 +331,8 @@ absent from config means the tool is enabled (opt-out model); only an explicit
 `false` disables it. So the keys above are the ones that ship a default — file
 tools (`read`/`write`/`edit`/`multi_edit`/`grep`/`glob`/`apply_patch`),
 `github`, and the rest are on by default and don't need a config entry. Note
-both web tools share a single gate: `tools.web` controls `webfetch` **and**
-`websearch` (there is no `tools.webfetch` / `tools.websearch`).
+both web tools share a single gate: `tools.web` controls `web_fetch` **and**
+`web_search` (there is no `tools.web_fetch` / `tools.web_search`).
 
 #### tools.sandbox (OS write-jail)
 

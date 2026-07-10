@@ -7,7 +7,13 @@ module Rubino
     # Run::Executor's stop-watcher uses for top-level runs), which unwinds the
     # child loop cooperatively at its next cancel checkpoint.
     class TaskStopTool < Base
-      tool_name   "task_stop"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+      end
+
+
+      security     ToolSecurity
+
 
       def config_key
         "task"
@@ -23,13 +29,11 @@ module Rubino
       description "Stop a running background subagent started by `task` — including one " \
                   "parked on an approval. Cancels the " \
                   "subagent's nested run; its task_result will then report failed/cancelled."
-      risk_level :medium
 
       param :task_id, desc: "The task id (sa_…) returned by `task`."
 
       def execute(task_id:)
         task_id = task_id.to_s.strip
-        return "Error: task_id is required" if task_id.empty?
 
         registry = BackgroundTasks.instance
         entry    = registry.find(task_id)

@@ -20,12 +20,11 @@ module Rubino
     # Tools::Registry#aux_dependency_satisfied?), since the model may still
     # prefer to delegate to a better-suited aux model.
     class VisionTool < Base
-      tool_name   "vision"
+
       description "Ask a multimodal model to describe or interpret an image. " \
                   "Use when you need to understand visual content (charts, screenshots, " \
                   "diagrams, photos). Provide an optional focused question to direct the " \
                   "analysis; default is a full markdown description."
-      risk_level :low
 
       param :file_path, desc: "Absolute path to an image file (.png .jpg .jpeg .webp .gif .bmp)"
       param :question,  desc: "Optional focused question. Default: 'Describe what you see in markdown.'", required: false
@@ -34,7 +33,6 @@ module Rubino
         path     = file_path.to_s
         question = question.to_s
 
-        return "Error: file_path is required" if path.empty?
 
         expanded = File.expand_path(path)
         # Vision sends the raw bytes off to the auxiliary

@@ -24,6 +24,9 @@ module Rubino
     # direct child (BackgroundTasks.owned_by?). Registered normally, NOT on any
     # strip list. Does NOT touch the human CLI probe path (executor.rb).
     class ProbeTool < Base
+
+      redaction_profile :none
+
       # How many activity_log lines the cheap snapshot renders (matches the
       # /agents drill-in's `recent:` ring).
       RECENT_MAX = 6
@@ -40,7 +43,6 @@ module Rubino
         @probe = probe
       end
 
-      tool_name   "probe"
 
       # Gated by the same `tools.task` delegation key — probing a child is
       # meaningless without the delegation substrate.
@@ -56,22 +58,12 @@ module Rubino
                   "from its current context by a one-shot model peek (this costs a billed " \
                   "round-trip and is budgeted per child; prefer the free snapshot). You can " \
                   "ONLY probe subagents you started (your direct children)."
-      risk_level :low
 
-      params({
-        type: "object",
-        properties: {
-          task_id: { type: "string", description: "The id (sa_…) of YOUR subagent to probe." },
-          question: { type: "string",
-                      description: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context." },
-          live: {
-            type: "boolean",
-            description: "false (default) = FREE instant snapshot from the registry, no model call. " \
-                         "true = billed one-shot model peek over the child's transcript (budgeted per child)."
-          }
-        },
-        required: %w[task_id question]
-      })
+      param :task_id, desc: "The id (sa_…) of YOUR subagent to probe."
+      param :question, desc: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context."
+      param :live, type: :boolean, required: false,
+            desc: "false (default) = FREE instant snapshot from the registry, no model call. " \
+                  "true = billed one-shot model peek over the child's transcript (budgeted per child)."
 
       def execute(task_id:, question:, live: false)
         caller_id = Rubino.current_subagent_id
@@ -79,7 +71,6 @@ module Rubino
         entry     = task_id.to_s.strip.empty? ? nil : registry.find(task_id.to_s.strip)
 
         return "Cannot probe #{task_id} — no such subagent." unless entry
-        return "Error: question is required" if question.to_s.strip.empty?
         unless registry.owned_by?(caller_id, task_id.to_s.strip)
           return "Error: #{task_id} is not one of your subagents — you can only probe children you started."
         end

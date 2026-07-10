@@ -76,7 +76,8 @@ module Rubino
           "custom_tool_loader" => "CustomToolLoader",
           "custom_tool_builder" => "CustomToolBuilder",
           "tool_pair_sanitizer" => "ToolPairSanitizer",
-          "degenerate_recovery" => "DegenerateResponseRecovery"
+          "degenerate_recovery" => "DegenerateResponseRecovery",
+          "tool_presentation_cli" => "ToolPresentationCLI"
         )
         # Migrations are plain SQL files, not Ruby constants
         loader.ignore(

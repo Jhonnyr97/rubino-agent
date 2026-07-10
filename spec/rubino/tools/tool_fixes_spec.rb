@@ -34,10 +34,10 @@ RSpec.describe Rubino::Tools::Registry do
     end
 
     # Regression: the config key used to be string-munged from the tool name
-    # ("webfetch"/"websearch"), so `tools.web: false` (the shipped gate) was
+    # ("web_fetch"/"web_search"), so `tools.web: false` (the shipped gate) was
     # never queried and web tools stayed enabled on a sandboxed VM. Now both
     # tools declare config_key "web" and the registry consults it.
-    context "tools.web gate (webfetch + websearch share it)" do
+    context "tools.web gate (web_fetch + web_search share it)" do
       before do
         described_class.register(Rubino::Tools::WebFetchTool.new)
         described_class.register(Rubino::Tools::WebSearchTool.new)
@@ -46,16 +46,16 @@ RSpec.describe Rubino::Tools::Registry do
       it "enables both web tools when tools.web is true" do
         Rubino.configuration.set("tools", "web", true)
         names = described_class.enabled_tools.map(&:name)
-        expect(names).to include("webfetch", "websearch")
+        expect(names).to include("web_fetch", "web_search")
       ensure
         Rubino.configuration.set("tools", "web", false)
       end
 
-      it "disables BOTH webfetch and websearch when tools.web is false" do
+      it "disables BOTH web_fetch and web_search when tools.web is false" do
         Rubino.configuration.set("tools", "web", false)
         names = described_class.enabled_tools.map(&:name)
-        expect(names).not_to include("webfetch")
-        expect(names).not_to include("websearch")
+        expect(names).not_to include("web_fetch")
+        expect(names).not_to include("web_search")
       end
     end
   end
@@ -69,7 +69,7 @@ RSpec.describe "Tools config_key resolution" do
     expect(Rubino::Tools::GlobTool.new.config_key).to eq("glob")
   end
 
-  it "maps webfetch and websearch to the shared 'web' key" do
+  it "maps web_fetch and web_search to the shared 'web' key" do
     expect(Rubino::Tools::WebFetchTool.new.config_key).to eq("web")
     expect(Rubino::Tools::WebSearchTool.new.config_key).to eq("web")
   end

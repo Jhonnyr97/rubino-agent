@@ -31,7 +31,7 @@ module Rubino
     # in the Registry — see Tools::Registry.enabled_tools. Keep this list
     # in sync with the actual tool names registered in
     # Tools::Registry.register_defaults!; the spec pins both sides.
-    READ_ONLY_TOOLS = %w[read grep glob webfetch websearch todowrite question shell_output skill].freeze
+    READ_ONLY_TOOLS = %w[read grep glob web_fetch web_search todowrite question shell_output skill].freeze
 
     DESCRIPTIONS = {
       DEFAULT => "all tools, approvals from config",

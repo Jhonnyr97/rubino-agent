@@ -6,18 +6,22 @@ module Rubino
     # group first; if the process is still alive after a 2s grace period,
     # follows up with SIGKILL.
     class ShellKillTool < Base
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+      end
+
+
+      security     ToolSecurity
+
       GRACE_SECONDS = 2
 
-      tool_name   "shell_kill"
       description "Terminate a background shell started via `shell` with run_in_background: true. " \
                   "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
                   "the process is still alive."
-      risk_level :medium
 
       param :run_id, desc: "The run_id returned by `shell` when launched in background"
 
       def execute(run_id:)
-        return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance
         entry    = registry.find(run_id)

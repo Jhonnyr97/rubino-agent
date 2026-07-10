@@ -11,62 +11,33 @@ module Rubino
     # Returns a JSON array of match hits with a highlighted snippet so the
     # model can decide whether to follow up with /v1/sessions/:id.
     class SessionSearchTool < Base
+
+
       DEFAULT_LIMIT = 20
       MAX_LIMIT     = 100
 
-      tool_name   "session_search"
       description "Full-text search across past session messages. " \
                   "Returns matched messages with highlighted snippets and the owning session id. " \
                   "Use to recall earlier conversations or look up what a tool returned previously."
-      risk_level :low
 
-      # Raw schema hash because `until` is a Ruby reserved keyword
-      params({
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "Free-text search query (FTS5 MATCH)."
-          },
-          since: {
-            type: "string",
-            description: "ISO8601 lower bound on message created_at."
-          },
-          until: {
-            type: "string",
-            description: "ISO8601 upper bound on message created_at."
-          },
-          role: {
-            type: "string",
-            enum: %w[user assistant tool],
-            description: "Restrict to a single message role."
-          },
-          tool: {
-            type: "string",
-            description: "Restrict to a specific tool_name (when role=tool)."
-          },
-          limit: {
-            type: "integer",
-            description: "Max results to return (default 20, max 100)."
-          }
-        },
-        required: %w[query]
-      })
+      params do
+        string :query, description: "Free-text search query (FTS5 MATCH)."
+        string :since, description: "ISO8601 lower bound on message created_at."
+        string :before, description: "ISO8601 upper bound on message created_at."
+        string :role, enum: %w[user assistant tool],
+               description: "Restrict to a single message role."
+        string :tool, description: "Restrict to a specific tool_name (when role=tool)."
+        integer :limit, description: "Max results to return (default 20, max 100)."
+      end
 
-      def execute(query:, since: nil, role: nil, tool: nil, limit: DEFAULT_LIMIT, **other_kwargs)
-        return "Error: query is required" if query.nil? || query.to_s.strip.empty?
-
-        # Extract `until` from the kwargs hash since it's a Ruby reserved keyword
-        until_val = other_kwargs[:until] || other_kwargs["until"]
-
-        limit = limit.to_i
+      def execute(query:, since: nil, before: nil, role: nil, tool: nil, limit: DEFAULT_LIMIT)
         limit = DEFAULT_LIMIT if limit <= 0
         limit = MAX_LIMIT if limit > MAX_LIMIT
 
         rows = store.search(
           query: query,
           since: since,
-          until_: until_val,
+          before: before,
           role: role,
           tool: tool,
           limit: limit

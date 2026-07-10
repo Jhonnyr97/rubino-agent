@@ -102,6 +102,7 @@ RSpec.describe Rubino::Tools::GrepTool do
     outside = Dir.mktmpdir("grep_secret")
     File.write(File.join(outside, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
     result = payload(tool.call("pattern" => "KEY", "path" => File.join(outside, ".env")))
+    result = Rubino::Security::Redactor.new.redact(result, profile: :code)
     expect(result).to include("API_KEY=") # match still returned, not blocked
     expect(result).not_to include("ghp_abcdefghijklmnop1234")
     expect(result).to include("ghp_ab...1234")
@@ -116,6 +117,7 @@ RSpec.describe Rubino::Tools::GrepTool do
     File.write(File.join(dir, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
     File.write(File.join(dir, "app.rb"), "API_KEY = 'used'\n")
     result = payload(tool.call("pattern" => "API_KEY", "path" => dir, "include" => "*.env"))
+    result = Rubino::Security::Redactor.new.redact(result, profile: :code)
     expect(result).to include("API_KEY=")
     expect(result).not_to include("ghp_abcdefghijklmnop1234")
   ensure

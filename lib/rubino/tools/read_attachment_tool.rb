@@ -25,12 +25,12 @@ module Rubino
     #   5. Inline-sized Markdown is wrapped in Preamble's nonce-framed untrusted
     #      envelope (converted document = untrusted user data).
     class ReadAttachmentTool < Base
+
       # Refuse to spill a CONVERTED document larger than this (≈20MB, matching
       # Gemini's cap). Attachments::Classify already caps the SOURCE size; this
       # guards the post-conversion Markdown, which a converter can balloon.
       MAX_SPILL_BYTES = 20_000_000
 
-      tool_name   "read_attachment"
 
       def config_key
         "read_attachment"
@@ -44,12 +44,10 @@ module Rubino
                   "`read` (offset/limit) or `grep`, instead of flooding this conversation. " \
                   "If the format has no in-process converter, you get an actionable " \
                   "shell-extraction hint instead."
-      risk_level :low
 
       param :file_path, desc: "Path to the attachment to read (absolute or workspace-relative)."
 
       def execute(file_path:)
-        return "Error: file_path is required" if file_path.to_s.empty?
 
         # Classify runs the fail-closed safety pipeline (lstat rejects symlink/
         # FIFO/device, size cap, magic-bytes-wins MIME). We then confine to the
@@ -75,15 +73,7 @@ module Rubino
         # NEVER raise -- a missing gem must not break the turn.
         return Attachments::Preamble.document_shell_hint(cls) if markdown.nil?
 
-        # Redact credential values from the converted content before it enters
-        # context -- parity with the read/grep/shell seams (Security::Redactor).
-        # A document is untrusted DATA, not source, so use the FULL pattern set
-        # (code_file:false, like the shell seam): `API_KEY=sk-...` assignments in
-        # a csv/spreadsheet are real secrets and must be masked. Honors the
-        # `security.redact_secrets` opt-out internally (default ON). This single
-        # seam covers both return paths (frame + spill) that emit content.
-        markdown = Security::Redactor.redact_sensitive_text(markdown, code_file: false)
-
+        markdown
         if oversized?(markdown)
           spill_oversized(cls, markdown)
         else

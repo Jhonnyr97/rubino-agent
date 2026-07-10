@@ -84,4 +84,39 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(r.error_code).to be_nil
     end
   end
+
+  # Redaction now lives ONLY at this chokepoint (removed from the tools), so the
+  # end-to-end "a secret in tool output gets masked" guarantee is verified here,
+  # driving a tool through the executor — not per-tool in isolation. The masking
+  # algorithm itself is covered by redactor_spec; each tool's declared profile
+  # by its own spec.
+  describe "redaction chokepoint" do
+    before { Rubino::Security::Redactor.reset! }
+    after  { Rubino::Security::Redactor.reset! }
+
+    it "masks a credential value in the tool's model-facing output (fail-safe default profile)" do
+      tool.payload = { output: "key=ghp_abcdefghijklmnop1234" }
+      r = executor.execute(name: "fake_tool", arguments: {}, call_id: "red1")
+      expect(r.output).not_to include("ghp_abcdefghijklmnop1234")
+      expect(r.output).to include("ghp_ab...1234")
+    end
+
+    it "leaves output untouched for a tool whose redaction_profile is :none" do
+      none_tool = Class.new do
+        attr_accessor :payload
+
+        def self.redaction_profile = :none
+        def name = "none_tool"
+        def description = ""
+        def input_schema = {}
+        def risk_level = :low
+        def risky? = false
+        def call(_args) = @payload
+      end.new
+      none_tool.payload = { output: "key=ghp_abcdefghijklmnop1234" }
+      allow(registry).to receive(:find).with("none_tool").and_return(none_tool)
+      r = executor.execute(name: "none_tool", arguments: {}, call_id: "red2")
+      expect(r.output).to include("ghp_abcdefghijklmnop1234")
+    end
+  end
 end

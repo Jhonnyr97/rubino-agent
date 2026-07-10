@@ -104,7 +104,7 @@ RSpec.describe "Shell input tool" do
     end
 
     it "errors when run_id is missing" do
-      expect(shell_input.call("text" => "x")).to include("run_id is required")
+      expect(shell_input.call("text" => "x")).to include("missing keyword")
     end
 
     it "errors when the process has already exited" do

@@ -35,62 +35,58 @@ module Rubino
           "name/description/body."
       end
 
-      def input_schema # rubocop:disable Metrics/MethodLength -- flat JSON-schema literal
-        {
-          type: "object",
-          properties: {
-            action: {
-              type: "string",
-              enum: %w[load create edit patch write_file delete],
-              description: "\"load\" (default) loads an existing skill; \"create\" writes a " \
-                           "new skill from name/description/body; \"edit\" rewrites an existing " \
-                           "skill's SKILL.md body; \"patch\" does a find-and-replace in SKILL.md " \
-                           "or a bundled file (old_str/new_str); \"write_file\" adds a supporting " \
-                           "file (references/templates/scripts/assets); \"delete\" removes an " \
-                           "authored skill entirely. Prefer edit/patch over create when an " \
-                           "existing skill already covers the territory."
-            },
-            name: {
-              type: "string",
-              description: "The skill name. For load/edit/patch/write_file: the existing skill. " \
-                           "For create: a kebab-case name (<=64 chars)."
-            },
-            file_path: {
-              type: "string",
-              description: "For load: relative path of a bundled file to read (e.g. " \
-                           "'references/api.md'). For patch: the file to patch (defaults to " \
-                           "SKILL.md). For write_file: the relative path to write under " \
-                           "references/, templates/, scripts/, or assets/."
-            },
-            description: {
-              type: "string",
-              description: "Required for create (optional for edit — kept as-is if omitted). " \
-                           "One line: what the skill is for and WHEN it applies."
-            },
-            body: {
-              type: "string",
-              description: "Required for create/edit. The markdown body: proven step-by-step " \
-                           "instructions, commands, and pitfalls. Be specific and prescriptive."
-            },
-            old_str: {
-              type: "string",
-              description: "Required for patch. The exact text to replace; must occur once."
-            },
-            new_str: {
-              type: "string",
-              description: "For patch. The replacement text (empty string deletes old_str)."
-            },
-            content: {
-              type: "string",
-              description: "Required for write_file. The full contents of the supporting file."
-            }
-          },
-          required: %w[name]
-        }
+      params do
+        string :action, enum: %w[load create edit patch write_file delete],
+                        description: "\"load\" (default) loads an existing skill; \"create\" writes a " \
+                                     "new skill from name/description/body; \"edit\" rewrites an existing " \
+                                     "skill's SKILL.md body; \"patch\" does a find-and-replace in SKILL.md " \
+                                     "or a bundled file (old_str/new_str); \"write_file\" adds a supporting " \
+                                     "file (references/templates/scripts/assets); \"delete\" removes an " \
+                                     "authored skill entirely. Prefer edit/patch over create when an " \
+                                     "existing skill already covers the territory.",
+                        required: false
+        string :name,
+               description: "The skill name. For load/edit/patch/write_file: the existing skill. " \
+                            "For create: a kebab-case name (<=64 chars)."
+        string :file_path,
+               description: "For load: relative path of a bundled file to read (e.g. " \
+                            "'references/api.md'). For patch: the file to patch (defaults to " \
+                            "SKILL.md). For write_file: the relative path to write under " \
+                            "references/, templates/, scripts/, or assets/.",
+               required: false
+        string :description,
+               description: "Required for create (optional for edit — kept as-is if omitted). " \
+                            "One line: what the skill is for and WHEN it applies.",
+               required: false
+        string :body,
+               description: "Required for create/edit. The markdown body: proven step-by-step " \
+                            "instructions, commands, and pitfalls. Be specific and prescriptive.",
+               required: false
+        string :old_str,
+               description: "Required for patch. The exact text to replace; must occur once.",
+               required: false
+        string :new_str,
+               description: "For patch. The replacement text (empty string deletes old_str).",
+               required: false
+        string :content,
+               description: "Required for write_file. The full contents of the supporting file.",
+               required: false
       end
 
-      def risk_level
-        :low
+      # Security: skill operations are low-risk (read/create metadata).
+      class SkillSecurity < Tools::ToolSecurity
+        def risk = :low
+        def risky? = false
+        def sandbox = :none
+      end
+
+      def security
+        @security ||= SkillSecurity.new
+      end
+
+      # Presentation: all defaults match ToolPresentationCLI exactly.
+      def presentation
+        @presentation ||= Tools::ToolPresentationCLI.new
       end
 
       # action: "load" (default) — three-level progressive disclosure:

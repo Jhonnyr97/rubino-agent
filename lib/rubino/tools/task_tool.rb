@@ -85,8 +85,6 @@ module Rubino
           "work yourself."
       end
 
-      tool_name   "task"
-
       # `task` is the config gate; absent from config ⇒ enabled (opt-out model),
       # same as every other tool.
       def config_key
@@ -120,31 +118,21 @@ module Rubino
           "reported as new ones. Available subagents: #{available_subagents_description}."
       end
 
-      risk_level :low
-
-      # Dynamic schema: the `subagent` enum text depends on the subagents
-      # registered at runtime, so this stays an instance-level override (the
-      # DSL's documented escape hatch) rather than a static class-level `params`.
-      def input_schema
-        {
-          type: "object",
-          properties: {
-            subagent: { type: "string",
-                        description: "Name of the subagent to delegate to (#{available_subagent_names.join(", ")})" },
-            prompt: { type: "string",
-                      description: "The full self-contained task for the subagent (the only context it receives)" },
-            background: {
-              type: "boolean",
-              description: "Run the subagent in the background (default false). " \
-                           "false = block until the subagent finishes and return its " \
-                           "result inline (use when you need the answer now — the " \
-                           "common case). true = return immediately with a task id, " \
-                           "keep working, get notified on completion (use only when you " \
-                           "have other work to do meanwhile)."
-            }
-          },
-          required: %w[subagent prompt]
-        }
+      # The concrete list of subagents is runtime state, so it lives in the tool
+      # `description` (which is already an instance-level override) rather than in
+      # this static param schema.
+      params do
+        string :subagent,
+               description: "Name of the subagent to delegate to (see the tool description for the current list)."
+        string :prompt,
+               description: "The full self-contained task for the subagent (the only context it receives)"
+        boolean :background, required: false,
+                             description: "Run the subagent in the background (default false). " \
+                                          "false = block until the subagent finishes and return its " \
+                                          "result inline (use when you need the answer now — the " \
+                                          "common case). true = return immediately with a task id, " \
+                                          "keep working, get notified on completion (use only when you " \
+                                          "have other work to do meanwhile)."
       end
 
       # Optional injection point for tests — a callable taking the resolved
@@ -156,9 +144,6 @@ module Rubino
       def execute(subagent:, prompt:, background: false)
         subagent = subagent.to_s.strip
         prompt   = prompt.to_s
-
-        return "Error: subagent is required" if subagent.empty?
-        return "Error: prompt is required"   if prompt.strip.empty?
 
         definition = registry.find(subagent)
         unless definition&.subagent?

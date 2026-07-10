@@ -30,8 +30,8 @@ RSpec.describe Rubino::Tools::ShellTool do
       expect(result[:compress_hint]).to eq(stream_kind: :plain)
     end
 
-    it "advertises no `compress` param when the feature is off" do
-      expect(tool.input_schema[:properties]).not_to have_key(:compress)
+    it "still advertises the `compress` param (static schema; #execute no-ops it when off)" do
+      expect(tool.input_schema[:properties]).to have_key(:compress)
     end
   end
 

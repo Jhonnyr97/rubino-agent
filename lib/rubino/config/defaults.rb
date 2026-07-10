@@ -789,6 +789,13 @@ module Rubino
           # the shell runs as the same OS user; this is defense-in-depth.
           "redact_secrets" => true,
 
+          # Pluggable redaction: bring your own redactor class and/or
+          # additive custom regex patterns (in addition to the built-in set).
+          "redaction" => {
+            # "class" => "MyApp::PrivacyRedactor",  # optional custom redactor
+            # "custom_patterns" => []                # additional regex patterns
+          },
+
           "website_blocklist" => {
             "enabled" => false,
             "domains" => [],

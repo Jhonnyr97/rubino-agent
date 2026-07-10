@@ -1707,7 +1707,7 @@ module Rubino
           tool_params_flush
           return delegation_started(arguments, call_id) if name == "task"
 
-          status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
+          status_show(tool_status_label(name), phase: :tool, hint: status_hint(arguments)) if @turn_active
           return
         end
 
@@ -1719,7 +1719,7 @@ module Rubino
         # The committed `● name` open row is in scrollback; SWITCH the status-row
         # label to the tool (P3) instead of leaving the live region dead while
         # the tool runs. The engine thread stays the same — label swap only.
-        status_show(name, phase: :tool, hint: status_hint(arguments)) if @turn_active
+        status_show(tool_status_label(name), phase: :tool, hint: status_hint(arguments)) if @turn_active
       end
 
       # Tools whose arguments carry a LARGE free-text payload the user wants to
@@ -1732,10 +1732,20 @@ module Rubino
       # merged under one header) and split the pre-tool answer text across the
       # call. Short-arg tools skip the streaming card entirely and render the
       # compact `● name hint` row at execution (#tool_started) instead.
-      STREAMING_ARGS_TOOLS = %w[write edit multi_edit apply_patch].freeze
-
       def streams_args?(name)
-        STREAMING_ARGS_TOOLS.include?(name.to_s)
+        tool = Tools::Registry.find(name.to_s)
+        tool&.presentation&.stream_params?
+      rescue StandardError
+        false
+      end
+
+      # The status-bar label for a tool. Reads the tool's ToolPresentationCLI
+      # override (status_label), falling back to the bare tool name.
+      def tool_status_label(name)
+        tool = Tools::Registry.find(name.to_s)
+        tool&.presentation&.status_label || name.to_s
+      rescue StandardError
+        name.to_s
       end
 
       # The streaming tool call just started (its NAME arrived, #608). Open the
@@ -1769,7 +1779,7 @@ module Rubino
         # needs the facet visible. Mirrors the SAME facet+tool_chunk pairing the
         # tool-EXECUTION phase (#tool_started) already uses, so the params scroll
         # above an animated `tool · Ns · ~N tok` footer instead of nothing.
-        status_show(name, phase: :tool) if @turn_active
+        status_show(tool_status_label(name), phase: :tool) if @turn_active
       end
 
       # An argument fragment of the in-flight call: decode the JSON arg VALUES and

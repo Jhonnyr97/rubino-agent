@@ -277,6 +277,17 @@ module Rubino
           compress_hint = nil
           label = nil
         end
+        # ── Redaction chokepoint (centralised here so no tool can leak secrets) ──
+        # The resolved redactor instance reads the tool's redaction_profile and
+        # scrubs both the model-facing `text` and the human-facing `body` before
+        # they enter context, the compressor, or the UI. Shell streaming (below)
+        # uses the same instance for live line-by-line redaction.
+        redactor = Security::Redactor.resolve
+        profile  = tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell
+        # Body redaction runs early (never compressed — human-facing only).
+        if body && profile != :none
+          body = redactor.redact(body, profile: profile)
+        end
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
         # Util::Output.preview of the captured stdout), so rendering it again
@@ -290,6 +301,12 @@ module Rubino
         text, metrics = maybe_compress(text, metrics: metrics, name: name,
                                              arguments: arguments, compress_hint: compress_hint,
                                              call_id: call_id)
+        # Model-facing text redaction runs AFTER compression so a skeleton built
+        # from raw_source (unredacted) doesn't reintroduce secrets the original
+        # text path would mask. The common compression-OFF path is a single pass.
+        if text && profile != :none
+          text = redactor.redact(text, profile: profile)
+        end
         result = Tools::Result.success(
           name: name,
           call_id: call_id,

@@ -12,6 +12,8 @@ module Rubino
     # the action/target mapping and translates Store exceptions into
     # tool-protocol error strings.
     class MemoryTool < Base
+
+
       VALID_ACTIONS = %w[add replace remove].freeze
       VALID_TARGETS = %w[memory user project].freeze
 
@@ -27,7 +29,6 @@ module Rubino
         @backend = backend
       end
 
-      tool_name   "memory"
       description "Persist facts across sessions. Use action=add to record a new fact, " \
                   "replace to update an existing fact (substring match on old_text), " \
                   "or remove to delete one. target=user writes to the user profile; " \
@@ -37,33 +38,13 @@ module Rubino
                   "facts so each can be superseded or forgotten independently. " \
                   "Content is scanned for prompt-injection / exfiltration patterns and " \
                   "subject to a character budget — refusals are reported in the output."
-      risk_level :low
 
-      # Enum params require a raw JSON schema hash
-      params({
-        type: "object",
-        properties: {
-          action: {
-            type: "string", enum: VALID_ACTIONS,
-            description: "add, replace, or remove"
-          },
-          target: {
-            type: "string", enum: VALID_TARGETS,
-            description: "memory (general), user (user profile), or " \
-                         "project (durable project/codebase fact)"
-          },
-          content: {
-            type: "string",
-            description: "New content (required for add and replace)"
-          },
-          old_text: {
-            type: "string",
-            description: "Substring of existing memory to match " \
-                         "(required for replace and remove)"
-          }
-        },
-        required: %w[action target]
-      })
+      params do
+        string :action, enum: VALID_ACTIONS, description: "add, replace, or remove"
+        string :target, enum: VALID_TARGETS, description: "memory (general), user (user profile), or project (durable project/codebase fact)"
+        string :content, description: "New content (required for add and replace)"
+        string :old_text, description: "Substring of existing memory to match (required for replace and remove)"
+      end
 
       def execute(action:, target:, content: nil, old_text: nil)
         return error("invalid action '#{action}'; expected one of #{VALID_ACTIONS.join(", ")}") \

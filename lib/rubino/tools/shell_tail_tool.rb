@@ -13,17 +13,16 @@ module Rubino
     # later; for v1, 100ms polling under the agent's tool-call latency is
     # invisible.
     class ShellTailTool < Base
+
       DEFAULT_TIMEOUT = 30
       MAX_TIMEOUT     = 300
       POLL_INTERVAL   = 0.1
 
-      tool_name   "shell_tail"
       description "Follow a background shell — block until new stdout/stderr bytes " \
                   "arrive on its run_id, the process exits, or `timeout` seconds " \
                   "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
                   "Returns the new bytes plus a status header. Use for `tail -F`-style " \
                   "following; use shell_output for a one-shot read."
-      risk_level :low
 
       param :run_id,  desc: "run_id from shell run_in_background:true"
       param :timeout, type: :integer, desc: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})", required: false
@@ -31,7 +30,6 @@ module Rubino
       def execute(run_id:, timeout: DEFAULT_TIMEOUT)
         timeout = timeout.to_i.clamp(1, MAX_TIMEOUT)
 
-        return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance
         entry    = registry.find(run_id)
@@ -60,9 +58,6 @@ module Rubino
           sleep POLL_INTERVAL
         end
 
-        # Redact credential values from the tailed output — same seam as
-        # shell_output (Hermes terminal_tool redacts all command output).
-        body      = Security::Redactor.redact_sensitive_text(body)
         status    = registry.status(entry)
         exit_code = registry.exit_code(entry)
         # Retire (don't drop) a finished shell so its captured output stays

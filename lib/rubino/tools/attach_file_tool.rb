@@ -45,13 +45,12 @@ module Rubino
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       }.freeze
 
-      tool_name   "attach_file"
+      redaction_profile :none
       description "Attach a previously-written file to the current turn as a downloadable artifact " \
                   "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
                   "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
                   "it just registers it as a deliverable. Use for final user-facing outputs " \
                   "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
-      risk_level :low
 
       param :file_path, desc: "Path to the file to attach. Must exist and live inside the workspace."
       param :filename,  desc: "Optional display name; defaults to the basename of file_path.", required: false
