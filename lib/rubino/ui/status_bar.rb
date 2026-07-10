@@ -11,7 +11,7 @@ module Rubino
     #
     # Content: the session MODE leads (the prompt chip moved here in the
     # Rail-rubino redesign — the prompt is a constant "▍❯ "), then the
-    # optional branch / active-skill tokens, the resolved model id and the
+    # optional active-skill token, the resolved model id and the
     # context saturation — the SAME estimate the compaction logic runs on
     # (Context::TokenBudget: chars/4 over the session messages, window from
     # `model.context_length` / `context.max_tokens` with the TokenBudget
@@ -38,8 +38,8 @@ module Rubino
 
       # The styled status line. +chips+ carries the leading session-context
       # tokens — :mode (the mode token shown FIRST; plan/yolo carry their
-      # accent), :branch (the short id after a `/branch` fork) and :skill
-      # (the active skill, rendered "skill <name>") — each omitted when
+      # accent) and :skill (the active skill, rendered "skill <name>") —
+      # each omitted when
       # nil/absent, so callers without that context get the bare
       # model-and-ctx bar. +tokens+ is the estimated tokens in the
       # conversation; +window+ the model's context window (nil/0 ⇒ unknown,
@@ -68,7 +68,7 @@ module Rubino
         " #{segments.join(pastel.dim(" · "))}"
       end
 
-      # The leading session-context segments, in fixed order: mode, branch,
+      # The leading session-context segments, in fixed order: mode, agent,
       # skill (each omitted when absent). The mode token is dim for default
       # and carries a subtle color accent when the mode carries risk — plan
       # yellow, yolo red (the same red as the input rail's brand accent).
@@ -77,10 +77,10 @@ module Rubino
         segments << mode_segment(chips[:mode], pastel) if chips[:mode]
         # The active primary agent (#320), shown "agent <name>" right after the
         # mode so the user can see which persona the next turn runs under. Like
-        # branch/skill, the caller omits it when it's the default (build), so a
+        # skill, the caller omits it when it's the default (build), so a
         # plain session keeps the bare bar.
         segments << pastel.cyan("agent #{chips[:agent]}") if chips[:agent]
-        segments << pastel.dim("branch:#{chips[:branch]}") if chips[:branch]
+
         segments << pastel.dim("skill #{chips[:skill]}") if chips[:skill]
         segments
       end

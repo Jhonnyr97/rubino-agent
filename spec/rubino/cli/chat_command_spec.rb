@@ -107,13 +107,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
       Rubino::ActiveSkill.reset!
     end
 
-    it "shows the branch token after a /branch fork" do
-      cmd.instance_variable_set(:@branch_short_id, "ab12cd")
-      stub_store_with([{ content: "hi" }])
-      line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
-      expect(line).to start_with(" default · branch:ab12cd · ")
-    end
-
     it "uses the chars/4 estimate, IGNORING the provider's recorded input_tokens" do
       # The footer must read the SAME measure compaction does (estimate_tokens),
       # NOT the provider-reported input_tokens — otherwise the gauge and the
@@ -1801,7 +1794,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     end
 
     it "uses the launcher command from RUBINO_INVOKED_AS so a dev launcher resumes itself" do
-      prev = ENV["RUBINO_INVOKED_AS"]
+      prev = ENV.fetch("RUBINO_INVOKED_AS", nil)
       ENV["RUBINO_INVOKED_AS"] = "rubino-dev"
       cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: "audit work" })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }

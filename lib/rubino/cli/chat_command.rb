@@ -1167,9 +1167,7 @@ module Rubino
                 if result[:resume_session_id]
                   # /sessions <id|title>: rebuild the runner on the chosen
                   # session in place and replay its history, then go back to the
-                  # prompt — no process restart needed. Leaving a branch (e.g.
-                  # back to the parent) drops the branch token from the status bar.
-                  @branch_short_id = nil
+                  # prompt — no process restart needed.
                   runner = swap_runner!(resume_runner(ui, result[:resume_session_id]), ui)
                   next
                 end
@@ -1188,7 +1186,6 @@ module Rubino
                   # memory flush is enqueued detached instead of blocking the
                   # prompt 2-3s on its aux-LLM extract (the new runner's worker
                   # drains it).
-                  @branch_short_id = nil
                   old_session = runner.session
                   runner.end_session!(handoff: true)
                   # Tell the user how to return to the session they're leaving,
@@ -2123,7 +2120,6 @@ module Rubino
       def render_status_bar(session, budget, tokens)
         UI::StatusBar.render(
           chips: { mode: Rubino::Modes.current, agent: status_agent_chip,
-                   branch: @branch_short_id,
                    skill: Rubino::ActiveSkill.current },
           model: session[:model] || model_name,
           tokens: tokens,
@@ -2134,7 +2130,7 @@ module Rubino
 
       # The status-bar agent chip (#320): the active primary agent name, but
       # only when it differs from the registry default (build) — like the
-      # branch/skill chips, a plain session keeps the bare bar. nil ⇒ no chip.
+      # skill chip, a plain session keeps the bare bar. nil ⇒ no chip.
       def status_agent_chip
         current = Rubino::ActiveAgent.current
         default = Rubino.agent_registry.default&.name
@@ -2497,7 +2493,6 @@ module Rubino
           included_probe: included_probe
         )
 
-        @branch_short_id = child[:id][0..3]
         @last_probe = nil
         resume_runner(ui, child[:id])
       end
@@ -2554,7 +2549,7 @@ module Rubino
         # suppress the generic "Resuming session: <id>…" plumbing line the runner
         # would otherwise emit on the fork switch (#220).
         new_runner = build_runner(session_id: child[:id], ui: ui, announce_session: false)
-        @branch_short_id = child[:id][0..3]
+
         ui.note("rewound to message #{ordinal} — editing")
         composer.set_status(build_status_line(new_runner))
         composer.prefill(messages[index].content)
