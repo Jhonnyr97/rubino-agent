@@ -101,6 +101,9 @@ module Rubino
         # Free snapshot probes (live:false) never touch this. Per-process, dies
         # with the registry like the rest of the live-progress state.
         :probe_count,
+        # Path to the per-subagent JSONL log file (post-mortem forensics).
+        # Survives process death so the user can inspect what happened.
+        :log_path,
         keyword_init: true
       ) do
         # The child subagent's FULL persisted transcript. A background child runs
