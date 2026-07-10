@@ -126,11 +126,21 @@ module Rubino
           Tools::Registry.register(wrapped)
         end
 
-        # Per-server resource tool — registered alongside the tool wrappers so
-        # per-agent mcp_servers scoping drops it by construction (same
-        # #mcp_server seam).  Skip if a real tool's prefixed name would collide.
-        resource_tool = McpResourceTool.new(client, server_name: name.to_s)
-        Tools::Registry.register(resource_tool) unless Tools::Registry.find(resource_tool.name)
+        # Per-server resource tool — registered only when the server advertises
+        # the resources capability, alongside the tool wrappers so per-agent
+        # mcp_servers scoping drops it by construction (same #mcp_server seam).
+        # Skip if a real tool's prefixed name would collide.
+        if client.capabilities.resources_list?
+          resource_tool = McpResourceTool.new(client, server_name: name.to_s)
+          Tools::Registry.register(resource_tool) unless Tools::Registry.find(resource_tool.name)
+        end
+
+        # Per-server prompt tool — same pattern as the resource tool, gated on
+        # the prompts capability advertised at initialize.
+        if client.capabilities.prompt_list?
+          prompt_tool = McpPromptTool.new(client, server_name: name.to_s)
+          Tools::Registry.register(prompt_tool) unless Tools::Registry.find(prompt_tool.name)
+        end
 
         # A clean tools/list clears any prior failure so a recovered server
         # stops showing degraded (mirrors start_server clearing on success).
