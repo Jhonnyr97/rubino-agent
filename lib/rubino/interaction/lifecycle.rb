@@ -30,7 +30,7 @@ module Rubino
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
                      max_tool_iterations: nil, polishing: nil, interactive: false,
-                     system_prompt_override: nil)
+                     system_prompt_override: nil, message_store: nil)
         @session = session
         @event_bus = event_bus
         @ui = ui
@@ -53,7 +53,7 @@ module Rubino
         # nil ⇒ use the configured agent_max_tool_iterations (#141).
         @max_tool_iterations = max_tool_iterations
         @session_repo = Session::Repository.new
-        @message_store = Session::Store.new
+        @message_store = message_store || Session::Store.new
         # Byte-identical system prompt for the background review fork (nil on
         # every normal turn). Threaded into PromptAssembler by #build_messages.
         @system_prompt_override = system_prompt_override

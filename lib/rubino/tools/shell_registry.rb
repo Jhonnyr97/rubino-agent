@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "securerandom"
+require "fileutils"
 require "open3"
 require "pty"
 require "shellwords"
@@ -16,6 +17,11 @@ module Rubino
     # NOT persisted to disk. Background shells die with the agent process.
     class ShellRegistry
       RING_BYTES = 256 * 1024 # cap per run; older bytes are dropped
+
+      # Cap on bytes read from the log file in a single `read_all` call
+      # (the full file is always on disk for user tailing; this bounds in-memory
+      # reads so a days-long server log doesn't OOM the process).
+      LOG_READ_MAX_BYTES = 50 * 1024 * 1024 # 50 MB
 
       # A backgrounded command that FINISHES before the next turn used to be
       # dropped from the registry the moment a reader (shell_output/tail/kill)
@@ -55,6 +61,10 @@ module Rubino
         # subagent cascade-kill its child shells — mirrors Hermes' process_registry
         # task_id + kill_all(task_id).
         :owner_subagent_id,
+        # File-based log (persists beyond process, tail-able by the user).
+        # log_file is the WRITER handle (owned by the reader thread); readers
+        # open their own handles so file positions never conflict.
+        :log_path, :log_file, :file_read_offset,
         keyword_init: true
       )
 
@@ -124,8 +134,14 @@ module Rubino
         # pipe (default, non-interactive) vs PTY (interactive — real terminal).
         reader_io, stdin_io, pid = pty ? spawn_pty(command, cwd) : spawn_pipe(command, cwd)
 
+        # Per-run log file so the user can tail -f it from another terminal
+        # (like Claude Code's task logs). The reader thread tees every chunk
+        # here; readers open their own handles.
+        entry_id = new_id
+        log_path, log_file = open_log_file(entry_id)
+
         entry = Entry.new(
-          id: new_id,
+          id: entry_id,
           command: command,
           cwd: cwd,
           pid: pid,
@@ -139,7 +155,10 @@ module Rubino
           sink: sink,
           owner_subagent_id: owner,
           notified: false,
-          pty: pty
+          pty: pty,
+          log_path: log_path,
+          log_file: log_file,
+          file_read_offset: 0
         )
         entry.reader_thr = Thread.new { drain_into(entry, reader_io) }
 
@@ -225,7 +244,10 @@ module Rubino
           refresh_pgid_snapshot
           e
         end
-        close_stdin(entry) if entry
+        if entry
+          close_stdin(entry)
+          close_log_file(entry)
+        end
         entry
       end
 
@@ -288,18 +310,43 @@ module Rubino
         # already closed / child gone — nothing to flush
       end
 
-      # Reads accumulated bytes since the last `read_new` call. Returns the
-      # full snapshot if `since` is nil. Thread-safe.
+      # Reads accumulated bytes since the last `read_new` call from the ON-DISK
+      # log file (not the ring buffer). Thread-safe: the mutex guards the offset
+      # update so concurrent readers don't skip bytes.
       def read_new(entry)
         entry.mutex.synchronize do
-          snapshot = entry.buffer.byteslice(entry.read_offset..) || ""
-          entry.read_offset = entry.buffer.bytesize
-          snapshot
+          path = entry.log_path
+          return "" unless path && File.exist?(path)
+
+          File.open(path) do |f|
+            f.seek(0, IO::SEEK_END)
+            total = f.pos
+            return "" if entry.file_read_offset >= total
+
+            f.seek(entry.file_read_offset)
+            data = f.read(total - entry.file_read_offset)
+            entry.file_read_offset = total
+            data
+          end
         end
       end
 
+      # Reads the FULL on-disk log file, capped at LOG_READ_MAX_BYTES so a
+      # days-long server log doesn't OOM the process. The full file is always
+      # on disk for the user to tail.
       def read_all(entry)
-        entry.mutex.synchronize { entry.buffer.dup }
+        path = entry.log_path
+        return "" unless path && File.exist?(path)
+
+        size = File.size(path)
+        if size <= LOG_READ_MAX_BYTES
+          File.read(path)
+        else
+          File.open(path) do |f|
+            f.seek(size - LOG_READ_MAX_BYTES)
+            f.read
+          end
+        end
       end
 
       # THE single liveness oracle for a background shell — "is the work this
@@ -437,6 +484,8 @@ module Rubino
         (stale + overflow).each do |e|
           @entries.delete(e.id)
           close_stdin(e)
+          close_log_file(e)
+          delete_log_file(e)
         end
         refresh_pgid_snapshot
       end
@@ -451,8 +500,54 @@ module Rubino
         "bg_#{SecureRandom.hex(4)}"
       end
 
-      # Single-reader pattern: only this thread writes to entry.buffer, the
-      # mutex protects only against concurrent reads from shell_output_tool.
+      # ── File-based log helpers ──────────────────────────────────────────
+
+      def logs_base_dir
+        # Log files live under the workspace so the OS write-jail allows them
+        # (~/.rubino is protected — same reason shell can't rm skills there).
+        # The user can tail -f them from another terminal.
+        root = Rubino::Workspace.primary_root
+        File.join(root, ".rubino", "logs", "bg")
+      rescue StandardError
+        File.expand_path("~/.rubino/logs/bg")
+      end
+
+      # Opens a per-run log file for writing. Returns [path, io].
+      def open_log_file(entry_id)
+        dir = logs_base_dir
+        FileUtils.mkdir_p(dir)
+        path = File.join(dir, "#{entry_id}.log")
+        file = File.open(path, "w") # rubocop:disable Style/FileOpen -- sync-flushed for crash safety
+        file.sync = true
+        [path, file]
+      rescue StandardError => e
+        # Best-effort: a missing log file must never block a shell spawn.
+        Rubino.logger&.warn(msg: "Failed to open bg-shell log file: #{e.message}")
+        [nil, nil]
+      end
+
+      # Idempotent close of the writer handle.
+      def close_log_file(entry)
+        file = entry&.log_file
+        return if file.nil? || file.closed?
+
+        file.close
+      rescue IOError, Errno::EBADF
+        nil
+      end
+
+      # Deletes the log file from disk (called on prune / retire).
+      def delete_log_file(entry)
+        path = entry&.log_path
+        return unless path && File.exist?(path)
+
+        File.delete(path)
+      rescue StandardError
+        nil
+      end
+
+      # Single-reader pattern: only this thread writes to entry.buffer AND the
+      # log file. The mutex protects against concurrent reads from shell_output_tool.
       def drain_into(entry, rd)
         rd.each_line do |chunk|
           # Scrub to valid UTF-8 AT THE CAPTURE SEAM, mirroring the FOREGROUND
@@ -475,6 +570,8 @@ module Rubino
               # only fresh bytes, not whatever survived the trim.
               entry.read_offset = [entry.read_offset - overflow, 0].max
             end
+            # Tee to the on-disk log file (user can tail -f it).
+            entry.log_file.write(chunk) if entry.log_file && !entry.log_file.closed?
           end
         end
       rescue IOError, Errno::EBADF, Errno::EIO
@@ -483,6 +580,8 @@ module Rubino
         # "reader done", same completion path below.
       ensure
         rd.close unless rd.closed?
+        # Close the writer handle so the file is complete on disk.
+        close_log_file(entry)
         # The reader thread ends exactly when the pipe closes = the process
         # exited (normal, crash, or shell_kill). Push a completion notice to the
         # parent so a finished background SHELL auto-wakes the model the same way

@@ -127,7 +127,9 @@ module Rubino
                "Foreground: blocks until the command exits or `timeout` seconds elapse " \
                "(default #{DEFAULT_TIMEOUT}s, max #{MAX_TIMEOUT}s). " \
                "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
-               "returns a run_id. Use the `shell_output` tool to read its stdout/stderr, " \
+               "returns a run_id AND a log file path on disk where all stdout/stderr is " \
+               "captured (the file persists even if the process crashes). " \
+               "Use the `shell_output` tool to read its stdout/stderr, " \
                "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
                "and `shell_kill` to terminate it. " \
                "For a LONG-LIVED process (a dev/web server, a watcher) ALWAYS use " \
@@ -416,7 +418,9 @@ module Rubino
 
       def spawn_background(command, cwd)
         entry = ShellRegistry.instance.spawn(command: command, cwd: cwd)
-        "Started background shell #{entry.id} (pid #{entry.pid})\n  " \
+        log_line = entry.log_path ? "  Log:     #{entry.log_path}\n" : ""
+        "Started background shell #{entry.id} (pid #{entry.pid})\n" \
+          "#{log_line}  " \
           "command: #{command}\n  " \
           "cwd:     #{cwd}\n" \
           "Read output:  shell_output run_id=#{entry.id}\n" \
