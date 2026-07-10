@@ -191,7 +191,7 @@ module Rubino
         # The registry wrappers a server contributed (prefixed tools).
         def mcp_tools_for(server_name)
           Tools::Registry.all.select do |tool|
-            tool.is_a?(Rubino::MCP::MCPToolWrapper) && tool.server_name == server_name
+            tool.respond_to?(:mcp_server) && tool.mcp_server == server_name
           end
         end
 

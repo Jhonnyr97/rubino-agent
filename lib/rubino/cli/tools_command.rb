@@ -26,8 +26,10 @@ module Rubino
         # websearch stay live, and the dead `browser` key is gone.
         # MCP wrappers are excluded here: they are dynamic (no `tools.<key>`
         # config gate) and get their own section below instead of fake rows
-        # in the config-group table.
-        builtins = Tools::Registry.all.grep_v(MCP::MCPToolWrapper)
+        # in the config-group table. Detection is driven off the #mcp?
+        # predicate so utility tools (McpResourceTool, McpPromptTool) are
+        # included too, NEVER off the class name.
+        builtins = Tools::Registry.all.reject { |t| t.respond_to?(:mcp?) && t.mcp? }
         config_keys = builtins.map(&:config_key).uniq
         rows = config_keys.sort.map do |key|
           value   = config.dig("tools", key)
@@ -68,11 +70,11 @@ module Rubino
         ui.info("MCP Tools (experimental):")
         MCP.boot!
 
-        mcp_tools = Tools::Registry.all.grep(MCP::MCPToolWrapper)
+        mcp_tools = Tools::Registry.all.select { |t| t.respond_to?(:mcp?) && t.mcp? }
         if mcp_tools.empty?
           ui.warning("mcp.servers configured, but no MCP tools loaded")
         else
-          rows = mcp_tools.map { |t| [t.name, t.server_name] }.sort
+          rows = mcp_tools.map { |t| [t.display_name, t.mcp_server] }.sort
           ui.table(headers: %w[Tool Server], rows: rows)
         end
       end

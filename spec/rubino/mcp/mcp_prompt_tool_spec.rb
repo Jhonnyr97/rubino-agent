@@ -37,6 +37,18 @@ RSpec.describe Rubino::MCP::McpPromptTool do
     expect(tool.mcp_server).to eq("filesystem")
   end
 
+  it "responds to #mcp? with true" do
+    expect(tool.mcp?).to be(true)
+  end
+
+  it "returns 'prompts' as bare_name" do
+    expect(tool.bare_name).to eq("prompts")
+  end
+
+  it "formats display_name as 'prompts (mcp:<server>)'" do
+    expect(tool.display_name).to eq("prompts (mcp:filesystem)")
+  end
+
   it "exposes its server via #server_name" do
     expect(tool.server_name).to eq("filesystem")
   end

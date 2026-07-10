@@ -36,6 +36,18 @@ RSpec.describe Rubino::MCP::McpResourceTool do
     expect(tool.mcp_server).to eq("filesystem")
   end
 
+  it "responds to #mcp? with true" do
+    expect(tool.mcp?).to be(true)
+  end
+
+  it "returns 'resources' as bare_name" do
+    expect(tool.bare_name).to eq("resources")
+  end
+
+  it "formats display_name as 'resources (mcp:<server>)'" do
+    expect(tool.display_name).to eq("resources (mcp:filesystem)")
+  end
+
   it "exposes its server via #server_name" do
     expect(tool.server_name).to eq("filesystem")
   end
