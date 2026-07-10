@@ -29,7 +29,7 @@ RSpec.describe Rubino::MCP::Manager do
   end
 
   describe "#start_all!" do
-    it "starts a client per configured server and registers prefixed tools" do
+    it "starts a client per configured server and registers prefixed tools + resource tools" do
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
         opts[:name] == "filesystem" ? fake_client(%w[read_file write_file]) : fake_client(%w[query])
       end
@@ -40,6 +40,9 @@ RSpec.describe Rubino::MCP::Manager do
       expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_a(Rubino::MCP::MCPToolWrapper)
       expect(Rubino::Tools::Registry.find("filesystem_write_file")).to be_a(Rubino::MCP::MCPToolWrapper)
       expect(Rubino::Tools::Registry.find("api_query")).to be_a(Rubino::MCP::MCPToolWrapper)
+      # Per-server resource tools
+      expect(Rubino::Tools::Registry.find("filesystem_resources")).to be_a(Rubino::MCP::McpResourceTool)
+      expect(Rubino::Tools::Registry.find("api_resources")).to be_a(Rubino::MCP::McpResourceTool)
     end
 
     it "passes the stdio command/args through to the client options" do
@@ -194,7 +197,7 @@ RSpec.describe Rubino::MCP::Manager do
       manager.start_all!
     end
 
-    it "stops the client, deregisters only ITS tools and emits :mcp_server_stopped" do
+    it "stops the client, deregisters only ITS tools and resource tool, emits :mcp_server_stopped" do
       start_both
       client = manager.clients["filesystem"]
       allow(Rubino.event_bus).to receive(:emit)
@@ -204,7 +207,9 @@ RSpec.describe Rubino::MCP::Manager do
       expect(client).to have_received(:stop)
       expect(manager.clients.keys).to eq(["api"])
       expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_nil
+      expect(Rubino::Tools::Registry.find("filesystem_resources")).to be_nil
       expect(Rubino::Tools::Registry.find("api_query")).not_to be_nil
+      expect(Rubino::Tools::Registry.find("api_resources")).not_to be_nil
       expect(Rubino.event_bus).to have_received(:emit).with(:mcp_server_stopped, name: "filesystem")
     end
 
@@ -212,13 +217,15 @@ RSpec.describe Rubino::MCP::Manager do
       expect(manager.stop_server("filesystem")).to be_nil
     end
 
-    it "stop_all! deregisters every server's tools" do
+    it "stop_all! deregisters every server's tools and resource tools" do
       start_both
       manager.stop_all!
 
       expect(manager.clients).to be_empty
       expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_nil
+      expect(Rubino::Tools::Registry.find("filesystem_resources")).to be_nil
       expect(Rubino::Tools::Registry.find("api_query")).to be_nil
+      expect(Rubino::Tools::Registry.find("api_resources")).to be_nil
     end
   end
 
