@@ -40,8 +40,21 @@ RSpec.describe Rubino::Commands::Executor do
     double("mcp_tool", name: name, description: "#{name} tool")
   end
 
-  def fake_client(tool_names, alive: true)
-    double("mcp_client", tools: tool_names.map { |n| fake_tool(n) }, alive?: alive, stop: nil)
+  def fake_client(tool_names, capabilities: {}, alive: true)
+    caps = double("capabilities",
+                  resources_list?: capabilities[:resources] || false,
+                  prompt_list?: capabilities[:prompts] || false,
+                  tools_list?: true)
+    client = double("mcp_client",
+                    tools: tool_names.map { |n| fake_tool(n) },
+                    alive?: alive,
+                    stop: nil,
+                    capabilities: caps,
+                    prompts: [],
+                    resources: [])
+    allow(client).to receive(:on_logging) { |**_| client }
+    allow(client).to receive(:on_progress) { |**_| client }
+    client
   end
 
   def output
@@ -170,8 +183,11 @@ RSpec.describe Rubino::Commands::Executor do
     end
 
     before do
-      broken = double("mcp_client", alive?: true, stop: nil)
+      broken = double("mcp_client", alive?: true, stop: nil,
+                                    capabilities: double(resources_list?: false, prompt_list?: false))
       allow(broken).to receive(:tools).and_raise(StandardError, "Request timed out after 8 seconds")
+      allow(broken).to receive(:on_logging) { |**_| broken }
+      allow(broken).to receive(:on_progress) { |**_| broken }
       allow(RubyLLM::MCP).to receive(:client).and_return(broken)
       # Re-boot the manager against the broken server (the outer before already
       # ran start_all! against the healthy doubles).
