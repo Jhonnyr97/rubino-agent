@@ -81,10 +81,9 @@ module Rubino
         text = content.to_s
         return nil if text.empty?
 
-        lines = text.lines
-        shown = lines.first(MAX_PREVIEW_LINES).map(&:chomp)
-        shown << "  [… #{lines.size - MAX_PREVIEW_LINES} more line(s)]" if lines.size > MAX_PREVIEW_LINES
-        shown.join("\n")
+        lines = text.lines.map(&:chomp)
+        Util::Preview.truncate_lines!(lines, MAX_PREVIEW_LINES)
+        lines.join("\n")
       end
     end
   end

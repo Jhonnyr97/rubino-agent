@@ -16,9 +16,36 @@ module Rubino
       end
 
       class ToolPresentation < Tools::ToolPresentationCLI
+        APPROVAL_PREVIEW_LINES = 16
+
         def stream_params? = true
         def body_kind = :diff
         def preview_lines = nil
+
+        # Per-edit diff preview for the approval prompt: each edit rendered
+        # as "- old" / "+ new" blocks, blank-line separated.
+        def preview_arguments(label, arguments)
+          edits = arguments["edits"] || arguments[:edits]
+          return nil unless edits.is_a?(Array) && !edits.empty?
+
+          path = arguments["file_path"] || arguments[:file_path]
+          header = "#{label} wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"
+
+          body = []
+          edits.each_with_index do |edit, idx|
+            old_s = edit["old_string"] || edit[:old_string]
+            new_s = edit["new_string"] || edit[:new_string]
+            body << "" unless idx.zero?
+            body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
+            body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
+          end
+          Util::Preview.truncate_lines!(body, APPROVAL_PREVIEW_LINES)
+          ([header] + body).join("\n")
+        rescue StandardError => e
+          Rubino.logger&.warn(event: "multi_edit.preview_arguments_failed",
+                              error: e.message, error_class: e.class.name)
+          nil
+        end
       end
 
       security     ToolSecurity
@@ -152,11 +179,7 @@ module Rubino
           lines.concat(old_s.to_s.lines.map { |l| "- #{l.chomp}" })
           lines.concat(new_s.to_s.lines.map { |l| "+ #{l.chomp}" })
         end
-        if lines.size > MAX_DIFF_LINES
-          dropped = lines.size - MAX_DIFF_LINES
-          lines   = lines.first(MAX_DIFF_LINES)
-          lines << "  [… #{dropped} more line(s)]"
-        end
+        Util::Preview.truncate_lines!(lines, MAX_DIFF_LINES)
         lines.join("\n")
       end
     end
