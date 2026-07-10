@@ -39,7 +39,7 @@ module Rubino
     # (tasks.max_concurrent_total). When a cap is hit reserve returns nil and this
     # tool surfaces a clear, reason-specific message (#capacity_message) so the
     # model knows whether to retry later, do the work inline, or report back.
-    class TaskTool < Base
+    class TaskTool < Base # rubocop:disable Metrics/ClassLength -- cohesive subagent surface (spawn/steer/collect/log) tightly coupled
       # Suffix of the placeholder a subagent run lands on when it produced no
       # final assistant text — a no-op or a fully-denied run (every tool denied,
       # nothing said). Used as the single signal that a completion was a no-op so
@@ -107,7 +107,10 @@ module Rubino
           "NOT background a task and then immediately wait or poll for it; just run it " \
           "synchronously. Set `background: true` ONLY when you have OTHER useful work " \
           "to do meanwhile and do NOT need the answer in this step: it returns " \
-          "immediately with a task id, the subagent keeps working, and when it " \
+          "immediately with a task id AND a log file path on disk where every event " \
+          "(tool calls, responses, results) is captured in JSONL format — the file " \
+          "persists even if the process crashes, so you can read it for post-mortem " \
+          "debugging. The subagent keeps working, and when it " \
           "finishes you automatically receive a `[background-task] <id> completed` " \
           "message (also fetchable with `task_result(<id>)`, stoppable with " \
           "`task_stop(<id>)`). The subagent runs in an isolated fresh context (it does " \
@@ -204,6 +207,11 @@ module Rubino
         )
         return capacity_message(registry_bg) unless entry
 
+        # Open the per-subagent JSONL log NOW (on the parent thread) so the
+        # path is known before the child starts — survives process death.
+        log = SubagentLog.new(sa_id: entry.id, session_id: entry.id)
+        entry.log_path = log.path
+
         # Captured on the PARENT thread, before we spawn — the child thread has
         # no access to the parent's thread-locals. The sink is the parent's
         # InputQueue (completion notice), event_bus is the turn-scoped bus (so
@@ -231,12 +239,16 @@ module Rubino
         child_ui  = nested_ui_for(entry, parent_ui,
                                   approve: approval_handler_for(entry),
                                   budget: budget_handler_for(entry))
-        runner    = build_subagent_runner(
-          definition, ui: child_ui, event_bus: Interaction::EventBus.new
+        # Wrap the message store so every persisted message is also
+        # written to the JSONL log (post-mortem forensics).
+        wrapped_store = SubagentLog::TeeStore.new(Session::Store.new, log)
+        runner = build_subagent_runner(
+          definition, ui: child_ui, event_bus: Interaction::EventBus.new,
+                      message_store: wrapped_store
         )
 
         thread = Thread.new do
-          run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui)
+          run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui, log)
         end
         # #run_child_thread already rescues Exception, but never let a dying child
         # auto-dump a backtrace into the parent's terminal — e.g. if shutdown!'s
@@ -260,7 +272,7 @@ module Rubino
       # records terminal state, notifies the parent, and emits the lifecycle
       # event. A child LoadError/SyntaxError must not wedge the task as
       # "running" forever.
-      def run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui = nil)
+      def run_child_thread(entry, runner, prompt, sink, event_bus, parent_ui, child_ui = nil, log = nil) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         # The runner already renders through the card-mode child UI (wired at
         # spawn); with_ui binds that SAME instance thread-locally so any global
         # Rubino.ui lookup inside the nested loop also resolves to it.
@@ -273,6 +285,13 @@ module Rubino
         # is the SAME InputQueue the human uses to steer the parent: the parent
         # pushes a note via BackgroundTasks#steer, the child folds it in at its
         # next iteration boundary (Loop#inject_steered_input).
+
+        # Log the start event so the JSONL file records the prompt even if the
+        # subagent dies before its first turn.
+        log&.write_event("subagent_started",
+                         subagent: entry.subagent,
+                         prompt: prompt.to_s)
+
         result = Rubino.with_current_subagent_id(entry.id) do
           Rubino.with_ui(ui_for_child) do
             runner.run!(prompt, input_queue: entry.steer_queue)
@@ -283,6 +302,11 @@ module Rubino
         # PARTIAL instead of a false "completed". A test runner_factory stub may
         # not expose it — default nil (treated as a clean completion).
         stop_reason = runner.respond_to?(:last_stop_reason) ? runner.last_stop_reason : nil
+
+        # Log the completion event.
+        log&.write_event("result",
+                         status: "completed",
+                         summary: Rubino::Util::Output.elide(text, 500))
 
         record_completion(entry, text, sink, parent_ui, stop_reason: stop_reason)
         # The OLD AttachedAgentWatcher closed its live tail with a "✓ finished —
@@ -296,6 +320,10 @@ module Rubino
                         task_id: entry.id, subagent: entry.subagent,
                         status: "completed", output: Rubino::Util::Output.elide(text, 400))
       rescue Exception => e # rubocop:disable Lint/RescueException
+        log&.write_event("result",
+                         status: "failed",
+                         error: e.message)
+
         BackgroundTasks.instance.complete(entry, status: :failed, error: e.message)
         # A failure landing on a stop-requested entry was recorded as :stopped
         # (BackgroundTasks#complete): a deliberate /agents --stop / task_stop
@@ -314,6 +342,8 @@ module Rubino
                         task_id: entry.id, subagent: entry.subagent,
                         status: entry.status == :stopped ? "stopped" : "failed",
                         error: e.message)
+      ensure
+        log&.close
       end
 
       # Records the terminal :completed state and notifies the parent.
@@ -480,10 +510,12 @@ module Rubino
       end
 
       def spawn_handle(entry, definition)
+        log_line = entry.log_path ? "\n  Log:     #{entry.log_path}" : ""
         "Started background subagent '#{definition.name}' as task #{entry.id}. " \
           "It is running now — keep working on other things. You'll receive a " \
           "`[background-task]` message when it finishes; or call " \
-          "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel."
+          "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel." \
+          "#{log_line}"
       end
 
       # Turns a nil reserve into a clear, reason-specific model-facing string. The
@@ -542,7 +574,7 @@ module Rubino
       # the sync path passes nil and inherits Rubino.event_bus (the same result
       # as omitting it). The fresh session is always tagged session_source
       # "subagent" so it's hidden from the user-facing /sessions picker (item 2).
-      def build_subagent_runner(definition, ui:, event_bus: nil)
+      def build_subagent_runner(definition, ui:, event_bus: nil, message_store: nil)
         if @runner_factory
           @runner_factory.call(definition)
         else
@@ -553,7 +585,8 @@ module Rubino
             ui: ui,
             agent_definition: definition,
             event_bus: event_bus,
-            session_source: "subagent"
+            session_source: "subagent",
+            message_store: message_store
           )
         end
       end
@@ -745,11 +778,32 @@ module Rubino
         # block the whole REPL with no idle prompt to resolve it — sync keeps the
         # historical fail-closed auto-deny until focus-gating lands. Off the CLI
         # this is Null (headless/API unchanged).
-        runner = build_subagent_runner(definition, ui: nested_ui_for(entry, root_cli))
+
+        # Open a per-subagent JSONL log for post-mortem forensics (same as the
+        # background path — crash-safe, sync-flushed).
+        log = SubagentLog.new(sa_id: entry.id, session_id: entry.id)
+        entry.log_path = log.path
+        wrapped_store = SubagentLog::TeeStore.new(Session::Store.new, log)
+        runner = build_subagent_runner(definition, ui: nested_ui_for(entry, root_cli),
+                                                   message_store: wrapped_store)
         registry_bg.attach(entry, thread: Thread.current, runner: runner)
+
+        # Log the start event so the JSONL records the prompt even if the
+        # subagent dies before its first turn.
+        log.write_event("subagent_started",
+                        subagent: entry.subagent,
+                        prompt: prompt.to_s)
+
         result = Rubino.with_current_subagent_id(entry.id) { runner.run!(prompt) }
         text   = result_or_noop(result, definition.name)
         stop_reason = runner.respond_to?(:last_stop_reason) ? runner.last_stop_reason : nil
+
+        # Log the completion event.
+        log.write_event("result",
+                        status: "completed",
+                        summary: Rubino::Util::Output.elide(text, 500))
+        log.close
+
         registry_bg.complete(entry, status: :completed, result: text, stop_reason: stop_reason)
         # The sync path returns the child's text straight back as THIS tool's
         # result (the parent sees it inline, no [background-task] notice), so the
@@ -758,6 +812,7 @@ module Rubino
       rescue StandardError => e
         # Release the reserved slot on ANY failure so a raising sync child can
         # never wedge a live-slot leak; #call's rescue phrases the message.
+        log&.close
         registry_bg.complete(entry, status: :failed, error: e.message) if entry
         raise
       end
