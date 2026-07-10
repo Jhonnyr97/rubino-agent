@@ -26,6 +26,24 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
     expect(wrapper.risk_level).to eq(:medium)
   end
 
+  describe "class-level DSL security / presentation / redaction" do
+    it "returns MCPSecurity via the Base instance accessor" do
+      sec = wrapper.security
+      expect(sec).to be_a(Rubino::MCP::MCPToolWrapper::MCPSecurity)
+      expect(sec.risk).to eq(:medium)
+      expect(sec.risky?).to be(true)
+      expect(sec.sandbox).to eq(:none)
+    end
+
+    it "returns ToolPresentationCLI via the Base instance accessor" do
+      expect(wrapper.presentation).to be_a(Rubino::Tools::ToolPresentationCLI)
+    end
+
+    it "explicitly declares redaction_profile as :shell (fail-safe for external MCP output)" do
+      expect(described_class.redaction_profile).to eq(:shell)
+    end
+  end
+
   # #582 — the display layer marks MCP calls as external code. The contract is
   # driven off #mcp? (an object predicate), NOT the name shape, so a built-in
   # with an underscore name is never mistaken for `<server>_<tool>`.
@@ -57,7 +75,7 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
     # inherited RubyLLM::Tool#parameters DSL accessor is always empty for MCP
     # tools, so forwarding it presented every tool with `parameters: {}` and
     # the model had to guess argument names (server then rejects with -32602).
-    it "forwards the server-declared params_schema" do
+    it "forwards the server-declared params_schema and deep-symbolizes via the bridge" do
       schema = {
         "type" => "object",
         "properties" => { "path" => { "type" => "string" } },
@@ -65,7 +83,11 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
       }
       allow(mcp_tool).to receive(:params_schema).and_return(schema)
 
-      expect(wrapper.input_schema).to eq(schema)
+      expect(wrapper.input_schema).to eq(
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"]
+      )
     end
 
     it "never uses the always-empty RubyLLM::Tool#parameters DSL accessor" do
@@ -92,6 +114,31 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
       allow(mcp_tool).to receive(:params_schema).and_return("this is not a schema")
 
       expect(wrapper.to_tool_definition[:parameters]).to eq(type: "object", properties: {})
+    end
+  end
+
+  describe "#params_schema" do
+    it "delegates to the underlying mcp_tool" do
+      schema = {
+        "type" => "object",
+        "properties" => { "path" => { "type" => "string" } },
+        "required" => ["path"]
+      }
+      allow(mcp_tool).to receive(:params_schema).and_return(schema)
+
+      expect(wrapper.params_schema).to eq(schema)
+    end
+
+    it "returns an empty object schema when mcp_tool has no params_schema" do
+      allow(mcp_tool).to receive(:respond_to?).with(:params_schema).and_return(false)
+
+      expect(wrapper.params_schema).to eq(type: "object", properties: {})
+    end
+
+    it "coerces a non-Hash params_schema to an empty object schema (S1-MCP-1)" do
+      allow(mcp_tool).to receive(:params_schema).and_return("this is not a schema")
+
+      expect(wrapper.params_schema).to eq(type: "object", properties: {})
     end
   end
 
@@ -140,8 +187,8 @@ RSpec.describe Rubino::MCP::MCPToolWrapper do
 
       expect(definition[:name]).to eq("filesystem_read_file")
       expect(definition[:description]).to eq("Reads a file")
-      expect(definition[:parameters]["properties"]).to have_key("path")
-      expect(definition[:parameters]["required"]).to eq(["path"])
+      expect(definition[:parameters][:properties]).to have_key(:path)
+      expect(definition[:parameters][:required]).to eq(["path"])
     end
   end
 end

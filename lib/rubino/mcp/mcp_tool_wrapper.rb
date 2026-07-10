@@ -28,7 +28,7 @@ module Rubino
         @mcp_tool.description
       end
 
-      def input_schema
+      def params_schema
         # The server-advertised JSON schema lives in RubyLLM::MCP::Tool#params_schema.
         # The inherited RubyLLM::Tool#parameters DSL accessor is ALWAYS empty for
         # MCP tools — forwarding it sent every tool to the model with `parameters:
@@ -42,10 +42,16 @@ module Rubino
         schema.is_a?(Hash) ? schema : { type: "object", properties: {} }
       end
 
-      def risk_level
-        # MCP tools are external, default to medium risk
-        :medium
+      # Security: MCP tools are external → medium risk, no sandbox.
+      class MCPSecurity < Tools::ToolSecurity
+        def risk = :medium
+        def risky? = true
+        def sandbox = :none
       end
+
+      security MCPSecurity
+      redaction_profile :shell # external MCP server output — explicit fail-safe
+      # presentation uses the Base default (ToolPresentationCLI)
 
       # True: this tool's code runs on an external MCP server. The display layer
       # reads this (NOT the name shape) to mark the call/approval card.
@@ -83,15 +89,6 @@ module Rubino
         result.to_s
       rescue StandardError => e
         "Error: MCP tool #{@server_name}/#{@mcp_tool.name}: #{e.message}"
-      end
-
-      # Override to provide the raw MCP tool definition for LLM
-      def to_tool_definition
-        {
-          name: name,
-          description: description,
-          parameters: input_schema
-        }
       end
 
       private
