@@ -206,6 +206,11 @@ module Rubino
         # children that park "at once" still get a deterministic, stable order
         # (the one whose begin_approval won the lock first is the head).
         @approval_seq = 0
+        # Inline tool adapters (live_card opt-in): registered by ToolExecutor
+        # before a live_card tool runs, unregistered when it finishes. Read by
+        # #running / #find / #list like subagents and shells, so the one
+        # dropdown/cards/attach pipeline renders them with zero new branches.
+        @inline_adapters = {}
       end
 
       # Reserves a slot and registers a `running` entry, returning it. The
@@ -463,6 +468,32 @@ module Rubino
         end
       end
 
+      # ── Inline tool adapters (live_card) ────────────────────────────
+
+      # Registers an InlineToolAdapter so it appears in the dropdown/cards
+      # while a live_card tool runs. Called by ToolExecutor just before the
+      # tool's #call; unregistered by #unregister_inline when it finishes.
+      def register_inline(adapter)
+        @mutex.synchronize { @inline_adapters[adapter.id] = adapter }
+      end
+
+      # Removes an inline adapter from the registry (the tool finished or
+      # failed). The adapter's #finish! should already have been called so
+      # its status is terminal — this just cleans up the lookup map.
+      def unregister_inline(id)
+        @mutex.synchronize { @inline_adapters.delete(id) }
+      end
+
+      # Live inline adapters — only the ones whose tool is still running.
+      def inline_adapters
+        @mutex.synchronize { @inline_adapters.values.select(&:live?) }
+      end
+
+      # Look up an inline adapter by id (for the attach path).
+      def inline_adapter_for(id)
+        @mutex.synchronize { @inline_adapters[id] }
+      end
+
       # Entries currently parked on a human approval — surfaced on their card
       # and answerable via /agents <id>. Ordered OLDEST-FIRST (by the moment the
       # child blocked, approval_seq) so the modal queue is FIFO: when two
@@ -488,7 +519,7 @@ module Rubino
       end
 
       def find(id)
-        @mutex.synchronize { @entries[id] } || shell_adapter_for(id)
+        @mutex.synchronize { @entries[id] } || shell_adapter_for(id) || inline_adapter_for(id)
       end
 
       # A read-time adapter for a background SHELL by id (bg_*), or nil. Lets the
@@ -510,7 +541,8 @@ module Rubino
         # otherwise a just-finished shell vanished from /agents while a finished
         # subagent lingered. #running stays running-only (the live picker/cards).
         shells = ShellRegistry.instance.listable_entries.map { |e| ShellEntryAdapter.new(e) }
-        (subs + shells).sort_by(&:started_at).reverse
+        inlines = @mutex.synchronize { @inline_adapters.values }
+        (subs + shells + inlines).sort_by(&:started_at).reverse
       end
 
       # Live (still-running) children — used by the parent stop path to cancel
@@ -519,7 +551,7 @@ module Rubino
       # slot), so it counts as running here.
       def running
         subs = @mutex.synchronize { @entries.values.select { |e| live_status?(e.status) } }
-        subs + shell_adapters
+        subs + shell_adapters + inline_adapters
       end
 
       # Background SHELLS, presented as read-time adapters that duck-type a
