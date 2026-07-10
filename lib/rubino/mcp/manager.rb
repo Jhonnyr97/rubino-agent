@@ -68,6 +68,8 @@ module Rubino
           @last_errors.delete(name.to_s)
         end
 
+        register_notification_handlers(client, name.to_s)
+
         Rubino.event_bus.emit(:mcp_server_started, name: name)
         client
       rescue StandardError => e
@@ -203,6 +205,53 @@ module Rubino
         # Logging is never worth breaking MCP boot; worst case the gem keeps
         # its default logger.
         nil
+      end
+
+      # Registers per-server progress and logging notification handlers
+      # that write to the MCP log file. Each handler is independently
+      # guarded so a server that doesn't support the feature never
+      # breaks startup. The callbacks fire on the client's background
+      # transport thread; writing to a Ruby Logger is thread-safe.
+      def register_notification_handlers(client, name)
+        logger = mcp_logger
+
+        begin
+          # Use the gem default log level (RubyLLM::MCP::Logging::WARNING = "warning")
+          # so we capture notable server warnings/errors without flooding mcp.log
+          # with debug/info/notice traffic on every tool call.
+          client.on_logging do |notification|
+            level = notification.params["level"]
+            origin = notification.params["logger"]
+            data = notification.params["data"]
+            logger.info("[#{name}] #{level}: #{origin}: #{data}")
+          end
+        rescue StandardError => e
+          logger.debug("[#{name}] logging notifications unsupported: #{e.message}")
+        end
+
+        begin
+          client.on_progress do |progress|
+            total_str = progress.total ? "/#{progress.total}" : ""
+            msg_str = progress.message ? " — #{progress.message}" : ""
+            logger.info("[#{name}] progress #{progress.progress}#{total_str}#{msg_str}")
+          end
+        rescue StandardError => e
+          logger.debug("[#{name}] progress tracking unsupported: #{e.message}")
+        end
+      end
+
+      # Returns the MCP log path under the rubino home, matching
+      # route_mcp_logging! so the same file is always used.
+      def mcp_log_path
+        File.join(Config::Loader.default_home_path, "logs", "mcp.log")
+      end
+
+      # Returns the MCP logger (already routed to mcp.log by the
+      # constructor); falls back to a fresh Logger at the same path.
+      def mcp_logger
+        RubyLLM::MCP.config.logger || ::Logger.new(mcp_log_path)
+      rescue StandardError
+        ::Logger.new($stdout)
       end
 
       def build_client_options(name, transport, server_config)
