@@ -24,14 +24,30 @@ RSpec.describe Rubino::MCP::Manager do
     double("mcp_tool", name: name, description: "#{name} tool")
   end
 
-  def fake_client(tool_names, alive: true)
-    double("mcp_client", tools: tool_names.map { |n| fake_tool(n) }, alive?: alive, stop: nil)
+  def fake_client(tool_names, capabilities: {}, alive: true)
+    caps = double("capabilities",
+                  resources_list?: capabilities[:resources] || false,
+                  prompt_list?: capabilities[:prompts] || false,
+                  tools_list?: true)
+    double("mcp_client",
+           tools: tool_names.map { |n| fake_tool(n) },
+           alive?: alive,
+           stop: nil,
+           capabilities: caps,
+           prompts: [],
+           resources: [])
   end
 
   describe "#start_all!" do
     it "starts a client per configured server and registers prefixed tools + resource tools" do
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
-        opts[:name] == "filesystem" ? fake_client(%w[read_file write_file]) : fake_client(%w[query])
+        if opts[:name] == "filesystem"
+          fake_client(%w[read_file write_file],
+                      capabilities: { resources: true })
+        else
+          fake_client(%w[query],
+                      capabilities: { resources: true })
+        end
       end
 
       manager.start_all!
@@ -132,6 +148,69 @@ RSpec.describe Rubino::MCP::Manager do
       expect(mgr.clients.keys).to match_array(servers.keys)
       expect(mgr.last_errors).to be_empty
     end
+
+    # ── capability-gating (#prompts feature) ──
+
+    it "registers a resource tool only when the server advertises resources capability" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        if opts[:name] == "filesystem"
+          fake_client(%w[read_file], capabilities: { resources: true })
+        else
+          fake_client(%w[query])
+        end
+      end
+
+      manager.start_all!
+
+      expect(Rubino::Tools::Registry.find("filesystem_resources")).to be_a(Rubino::MCP::McpResourceTool)
+      expect(Rubino::Tools::Registry.find("api_resources")).to be_nil
+    end
+
+    it "registers a prompt tool only when the server advertises prompts capability" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        if opts[:name] == "filesystem"
+          fake_client(%w[read_file], capabilities: { prompts: true })
+        else
+          fake_client(%w[query])
+        end
+      end
+
+      manager.start_all!
+
+      expect(Rubino::Tools::Registry.find("filesystem_prompts")).to be_a(Rubino::MCP::McpPromptTool)
+      expect(Rubino::Tools::Registry.find("api_prompts")).to be_nil
+    end
+
+    it "registers neither utility tool for a tools-only server (no resources/prompts capability)" do
+      allow(RubyLLM::MCP).to receive(:client).and_return(fake_client(%w[query]))
+
+      manager.start_all!
+
+      expect(Rubino::Tools::Registry.find("filesystem_resources")).to be_nil
+      expect(Rubino::Tools::Registry.find("api_resources")).to be_nil
+      expect(Rubino::Tools::Registry.find("filesystem_prompts")).to be_nil
+      expect(Rubino::Tools::Registry.find("api_prompts")).to be_nil
+    end
+
+    it "deregisters prompt tools alongside MCP wrappers when a server is stopped" do
+      allow(RubyLLM::MCP).to receive(:client) do |**opts|
+        if opts[:name] == "filesystem"
+          fake_client(%w[read_file],
+                      capabilities: { prompts: true })
+        else
+          fake_client(%w[query])
+        end
+      end
+      manager.start_all!
+      client = manager.clients["filesystem"]
+
+      manager.stop_server("filesystem")
+
+      expect(client).to have_received(:stop)
+      expect(Rubino::Tools::Registry.find("filesystem_read_file")).to be_nil
+      expect(Rubino::Tools::Registry.find("filesystem_prompts")).to be_nil
+      expect(Rubino::Tools::Registry.find("api_query")).not_to be_nil
+    end
   end
 
   describe "#start_server" do
@@ -192,7 +271,13 @@ RSpec.describe Rubino::MCP::Manager do
   describe "#stop_server" do
     def start_both
       allow(RubyLLM::MCP).to receive(:client) do |**opts|
-        opts[:name] == "filesystem" ? fake_client(%w[read_file]) : fake_client(%w[query])
+        if opts[:name] == "filesystem"
+          fake_client(%w[read_file],
+                      capabilities: { resources: true })
+        else
+          fake_client(%w[query],
+                      capabilities: { resources: true })
+        end
       end
       manager.start_all!
     end
