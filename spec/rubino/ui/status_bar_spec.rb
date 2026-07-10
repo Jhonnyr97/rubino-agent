@@ -39,7 +39,7 @@ RSpec.describe Rubino::UI::StatusBar do
     end
 
     # Rail rubino: the prompt chip moved here — the MODE token leads, then
-    # the optional branch / skill tokens, then model + ctx.
+    # the optional skill token, then model + ctx.
     describe "session chips" do
       it "leads with the mode token" do
         line = described_class.render(model: "minimax-m3", tokens: 4_400, window: 128_000,
@@ -51,12 +51,6 @@ RSpec.describe Rubino::UI::StatusBar do
         line = described_class.render(model: "m3", tokens: 100, window: nil,
                                       chips: { mode: :default, skill: "ruby-expert" }, pastel: plain)
         expect(line).to eq(" default · skill ruby-expert · m3 · ~100 tok")
-      end
-
-      it "renders the branch token between mode and skill" do
-        line = described_class.render(model: "m3", tokens: 100, window: nil,
-                                      chips: { mode: :plan, branch: "ab12cd", skill: "s" }, pastel: plain)
-        expect(line).to eq(" plan · branch:ab12cd · skill s · m3 · ~100 tok")
       end
 
       # #320: the active primary agent chip sits right after the mode.

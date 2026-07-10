@@ -110,7 +110,6 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # The original is byte-for-byte untouched.
       expect(store.for_session(session[:id]).length).to eq(5)
       # The REPL adopts the fork on the next loop pass.
-      expect(cmd.instance_variable_get(:@branch_short_id)).to eq(child[:id][0..3])
     end
 
     it "pre-fills the composer with the picked message text, multiline intact" do
