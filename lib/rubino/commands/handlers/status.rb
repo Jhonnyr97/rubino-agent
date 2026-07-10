@@ -177,7 +177,7 @@ module Rubino
         def status_mcp_line
           servers   = mcp_servers_config.size
           reachable = mcp_health.count { |h| h[:alive] }
-          tools     = Tools::Registry.all.count { |t| t.is_a?(Rubino::MCP::MCPToolWrapper) }
+          tools     = Tools::Registry.all.count { |t| t.respond_to?(:mcp?) && t.mcp? }
           "#{servers} server#{"s" if servers != 1} · #{reachable} reachable · #{tools} tool#{"s" if tools != 1}"
         rescue StandardError
           "(unavailable)"

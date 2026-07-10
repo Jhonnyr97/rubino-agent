@@ -62,6 +62,24 @@ module Rubino
         @server_name
       end
 
+      # True: this tool's code runs on an external MCP server. The display layer
+      # reads this (NOT the name shape) to mark the call/approval card.
+      def mcp?
+        true
+      end
+
+      # The un-prefixed label for the display card.
+      def bare_name
+        "prompts"
+      end
+
+      # The display label for the live tool card and approval card:
+      # `"prompts (mcp:<server>)"` — e.g. `prompts (mcp:everything)`.
+      # The model-facing #name (`<server>_prompts`) is unchanged.
+      def display_name
+        "#{bare_name} (mcp:#{@server_name})"
+      end
+
       def execute(action:, name: nil, arguments: nil)
         case action
         when "list"
