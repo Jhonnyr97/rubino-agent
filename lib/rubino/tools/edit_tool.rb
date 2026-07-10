@@ -11,9 +11,33 @@ module Rubino
       end
 
       class ToolPresentation < Tools::ToolPresentationCLI
+        APPROVAL_PREVIEW_LINES = 30
+
         def stream_params? = true
         def body_kind = :diff
         def preview_lines = nil
+
+        # Diff preview for the approval prompt: "- old" then "+ new" so the
+        # user can see what will change BEFORE approving.
+        def preview_arguments(label, arguments)
+          old_s = arguments["old_string"] || arguments[:old_string]
+          new_s = arguments["new_string"] || arguments[:new_string]
+          return nil unless old_s.is_a?(String) && new_s.is_a?(String)
+
+          path = arguments["file_path"] || arguments[:file_path]
+          ra   = arguments["replace_all"] || arguments[:replace_all]
+          header = ra ? "#{label} (replace_all) wants to run: #{path}" : "#{label} wants to run: #{path}"
+
+          minus = Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" }
+          plus  = Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" }
+          body  = minus + plus
+          Util::Preview.truncate_lines!(body, APPROVAL_PREVIEW_LINES)
+          ([header] + body).join("\n")
+        rescue StandardError => e
+          Rubino.logger&.warn(event: "edit.preview_arguments_failed",
+                              error: e.message, error_class: e.class.name)
+          nil
+        end
       end
 
       security     ToolSecurity
@@ -169,14 +193,9 @@ module Rubino
         minus = old_str.to_s.lines.map { |l| "- #{l.chomp}" }
         plus  = new_str.to_s.lines.map { |l| "+ #{l.chomp}" }
         lines = minus + plus
-        suffix = []
-        if lines.size > MAX_DIFF_LINES
-          dropped = lines.size - MAX_DIFF_LINES
-          lines   = lines.first(MAX_DIFF_LINES)
-          suffix << "  [… #{dropped} more line(s)]"
-        end
-        suffix << "  (× #{replaced_count} occurrences)" if replaced_count > 1
-        (lines + suffix).join("\n")
+        Util::Preview.truncate_lines!(lines, MAX_DIFF_LINES)
+        lines << "  (× #{replaced_count} occurrences)" if replaced_count > 1
+        lines.join("\n")
       end
     end
   end

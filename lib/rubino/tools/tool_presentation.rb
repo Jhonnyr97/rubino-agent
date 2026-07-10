@@ -35,6 +35,23 @@ module Rubino
       # CLI: whether the tool emits output chunks during execution
       # (shell stdout streaming).
       def stream_output? = false
+
+      # Formats the approval-prompt string (header + body) for this tool.
+      # Receives the display label (e.g. "edit", "echo (mcp:chaos)") and
+      # the raw arguments hash. Returns a complete formatted string, or nil
+      # to fall back to the executor's generic key-value formatter.
+      #
+      # Override in a tool's ToolPresentation subclass to show a diff
+      # preview, content snippet, or any custom layout:
+      #
+      #   class ToolPresentation < Tools::ToolPresentationCLI
+      #     def preview_arguments(label, arguments)
+      #       # build and return formatted string, or nil
+      #     end
+      #   end
+      def preview_arguments(_label, _arguments)
+        nil
+      end
     end
   end
 end

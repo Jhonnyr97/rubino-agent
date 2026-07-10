@@ -559,6 +559,29 @@ RSpec.describe Rubino::Agent::ToolExecutor do
           def input_schema = { type: "object" }
           def risk_level = :medium
           def call(_args) = "ok"
+
+          class ToolPresentation < Rubino::Tools::ToolPresentationCLI
+            APPROVAL_PREVIEW_LINES = 16
+
+            def preview_arguments(label, arguments)
+              edits = arguments["edits"] || arguments[:edits]
+              return nil unless edits.is_a?(Array) && !edits.empty?
+
+              path = arguments["file_path"] || arguments[:file_path]
+              header = "#{label} wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"
+              body = []
+              edits.each_with_index do |edit, idx|
+                old_s = edit["old_string"] || edit[:old_string]
+                new_s = edit["new_string"] || edit[:new_string]
+                body << "" unless idx.zero?
+                body.concat(old_s.to_s.lines.map { |l| "  - #{l.chomp}" })
+                body.concat(new_s.to_s.lines.map { |l| "  + #{l.chomp}" })
+              end
+              Rubino::Util::Preview.truncate_lines!(body, APPROVAL_PREVIEW_LINES)
+              ([header] + body).join("\n")
+            end
+          end
+          presentation ToolPresentation
         end.new
       end
 
