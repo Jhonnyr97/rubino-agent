@@ -14,7 +14,8 @@ module Rubino
       def initialize(session_id: nil, model_override: nil, provider_override: nil,
                      max_turns: nil, ignore_rules: false, ui: nil, agent_definition: nil,
                      event_bus: nil, announce_session: true, session_source: "cli",
-                     interactive: false, system_prompt_override: nil)
+                     interactive: false, system_prompt_override: nil,
+                     message_store: nil)
         @ui = ui || Rubino.ui
         # An in-chat rewind/fork builds a runner on the child session but has its
         # own purpose-built "┄ rewound to message N — editing ┄" marker, so the
@@ -27,7 +28,7 @@ module Rubino
         @event_bus = event_bus || Rubino.event_bus
         @config = Rubino.configuration
         @session_repo = Session::Repository.new
-        @message_store = Session::Store.new
+        @message_store = message_store || Session::Store.new
         @explicit_model_override = model_override
         @model_id = model_override || @config.dig("model", "default")
         @provider_override = provider_override
@@ -147,7 +148,8 @@ module Rubino
           # (soft == hard) and simply hard-stops there, like the main agent.
           max_tool_iterations: @max_turns,
           polishing: @polishing,
-          system_prompt_override: @system_prompt_override
+          system_prompt_override: @system_prompt_override,
+          message_store: @message_store
         )
 
         response = lifecycle.execute(input, image_paths: image_paths, input_queue: input_queue,
