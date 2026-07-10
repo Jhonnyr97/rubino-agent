@@ -36,6 +36,11 @@ module Rubino
       security     ToolSecurity
       presentation ToolPresentation
 
+      # Show the shell command in the multiplexer dropdown while it runs
+      # (foreground path). The user can ⏎ to watch the live output in the
+      # timeline — the same attach as background shells and subagents.
+      live_card ->(args) { "💻 #{args[:command] || args["command"] || "shell"}" }
+
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
 

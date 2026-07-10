@@ -52,6 +52,37 @@ module Rubino
             @redaction_profile || :shell
           end
         end
+
+        # Opts this tool into the multiplexer dropdown WHILE IT RUNS. The
+        # lambda receives the tool's arguments hash and returns a header
+        # string displayed as the dropdown-row label. Omit for fast/quiet
+        # tools — the default is NOT to appear in the dropdown (opt-in).
+        #
+        #   live_card ->(args) { "🔨 build #{args[:target]}" }
+        #
+        # An inline tool BLOCKS the agent thread (it is synchronous), so the
+        # card is the live window on that blocking operation — the user can
+        # watch its streaming output in the timeline via ⏎ (← returns),
+        # exactly like a background shell or subagent. The adapter is torn
+        # down when the tool completes or fails.
+        def live_card(header_lambda = nil)
+          if header_lambda
+            @live_card_header = header_lambda
+          else
+            @live_card_header
+          end
+        end
+
+        # True when this tool declared +live_card+ — the executor uses this
+        # to decide whether to register an InlineToolAdapter before running
+        # the tool.
+        def live_card?
+          !@live_card_header.nil?
+        end
+
+        # The header lambda declared via +live_card+, or nil. The executor
+        # calls it with the tool's arguments to build the dropdown label.
+        attr_reader :live_card_header
       end
 
       # ── Rubino runtime: injected by ToolExecutor before each call ──
