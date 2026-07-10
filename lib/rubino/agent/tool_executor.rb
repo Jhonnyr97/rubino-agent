@@ -659,12 +659,11 @@ module Rubino
         # by nothing reads as a truncated/broken card.
         return "#{label} wants to run" if pairs.empty?
 
-        # multi_edit carries an `edits` ARRAY whose generic .to_s render is an
-        # unreadable escaped Ruby hash (literal \n, truncated). Lay it out as
-        # clean per-edit `- old` / `+ new` blocks, matching how the single
-        # `edit` tool already previews — so the user can see what will change.
-        if (edits_preview = multi_edit_preview(tool, arguments))
-          return edits_preview
+        # Delegate to the tool's own presentation layer for custom previews
+        # (edit → diff, multi_edit → per-edit blocks, etc.). Fall back to the
+        # generic key-value formatter when the tool doesn't provide one.
+        if (preview = tool.presentation.preview_arguments(label, arguments))
+          return preview
         end
 
         # The common case — ONE short single-line argument (a shell command, a
@@ -687,8 +686,8 @@ module Rubino
         # if the model passed it through unwrapped.
         text = Util::SecretsMask.mask_value(value, key: key).to_s
         if text.include?("\n")
-          body = text.lines
-          head = body.first(5).map(&:rstrip)
+          body = text.lines.map(&:rstrip)
+          head = body.first(5)
           tail = body.size > 5 ? ["  [… #{body.size - 5} more line(s)]"] : []
           ["  #{key}:", *head.map { |l| "    #{l}" }, *tail]
         elsif text.length > 120
@@ -696,42 +695,6 @@ module Rubino
         else
           ["  #{key}: #{text}"]
         end
-      end
-
-      # Clean per-edit preview for multi_edit: a header with the file path then,
-      # for each edit, its `- old` / `+ new` lines (edits blank-line separated),
-      # trimmed to a sane line budget. nil for any other tool / shape so the
-      # generic per-key formatter handles it. Mirrors EditTool's diff preview.
-      MULTI_EDIT_PREVIEW_LINES = 16
-      def multi_edit_preview(tool, arguments)
-        return nil unless tool.name == "multi_edit"
-
-        edits = arguments["edits"] || arguments[:edits]
-        return nil unless edits.is_a?(Array) && !edits.empty?
-
-        path  = arguments["file_path"] || arguments[:file_path]
-        lines = ["multi_edit wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"]
-        body  = []
-        edits.each_with_index do |edit, idx|
-          old_s = edit["old_string"] || edit[:old_string]
-          new_s = edit["new_string"] || edit[:new_string]
-          body << "" unless idx.zero?
-          body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
-          body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
-        end
-        if body.size > MULTI_EDIT_PREVIEW_LINES
-          dropped = body.size - MULTI_EDIT_PREVIEW_LINES
-          body    = body.first(MULTI_EDIT_PREVIEW_LINES)
-          body << "  [… #{dropped} more line(s)]"
-        end
-        (lines + body).join("\n")
-      rescue StandardError => e
-        # A preview is cosmetic — fall back to the generic per-key formatter
-        # rather than crash the approval prompt. Log it so a malformed-shape
-        # coding bug here doesn't silently disable the multi_edit diff preview.
-        Rubino.logger&.warn(event: "tool_executor.multi_edit_preview_failed",
-                            error: e.message, error_class: e.class.name)
-        nil
       end
 
       # Routes the model-facing tool output through the single ContentRouter
