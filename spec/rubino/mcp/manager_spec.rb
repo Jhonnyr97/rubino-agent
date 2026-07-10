@@ -29,13 +29,20 @@ RSpec.describe Rubino::MCP::Manager do
                   resources_list?: capabilities[:resources] || false,
                   prompt_list?: capabilities[:prompts] || false,
                   tools_list?: true)
-    double("mcp_client",
-           tools: tool_names.map { |n| fake_tool(n) },
-           alive?: alive,
-           stop: nil,
-           capabilities: caps,
-           prompts: [],
-           resources: [])
+    client = double("mcp_client",
+                    tools: tool_names.map { |n| fake_tool(n) },
+                    alive?: alive,
+                    stop: nil,
+                    capabilities: caps,
+                    prompts: [],
+                    resources: [])
+    # notification handlers: keyword-safe no-op stubs so start_server always succeeds.
+    # Ruby 3.x raises ArgumentError when a bare Proc.new{} receives keyword args,
+    # so we absorb them with ** and ignore. Avoids interfering with spec stubs that
+    # override these in helper methods like fake_client_with_notifications.
+    allow(client).to receive(:on_logging) { |**_| client }
+    allow(client).to receive(:on_progress) { |**_| client }
+    client
   end
 
   describe "#start_all!" do
@@ -263,6 +270,113 @@ RSpec.describe Rubino::MCP::Manager do
       manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
       expect(manager.last_errors).not_to have_key("filesystem")
     end
+
+    # ── notification handlers ──
+    # Each started server gets on_logging / on_progress callbacks
+    # that write to the MCP log file.
+
+    def fake_client_with_notifications(tool_names, capabilities: {}, alive: true)
+      captured = {}
+      client = fake_client(tool_names, capabilities: capabilities, alive: alive)
+      allow(client).to receive(:on_logging) do |_level: nil, &block|
+        captured[:logging] = block
+        client
+      end
+      allow(client).to receive(:on_progress) do |&block|
+        captured[:progress] = block
+        client
+      end
+      allow(client).to receive(:captured).and_return(captured)
+      client
+    end
+
+    it "registers on_logging and on_progress handlers that write to the MCP log" do
+      client = fake_client_with_notifications(%w[read_file])
+      allow(RubyLLM::MCP).to receive(:client).and_return(client)
+
+      # Replace the MCP logger with a StringIO so we can assert writes
+      log_io = StringIO.new
+      mcp_logger = Logger.new(log_io, level: Logger::DEBUG, progname: "test")
+      allow(RubyLLM::MCP.config).to receive(:logger).and_return(mcp_logger)
+
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      captured = client.captured
+      expect(captured).to have_key(:logging)
+      expect(captured).to have_key(:progress)
+
+      # Fire the logging handler
+      log_notification = double("notification",
+                                params: { "level" => "info", "logger" => "mock-server",
+                                          "data" => "scanning..." })
+      captured[:logging].call(log_notification)
+      log_io.rewind
+      expect(log_io.read).to include("[filesystem] info: mock-server: scanning...")
+
+      # Fire the progress handler
+      progress = double("progress",
+                        progress: 40, total: 100, message: "indexing files")
+      captured[:progress].call(progress)
+      log_io.rewind
+      expect(log_io.read).to include("[filesystem] progress 40/100 — indexing files")
+    end
+
+    it "handles progress with nil total and nil message gracefully" do
+      client = fake_client_with_notifications(%w[read_file])
+      allow(RubyLLM::MCP).to receive(:client).and_return(client)
+
+      log_io = StringIO.new
+      mcp_logger = Logger.new(log_io, level: Logger::DEBUG)
+      allow(RubyLLM::MCP.config).to receive(:logger).and_return(mcp_logger)
+
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      progress = double("progress",
+                        progress: 7, total: nil, message: nil)
+      client.captured[:progress].call(progress)
+      log_io.rewind
+      expect(log_io.read).to include("[filesystem] progress 7")
+      expect(log_io.read).not_to include("/")
+      expect(log_io.read).not_to include("—")
+    end
+
+    it "server still starts and tools register when on_logging raises (feature unsupported)" do
+      client = fake_client(%w[read_file])
+      allow(client).to receive(:on_logging).and_raise(
+        RubyLLM::MCP::Errors::UnsupportedFeature, "feature unsupported"
+      )
+      allow(RubyLLM::MCP).to receive(:client).and_return(client)
+
+      log_io = StringIO.new
+      mcp_logger = Logger.new(log_io, level: Logger::DEBUG)
+      allow(RubyLLM::MCP.config).to receive(:logger).and_return(mcp_logger)
+
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      expect(manager.clients).to have_key("filesystem")
+      expect(manager.last_errors).not_to have_key("filesystem")
+      log_io.rewind
+      expect(log_io.read).to include("logging notifications unsupported")
+    end
+
+    it "server still starts and tools register when on_progress raises (feature unsupported)" do
+      client = fake_client(%w[read_file])
+      allow(client).to receive(:on_progress).and_raise(
+        RubyLLM::MCP::Errors::UnsupportedFeature, "feature unsupported"
+      )
+      allow(RubyLLM::MCP).to receive(:client).and_return(client)
+
+      log_io = StringIO.new
+      mcp_logger = Logger.new(log_io, level: Logger::DEBUG)
+      allow(RubyLLM::MCP.config).to receive(:logger).and_return(mcp_logger)
+
+      manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
+
+      expect(manager.clients).to have_key("filesystem")
+      expect(manager.last_errors).not_to have_key("filesystem")
+      log_io.rewind
+      expect(log_io.read).to include("progress tracking unsupported")
+    end
   end
 
   # #182 — /mcp <server> off: stopping a server must ALSO drop its
@@ -336,6 +450,7 @@ RSpec.describe Rubino::MCP::Manager do
     it "records last_errors when tools/list fails for an alive client" do
       broken = double("mcp_client", alive?: true, stop: nil)
       allow(broken).to receive(:tools).and_raise(StandardError, "Request timed out after 8 seconds")
+      allow(broken).to receive_messages(on_logging: broken, on_progress: broken)
       allow(RubyLLM::MCP).to receive(:client).and_return(broken)
       manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
 
@@ -395,6 +510,7 @@ RSpec.describe Rubino::MCP::Manager do
     it "reports degraded for an alive client that recorded a registration error" do
       broken = double("mcp_client", alive?: true, stop: nil)
       allow(broken).to receive(:tools).and_raise(StandardError, "garbage")
+      allow(broken).to receive_messages(on_logging: broken, on_progress: broken)
       allow(RubyLLM::MCP).to receive(:client).and_return(broken)
       manager.start_server("filesystem", raw["mcp"]["servers"]["filesystem"])
       manager.register_server_tools("filesystem")
