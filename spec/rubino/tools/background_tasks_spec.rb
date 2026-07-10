@@ -418,4 +418,76 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       expect(entry.messages).to eq(%i[m1 m2])
     end
   end
+
+  # ── Inline tool adapters (live_card opt-in) ────────────────────
+  # The registry treats InlineToolAdapter like a subagent entry for the
+  # dropdown/cards/attach surfaces. Integration tests for register_inline,
+  # unregister_inline, #running, #find, and #list.
+  describe "inline tool adapters (live_card)" do
+    let(:adapter) do
+      Rubino::Tools::InlineToolAdapter.new(
+        id: "il_test99",
+        tool_name: "shell",
+        command_hint: "💻 ls"
+      )
+    end
+
+    it "register_inline adds the adapter; #find resolves it" do
+      registry.register_inline(adapter)
+      found = registry.find("il_test99")
+      expect(found).to be(adapter)
+      expect(found.subagent).to eq("shell")
+    end
+
+    it "unregister_inline removes the adapter from #find" do
+      registry.register_inline(adapter)
+      registry.unregister_inline("il_test99")
+      expect(registry.find("il_test99")).to be_nil
+    end
+
+    it "#running includes live inline adapters" do
+      registry.register_inline(adapter)
+      expect(registry.running.map(&:id)).to include("il_test99")
+    end
+
+    it "#running excludes finished inline adapters" do
+      registry.register_inline(adapter)
+      adapter.finish!
+      expect(registry.running.map(&:id)).not_to include("il_test99")
+    end
+
+    it "#list includes inline adapters" do
+      registry.register_inline(adapter)
+      expect(registry.list.map(&:id)).to include("il_test99")
+    end
+
+    it "#list includes finished inline adapters (not yet unregistered)" do
+      registry.register_inline(adapter)
+      adapter.finish!
+      # Still in the list until unregistered
+      expect(registry.list.map(&:id)).to include("il_test99")
+    end
+
+    it "#find returns nil for an unknown inline id" do
+      expect(registry.find("il_nonexistent")).to be_nil
+    end
+
+    it "inline adapters and subagents coexist in #running" do
+      entry = reserve(subagent: "explore", prompt: "do work")
+      registry.register_inline(adapter)
+      ids = registry.running.map(&:id)
+      expect(ids).to include(entry.id)
+      expect(ids).to include("il_test99")
+    end
+
+    it "unregister_inline for an unknown id is a no-op" do
+      expect { registry.unregister_inline("il_gone") }.not_to raise_error
+    end
+
+    it "inline adapter with shell?=true routes through stop_entry's shell stop path" do
+      registry.register_inline(adapter)
+      # stop_entry on a shell? entry calls #stop (no-op on adapter)
+      expect { registry.stop_entry(adapter) }.not_to raise_error
+    end
+  end
 end

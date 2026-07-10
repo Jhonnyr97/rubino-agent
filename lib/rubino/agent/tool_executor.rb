@@ -212,11 +212,43 @@ module Rubino
       def run_tool(tool, name:, arguments:, call_id:)
         tool.cancel_token = @cancel_token if tool.respond_to?(:cancel_token=)
         tool.read_tracker = @read_tracker if tool.respond_to?(:read_tracker=)
+
+        # ── Inline tool adapter (live_card opt-in) ────────────────────
+        # When the tool class declares `live_card`, create an adapter and
+        # register it in BackgroundTasks so it appears in the multiplexer
+        # dropdown WHILE the tool runs. The adapter's output buffer is fed
+        # from the same stream_chunk callback — the existing ⏎ attach then
+        # shows the inline tool's output like any shell/subagent entry.
+        inline_adapter = nil
+        if tool.class.respond_to?(:live_card?) && tool.class.live_card?
+          begin
+            header = tool.class.live_card_header.call(arguments)
+          rescue StandardError => e
+            Rubino.logger&.warn(event: "tool_executor.live_card_header_failed",
+                                error: e.message, error_class: e.class.name)
+            header = name.to_s
+          end
+          inline_adapter = Tools::InlineToolAdapter.new(
+            id: "il_#{SecureRandom.hex(4)}",
+            tool_name: name,
+            command_hint: header.to_s
+          )
+          Tools::BackgroundTasks.instance.register_inline(inline_adapter)
+        end
+
         streamed = false
         last_progress_at = nil
-        if tool.respond_to?(:stream_chunk=) && (@ui.respond_to?(:tool_chunk) || @event_bus)
+        # Install stream_chunk when the UI/event_bus needs it OR we have an
+        # inline adapter that needs its buffer fed (even in test environments
+        # where the UI doesn't respond to tool_chunk).
+        if tool.respond_to?(:stream_chunk=) &&
+           (@ui.respond_to?(:tool_chunk) || @event_bus || inline_adapter)
           tool.stream_chunk = lambda do |chunk|
             streamed = true
+            # Tee into the inline adapter's buffer so the attach view has
+            # output to show (zero new branches — the adapter duck-types
+            # the background-entry interface the existing attach reads).
+            inline_adapter&.write(chunk)
             # Read stream_kind LAZILY: the tool only knows its output kind
             # (e.g. :diff for `git diff`) once #call has inspected the command,
             # which happens AFTER this lambda is installed.
@@ -334,6 +366,10 @@ module Rubino
                      result: result, status: "failed", error: e.message)
         result
       ensure
+        if inline_adapter
+          inline_adapter.finish!
+          Tools::BackgroundTasks.instance.unregister_inline(inline_adapter.id)
+        end
         tool.cancel_token = nil if tool.respond_to?(:cancel_token=)
         tool.read_tracker = nil if tool.respond_to?(:read_tracker=)
         tool.stream_chunk = nil if tool.respond_to?(:stream_chunk=)
