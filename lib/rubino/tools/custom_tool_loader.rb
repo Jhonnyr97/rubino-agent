@@ -99,7 +99,19 @@ module Rubino
           define_method(:name) { builder._name }
           define_method(:description) { builder._description }
           define_method(:input_schema) { builder._input_schema }
-          define_method(:risk_level) { builder._risk_level }
+
+          # Provide security and presentation objects so Base delegation works.
+          # Security reflects the user-declared risk_level from the DSL.
+          custom_risk = builder._risk_level
+          security_class = Class.new(Tools::ToolSecurity) do
+            define_method(:risk) { custom_risk }
+            define_method(:risky?) { %i[medium high].include?(custom_risk) }
+          end
+          define_method(:security) { security_class.new }
+
+          # Presentation: all defaults match ToolPresentationCLI exactly.
+          define_method(:presentation) { Tools::ToolPresentationCLI.new }
+
           define_method(:call) { |args| builder._execute_block.call(args) }
         end.new
       end

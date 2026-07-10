@@ -49,8 +49,8 @@ RSpec.describe Rubino::Tools::ProbeTool do
     it "missing question → question is required" do
       parent = reserve
       child  = reserve(owner: parent.id)
-      out = call_as(parent.id, tool, "task_id" => child.id, "question" => "  ")
-      expect(out).to eq("Error: question is required")
+      out = call_as(parent.id, tool, "task_id" => child.id)
+      expect(out).to include("missing keyword")
     end
 
     it "SIBLING → not your subagent" do

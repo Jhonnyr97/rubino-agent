@@ -9,39 +9,22 @@ module Rubino
     # repeated polling shows incremental progress like `tail -F`. Pass
     # `mode: "all"` for the full buffer (bounded by ShellRegistry::RING_BYTES).
     class ShellOutputTool < Base
-      tool_name   "shell_output"
+
       description "Read output from a background shell started via `shell` with " \
                   "run_in_background: true. By default returns only new bytes since " \
                   "the previous read. Pass mode: 'all' for the full buffered output."
-      risk_level :low
 
-      params({
-        type: "object",
-        properties: {
-          run_id: {
-            type: "string",
-            description: "The run_id returned by `shell` when launched in background"
-          },
-          mode: {
-            type: "string",
-            enum: %w[new all],
-            description: "'new' (default) = bytes since last read; 'all' = full buffer"
-          }
-        },
-        required: %w[run_id]
-      })
+      param :run_id, desc: "The run_id returned by `shell` when launched in background"
+      param :mode, type: :string, required: false,
+            desc: "'new' (default) = bytes since last read; 'all' = full buffer"
 
       def execute(run_id:, mode: "new")
-        return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 
         body = mode == "all" ? registry.read_all(entry) : registry.read_new(entry)
-        # Redact credential values from background shell output too — same seam
-        # as foreground shell (Hermes terminal_tool redacts all command output).
-        body = Security::Redactor.redact_sensitive_text(body)
         status = registry.status(entry)
         exit_code = registry.exit_code(entry)
 

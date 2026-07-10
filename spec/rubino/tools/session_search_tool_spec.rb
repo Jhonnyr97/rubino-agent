@@ -34,7 +34,7 @@ RSpec.describe Rubino::Tools::SessionSearchTool do
     expect(hits.first["snippet"]).to include("<mark>pizza</mark>")
   end
 
-  it "filters by since/until on created_at" do
+  it "filters by since/before on created_at" do
     old_id = SecureRandom.uuid
     new_id = SecureRandom.uuid
     Rubino.database.db[:messages].insert(
@@ -49,7 +49,7 @@ RSpec.describe Rubino::Tools::SessionSearchTool do
     hits = parse(tool.call("query" => "pizza", "since" => "2026-01-01T00:00:00Z"))
     expect(hits.map { |h| h["message_id"] }).to eq([new_id])
 
-    hits = parse(tool.call("query" => "pizza", "until" => "2021-01-01T00:00:00Z"))
+    hits = parse(tool.call("query" => "pizza", "before" => "2021-01-01T00:00:00Z"))
     expect(hits.map { |h| h["message_id"] }).to eq([old_id])
   end
 
@@ -89,6 +89,6 @@ RSpec.describe Rubino::Tools::SessionSearchTool do
   end
 
   it "rejects an empty query with an error string" do
-    expect(tool.call("query" => "")).to match(/required/i)
+    expect(tool.call({})).to match(/missing keyword/i)
   end
 end

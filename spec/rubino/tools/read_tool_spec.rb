@@ -52,15 +52,12 @@ RSpec.describe Rubino::Tools::ReadTool do
     FileUtils.rm_rf(outside)
   end
 
-  it "redacts credential VALUES in non-blocked file content (code_file mode)" do
-    outside = Dir.mktmpdir("read_redact")
-    path = File.join(outside, "config.txt")
-    File.write(path, "key = ghp_abcdefghijklmnop1234\n")
-    out = payload(tool.call("file_path" => path))
-    expect(out).not_to include("ghp_abcdefghijklmnop1234")
-    expect(out).to include("ghp_ab...1234")
-  ensure
-    FileUtils.rm_rf(outside)
+  # Redaction moved to the ToolExecutor chokepoint (see error_code_spec's
+  # "redaction chokepoint"); read only DECLARES the profile the executor applies.
+  # :code keeps prefixed secrets (ghp_/sk-) masked while skipping the ENV/JSON
+  # assignment patterns that false-positive on source constants.
+  it "declares the :code redaction profile for file content" do
+    expect(described_class.redaction_profile).to eq(:code)
   end
 
   it "reads a file OUTSIDE the workspace (broad reads, #406)" do
@@ -220,8 +217,8 @@ RSpec.describe Rubino::Tools::ReadTool do
         expect(payload(result)).to include("a + 1")
       end
 
-      it "advertises no `compress` param when the feature is off" do
-        expect(tool.input_schema[:properties]).not_to have_key(:compress)
+      it "still advertises the `compress` param (static schema; #execute no-ops it when off)" do
+        expect(tool.input_schema[:properties]).to have_key(:compress)
       end
     end
 

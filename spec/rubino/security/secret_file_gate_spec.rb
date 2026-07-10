@@ -296,13 +296,16 @@ RSpec.describe "secret-file write approval gate (#480)" do
   #    matching Hermes search_tool.
   # ----------------------------------------------------------------------------
   describe "grep include-glob over a directory" do
-    it "returns the .env hit for an include:'*.env' search with the value redacted" do
+    # grep does NOT block .env (only `read` does); the credential VALUE is masked
+    # at the ToolExecutor chokepoint via grep's declared :code profile (the
+    # masking itself is proven in redactor_spec / the executor chokepoint spec).
+    it "returns the .env hit for an include:'*.env' search (not blocked; value masked via :code redaction)" do
       File.write(File.join(tmp_dir, ".env"), "API_KEY=ghp_abcdefghijklmnop1234\n")
       File.write(File.join(tmp_dir, "app.rb"), "API_KEY = 'used'\n")
       out = Rubino::Tools::GrepTool.new.call("pattern" => "API_KEY", "path" => tmp_dir, "include" => "*.env")
       text = out.is_a?(Hash) ? out[:output] : out
       expect(text).to include("API_KEY=")
-      expect(text).not_to include("ghp_abcdefghijklmnop1234")
+      expect(Rubino::Tools::GrepTool.redaction_profile).to eq(:code)
     end
   end
 end

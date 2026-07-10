@@ -9,17 +9,27 @@ module Rubino
     # doubt). Kept intentionally narrow — no append mode, no partial writes;
     # those belong in `edit` / `multi_edit`.
     class WriteTool < Base
-      tool_name   "write"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+        def require_overwrite_guard = true
+      end
+
+      class ToolPresentation < Tools::ToolPresentation
+        def stream_params? = true
+      end
+
+      security     ToolSecurity
+      presentation ToolPresentation
+      redaction_profile :none
+
       description "Write content to a file, overwriting any existing content. " \
                   "Creates parent directories if they do not exist. " \
                   "Use `edit` or `multi_edit` to modify an existing file in place."
-      risk_level :medium
 
       param :file_path, desc: "Absolute or relative file path"
       param :content,   desc: "Full file content to write"
 
       def execute(file_path:, content: "")
-        return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
         # SECRET/credential writes (#446) are no longer HARD-refused here — they

@@ -70,7 +70,7 @@ RSpec.describe Rubino::Tools::WriteTool do
   end
 
   it "errors out on missing file_path" do
-    expect(tool.call("file_path" => "", "content" => "x")).to include("file_path is required")
+    expect(tool.call({})).to include("missing keyword")
   end
 
   # r5 MF-2 — read-before-overwrite guard. Blind `write` over an EXISTING file

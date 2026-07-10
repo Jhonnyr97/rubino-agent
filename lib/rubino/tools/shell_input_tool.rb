@@ -19,14 +19,19 @@ module Rubino
     # that require a real terminal) are out of scope: the background shell uses
     # a plain pipe, not a pseudo-terminal.
     class ShellInputTool < Base
-      tool_name   "shell_input"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+      end
+
+
+      security     ToolSecurity
+
       description "Send input to a background shell started via `shell` with " \
                   "run_in_background: true — answer an interactive prompt (Y/N, menu " \
                   "selection, password) of a running command. A newline is appended by " \
                   "default (like pressing Enter); pass enter: false for raw bytes, or " \
                   "eof: true to close stdin (EOF). Read the prompt and the result with " \
                   "`shell_output`."
-      risk_level :medium
 
       param :run_id, desc: "The run_id returned by `shell` when launched in background"
       param :text,   desc: "The text to write to the process's stdin (e.g. \"y\", \"2\")", required: false
@@ -34,7 +39,6 @@ module Rubino
       param :eof,    type: :boolean, desc: "Close stdin / send EOF after writing (default false)", required: false
 
       def execute(run_id:, text: "", enter: true, eof: false)
-        return "Error: run_id is required" if run_id.nil? || run_id.to_s.empty?
 
         registry = ShellRegistry.instance
         entry    = registry.find(run_id)

@@ -9,6 +9,8 @@ module Rubino
     # edit exact lines instead of "the second occurrence of X"; offset/limit
     # let it page through files that would otherwise blow the context.
     class ReadTool < Base
+      redaction_profile :code
+
       DEFAULT_LIMIT  = 2000
       MAX_LINE_WIDTH = 2000
       # Hard cap on the bytes a single read returns (~25k tokens at 4 bytes/tok,
@@ -16,8 +18,6 @@ module Rubino
       # could otherwise build multiple MB in memory and blow up prefill/TTFT;
       # past this we stop and tell the model to narrow the range or grep.
       MAX_OUTPUT_BYTES = 100_000
-
-      tool_name   "read"
 
       def description
         base = "Read a text file from the filesystem with line numbers (cat -n style). " \
@@ -27,16 +27,15 @@ module Rubino
         base + compression_note
       end
 
-      # Dynamic schema: the compress param is only added when compression is enabled.
-      # Override input_schema to handle conditional params.
-      def input_schema
-        props = {
-          file_path: { type: "string", description: "Absolute or relative file path" },
-          offset: { type: "integer", description: "1-based line to start at (default 1)" },
-          limit: { type: "integer", description: "Max lines to return (default #{DEFAULT_LIMIT})" }
-        }
-        props[:compress] = compress_param if compression_enabled?
-        { type: "object", properties: props, required: %w[file_path] }
+      # `compress` is advertised unconditionally: it's a no-op when compression is
+      # off (#execute treats compress: nil/false the same), so a static schema is
+      # fine — the real gate is in #execute, not the advertised param.
+      params do
+        string :file_path, description: "Absolute or relative file path"
+        integer :offset, required: false, description: "1-based line to start at (default 1)"
+        integer :limit, required: false, description: "Max lines to return (default #{DEFAULT_LIMIT})"
+        boolean :compress, required: false,
+                           description: "Set false to skip compression and read the verbatim file (default true)."
       end
 
       # Advertised only when the feature is on: a one-line note explaining that a
@@ -50,26 +49,17 @@ module Rubino
           "retrievable via the read pointer. Pass compress:false to force the verbatim file."
       end
 
-      def compress_param
-        { type: "boolean",
-          description: "Set false to skip compression and read the verbatim file (default true)." }
-      end
-
       def compression_enabled?
         Rubino.configuration.tool_output_compression_enabled?
       rescue StandardError
         false
       end
 
-      risk_level :low
-
-      def execute(file_path:, offset: 1, limit: DEFAULT_LIMIT, compress: nil)
+      def execute(file_path:, offset: 1, limit: DEFAULT_LIMIT, compress: nil) # rubocop:disable Lint/UnusedMethodArgument
         # A WHOLE-file read (no offset AND no limit supplied) is exploration and
         # the ONLY thing compression touches. A read carrying EITHER is a
         # targeted window — the drill-in path — which always returns verbatim.
         full_file = offset == 1 && limit == DEFAULT_LIMIT
-
-        return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
 
         expanded = expand_workspace_path(file_path)
         # Secret-file READ block, ported 1:1 from Hermes' get_read_block_error:
@@ -304,17 +294,11 @@ module Rubino
                    else
                      ""
                    end
-          # Redact credential values from the read content before it enters
-          # context — matches Hermes file_tools.read_file_tool
-          # (code_file:true skips ENV/JSON assignment patterns that false-
-          # positive on source like MAX_TOKENS=*** constants).
-          full = Security::Redactor.redact_sensitive_text(out + footer, code_file: true)
+          full = out + footer
           { output: full,
             metrics: "#{printed} line#{"s" if printed != 1}",
             body: Util::Output.preview(
-              Security::Redactor.redact_sensitive_text(
-                display_gutter(out, last_shown) + footer, code_file: true
-              )
+              display_gutter(out, last_shown) + footer
             ),
             body_kind: :plain,
             # Routing context for the compression seam — present only for a

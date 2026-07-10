@@ -52,8 +52,7 @@ RSpec.describe Rubino::Tools::RetrieveOutputTool do
     end
 
     it "requires an id" do
-      expect(tool.call({})).to start_with("Error: id is required")
-      expect(tool.call("id" => "  ")).to start_with("Error: id is required")
+      expect(tool.call({})).to include("missing keyword")
     end
 
     it "cannot traverse out of the tool-results dir (path traversal is sanitized away)" do

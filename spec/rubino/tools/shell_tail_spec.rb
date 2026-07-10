@@ -76,7 +76,7 @@ RSpec.describe Rubino::Tools::ShellTailTool do
   end
 
   it "requires run_id" do
-    out = tool.call("run_id" => "")
-    expect(out).to include("run_id is required")
+    out = tool.call({})
+    expect(out).to include("missing keyword")
   end
 end

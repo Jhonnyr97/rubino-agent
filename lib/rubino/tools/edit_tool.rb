@@ -5,12 +5,25 @@ module Rubino
     # Tool for performing exact string replacements in files.
     # Replaces a specific old string with a new string - more precise than full file writes.
     class EditTool < Base
-      tool_name   "edit"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+        def require_read = true
+      end
+
+      class ToolPresentation < Tools::ToolPresentationCLI
+        def stream_params? = true
+        def body_kind = :diff
+        def preview_lines = nil
+      end
+
+      security     ToolSecurity
+      presentation ToolPresentation
+      redaction_profile :none
+
       description "Perform exact string replacement in a file. " \
                   "Specify the old text to find and the new text to replace it with. " \
                   "The old text must match exactly (including whitespace/indentation). " \
                   "Use replace_all to replace all occurrences."
-      risk_level :medium
 
       param :file_path,  desc: "The path to the file to edit"
       param :old_string, desc: "The exact text to find and replace"

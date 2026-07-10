@@ -1560,7 +1560,12 @@ RSpec.describe Rubino::UI::CLI do
   describe "attention notification seams" do
     let(:notifier) { instance_spy(Rubino::UI::Notifier) }
 
-    before { ui.instance_variable_set(:@notifier, notifier) }
+    before do
+      ui.instance_variable_set(:@notifier, notifier)
+      Rubino::Tools::Registry.register(Rubino::Tools::WriteTool.new)
+    end
+
+    after { Rubino::Tools::Registry.unregister("write") }
 
     it "reports the turn's elapsed seconds to the notifier on turn end" do
       capture_stdout do

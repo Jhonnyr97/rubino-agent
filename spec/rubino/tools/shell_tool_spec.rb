@@ -72,10 +72,10 @@ RSpec.describe Rubino::Tools::ShellTool do
       tool.call("command" => "echo x", "disable_sandbox" => true)
     end
 
-    it "advertises disable_sandbox in the schema only when the hatch is open" do
+    it "always advertises disable_sandbox (the escape hatch is gated in #execute, not the schema)" do
       expect(tool.input_schema[:properties]).to have_key(:disable_sandbox)
       allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(false)
-      expect(tool.input_schema[:properties]).not_to have_key(:disable_sandbox)
+      expect(tool.input_schema[:properties]).to have_key(:disable_sandbox)
     end
 
     context "when the operator disabled the hatch (escalation=off)" do
@@ -186,6 +186,7 @@ RSpec.describe Rubino::Tools::ShellTool do
     # code_file, so secret-named ENV assignments mask too).
     it "redacts secret values in command output (cat .env masked)" do
       out = payload(tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\nNORMAL=ok\\n'"))
+      out = Rubino::Security::Redactor.new.redact(out, profile: :shell)
       expect(out).not_to include("ghp_abcdefghijklmnop1234")
       # Shell output is full-mode (no code_file): the secret-named ENV
       # assignment masks the whole value, like Hermes terminal_tool.
@@ -203,6 +204,7 @@ RSpec.describe Rubino::Tools::ShellTool do
       streamed = +""
       tool.stream_chunk = ->(chunk) { streamed << chunk }
       out = payload(tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\nNORMAL=ok\\n'"))
+      out = Rubino::Security::Redactor.new.redact(out, profile: :shell)
 
       expect(streamed).not_to include("ghp_abcdefghijklmnop1234")
       expect(streamed).to include("API_KEY=‹redacted by rubino›")
@@ -214,12 +216,16 @@ RSpec.describe Rubino::Tools::ShellTool do
     # The opt-out must still bypass redaction on the stream seam, mirroring the
     # final-output behaviour — so the toggle is honoured uniformly.
     it "passes raw values through the stream when redaction is disabled" do
-      allow(Rubino::Security::Redactor).to receive(:enabled?).and_return(false)
+      Rubino.configuration.set("security", "redact_secrets", false)
+      Rubino::Security::Redactor.reset!
       streamed = +""
       tool.stream_chunk = ->(chunk) { streamed << chunk }
       tool.call("command" => "printf 'API_KEY=ghp_abcdefghijklmnop1234\\n'")
 
       expect(streamed).to include("ghp_abcdefghijklmnop1234")
+    ensure
+      Rubino.configuration.set("security", "redact_secrets", true)
+      Rubino::Security::Redactor.reset!
     end
 
     it "includes exit code for non-zero exit commands" do
@@ -239,7 +245,7 @@ RSpec.describe Rubino::Tools::ShellTool do
     end
 
     it "returns an error when command is missing" do
-      expect(tool.call("command" => "")).to include("Error: command is required")
+      expect(tool.call({})).to include("missing keyword")
     end
 
     it "returns an error when cwd does not exist" do

@@ -2,13 +2,13 @@
 
 rubino ships **28 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `webfetch`, `websearch`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **23 rows** (config groups), not 28: `webfetch` + `websearch` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **23 rows** (config groups), not 28: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
-- **Config flag** — `tools.<config_key>`. Most tools key on their own name; `webfetch`/`websearch` share `tools.web`; the delegation family shares `tools.task`; absent keys default to enabled. `rubino tools` prints the effective state per config group.
+- **Config flag** — `tools.<config_key>`. Most tools key on their own name; `web_fetch`/`web_search` share `tools.web`; the delegation family shares `tools.task`; absent keys default to enabled. `rubino tools` prints the effective state per config group.
 - **Mode** — `plan` mode pares the registry down to read-only tools (no `edit`/`shell`/`git`/…); `default` and `yolo` expose everything (their difference is on the approval path).
 - **Approval** — see [security.md](security.md). Shell commands are confirmation-gated by default; a non-bypassable hardline floor blocks catastrophic commands regardless of mode.
 - **Workspace sandbox** — with `tools.workspace_strict: true` (default), write/edit/delete tools are confined to the workspace root (`terminal.cwd` or `Dir.pwd`).
@@ -159,7 +159,7 @@ Risk: medium
 Parameters: patch, base_path
 ```
 
-### webfetch
+### web_fetch
 
 Fetch web page content and return as text.
 
@@ -189,7 +189,7 @@ Two guarantees so capability is never lost:
 - **Raw escape hatch** — `format: "html"` returns the full raw HTML **verbatim**,
   completely unprocessed, for when the model wants the original page.
 
-### websearch
+### web_search
 
 Search the web. Supports Tavily (best), SearXNG, or DuckDuckGo fallback.
 
@@ -243,7 +243,7 @@ Full-text search across past session messages. Returns matched messages with hig
 
 ```
 Risk: low
-Parameters: query, since, until, role, tool, limit
+Parameters: query, since, before, role, tool, limit
 ```
 
 ### attach_file

@@ -347,6 +347,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
         def description = "x"
         def input_schema = {}
         def risk_level = :high
+        def risky? = true
         def call(_) = "out"
       end.new
       allow(registry).to receive(:find).and_return(risky)

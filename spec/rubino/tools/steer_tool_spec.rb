@@ -77,8 +77,8 @@ RSpec.describe Rubino::Tools::SteerTool do
   it "requires a note" do
     parent = reserve
     child  = reserve(owner: parent.id)
-    out = call_as(parent.id, "task_id" => child.id, "note" => "   ")
-    expect(out).to eq("Error: note is required")
+    out = call_as(parent.id, "task_id" => child.id)
+    expect(out).to include("missing keyword")
   end
 
   it "truncates the echoed note to 80 chars" do

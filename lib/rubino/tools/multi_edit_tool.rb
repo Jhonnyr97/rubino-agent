@@ -10,39 +10,37 @@ module Rubino
     # Each subsequent edit sees the result of prior edits in the same call,
     # so you can rename A→B and then change a line that contains B.
     class MultiEditTool < Base
-      tool_name   "multi_edit"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+        def require_read = true
+      end
+
+      class ToolPresentation < Tools::ToolPresentationCLI
+        def stream_params? = true
+        def body_kind = :diff
+        def preview_lines = nil
+      end
+
+      security     ToolSecurity
+      presentation ToolPresentation
+      redaction_profile :none
+
       description "Apply multiple exact string replacements to a single file atomically. " \
                   "Edits are applied sequentially in the given order; later edits see " \
                   "the result of earlier ones. If any edit fails, NO changes are written."
-      risk_level :medium
 
-      # Nested edits array — uses params block for the complex structure
-      params({
-        type: "object",
-        properties: {
-          file_path: {
-            type: "string",
-            description: "Path to the file to edit"
-          },
-          edits: {
-            type: "array",
-            description: "Ordered list of edits to apply",
-            items: {
-              type: "object",
-              properties: {
-                old_string: { type: "string",  description: "Exact text to find" },
-                new_string: { type: "string",  description: "Replacement text" },
-                replace_all: { type: "boolean", description: "Replace all occurrences (default false)" }
-              },
-              required: %w[old_string new_string]
-            }
-          }
-        },
-        required: %w[file_path edits]
-      })
+      params do
+        string :file_path, description: "Path to the file to edit"
+        array :edits, description: "Ordered list of edits to apply" do
+          object do
+            string :old_string, description: "Exact text to find"
+            string :new_string, description: "Replacement text"
+            boolean :replace_all, description: "Replace all occurrences (default false)"
+          end
+        end
+      end
 
       def execute(file_path:, edits: [])
-        return "Error: file_path is required" if file_path.nil? || file_path.to_s.empty?
         return "Error: edits must be a non-empty array" if !edits.is_a?(Array) || edits.empty?
 
         expanded = expand_workspace_path(file_path)

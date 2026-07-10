@@ -176,7 +176,7 @@ tools:
   git: true
   shell: true                 # ON by default; every command is still approval-gated
   ruby: true
-  web: true                   # ON by default (keyless DuckDuckGo backend); gates BOTH webfetch and websearch
+  web: true                   # ON by default (keyless DuckDuckGo backend); gates BOTH web_fetch and web_search
   memory: true
 ```
 

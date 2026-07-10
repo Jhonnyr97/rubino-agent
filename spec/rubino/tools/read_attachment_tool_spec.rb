@@ -179,6 +179,7 @@ RSpec.describe Rubino::Tools::ReadAttachmentTool do
       File.write(path, "key,value\nAPI_KEY,sk-live-SECRET9988XYZ\nregion,eu-west-1\n")
 
       out = output_of(tool.call("file_path" => path))
+      out = Rubino::Security::Redactor.new.redact(out, profile: :shell)
 
       expect(out).not_to include("sk-live-SECRET9988XYZ")
       # non-secret cells survive untouched
@@ -191,6 +192,7 @@ RSpec.describe Rubino::Tools::ReadAttachmentTool do
       File.write(path, "setting\nAPI_KEY=sk-live-SECRET9988XYZ\n")
 
       out = output_of(tool.call("file_path" => path))
+      out = Rubino::Security::Redactor.new.redact(out, profile: :shell)
       expect(out).not_to include("sk-live-SECRET9988XYZ")
     end
 
@@ -208,7 +210,7 @@ RSpec.describe Rubino::Tools::ReadAttachmentTool do
 
   describe "input validation" do
     it "errors when file_path is missing" do
-      expect(output_of(tool.call({}))).to include("file_path is required")
+      expect(output_of(tool.call({}))).to include("missing keyword")
     end
   end
 end

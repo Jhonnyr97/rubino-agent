@@ -5,11 +5,12 @@ module Rubino
     # Tool for searching file contents using regex patterns.
     # Backed by ripgrep (rg) if available, falls back to Ruby grep.
     class GrepTool < Base
-      tool_name   "grep"
+
+      redaction_profile :code
+
       description "Search file contents using regular expressions. " \
                   "Returns matching file paths and line numbers. " \
                   "Supports include patterns to filter by file type."
-      risk_level :low
 
       param :pattern,     desc: "The regex pattern to search for"
       param :path,        desc: "Directory to search in (defaults to current directory)", required: false
@@ -106,11 +107,7 @@ module Rubino
           more      = more_exist
           header    = "#{lines.size} match(es) shown" \
                       "#{" (more — raise max_results or narrow the pattern)" if more}"
-          # Redact credential values from matched lines before they enter
-          # context — matches Hermes search_tool (code_file:true, like read).
-          # grep does NOT block secret paths in Hermes; it redacts the hits.
-          body_text = Security::Redactor.redact_sensitive_text(lines.join, code_file: true)
-          full      = "#{header}:\n\n#{body_text}"
+          full      = "#{header}:\n\n#{lines.join}"
           { output: full,
             metrics: "#{lines.size} match#{"es" if lines.size != 1}#{"+" if more}",
             body: Util::Output.preview(full),
@@ -209,11 +206,7 @@ module Rubino
           match_count  = results.count { |l| l.include?(":") && l !~ /:\d+- / && l != "--" }
           header       = "#{match_count} match(es) shown" \
                          "#{" (more may exist — raise max_results or narrow the pattern)" if capped}"
-          # Redact credential values from matched lines (Ruby fallback path) —
-          # matches Hermes search_tool (code_file:true). grep redacts, never
-          # blocks, the secret hits.
-          body_text = Security::Redactor.redact_sensitive_text(results.join("\n"), code_file: true)
-          full = "#{header}:\n\n#{body_text}"
+          full = "#{header}:\n\n#{results.join("\n")}"
           { output: full,
             metrics: "#{match_count} match#{"es" if match_count != 1}#{"+" if capped}",
             body: Util::Output.preview(full),

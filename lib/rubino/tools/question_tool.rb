@@ -7,33 +7,22 @@ module Rubino
     # Tool that asks the user interactive questions with predefined options.
     # Allows the agent to gather clarification or preferences from the user.
     class QuestionTool < Base
-      tool_name   "question"
+      redaction_profile :none
+
       description "Ask the user a question with optional predefined choices. " \
                   "Use this when you need clarification, user preferences, or a decision. " \
                   "The user can select from options or type a custom answer."
-      risk_level :low
 
-      # Nested options array — uses params block for the complex structure
-      params({
-        type: "object",
-        properties: {
-          question: { type: "string", description: "The question to ask the user" },
-          options: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string", description: "Short display text for the option" },
-                description: { type: "string", description: "Explanation of this choice" }
-              },
-              required: %w[label]
-            },
-            description: "Available choices (optional). A 'Type your own' option is added automatically."
-          },
-          multiple: { type: "boolean", description: "Allow selecting multiple choices (default: false)" }
-        },
-        required: %w[question]
-      })
+      params do
+        string :question, description: "The question to ask the user"
+        array :options, description: "Available choices (optional). A 'Type your own' option is added automatically." do
+          object do
+            string :label, description: "Short display text for the option"
+            string :description, description: "Explanation of this choice"
+          end
+        end
+        boolean :multiple, description: "Allow selecting multiple choices (default: false)"
+      end
 
       # Deterministic result when no user answer is available — the UI's #ask
       # returned nil (non-interactive / piped session, or the user gave no

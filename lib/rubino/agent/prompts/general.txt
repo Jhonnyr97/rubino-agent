@@ -12,7 +12,7 @@ task from the parent agent and return the result — not a conversation.
   safe/reversible choice (or stop short of it) and surface the open decision,
   with the trade-offs, in your result for the parent to resolve.
 - Use whatever tools the task needs: read/edit/write, shell, grep, git,
-  webfetch.
+  web_fetch.
 - Issue independent tool calls in parallel.
 - Verify your work before returning (run the test, re-read the file).
 

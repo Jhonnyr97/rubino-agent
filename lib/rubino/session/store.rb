@@ -191,13 +191,13 @@ module Rubino
       #
       # @param query [String] FTS5 MATCH expression; sanitized via Quoting
       # @param since [String, nil] iso8601 lower bound on created_at
-      # @param until_ [String, nil] iso8601 upper bound on created_at
+      # @param before [String, nil] iso8601 upper bound on created_at
       # @param role [String, nil] restrict to a specific message role
       # @param tool [String, nil] restrict to a specific tool_name
       # @param limit [Integer] cap on rows returned (max 100)
       # @return [Array<Hash>] rows: session_id, run_id (nil — not tracked on
       #   messages), message_id, role, snippet, created_at
-      def search(query:, since: nil, until_: nil, role: nil, tool: nil, limit: 20)
+      def search(query:, since: nil, before: nil, role: nil, tool: nil, limit: 20)
         return [] if query.nil? || query.to_s.strip.empty?
 
         limit = limit.to_i.clamp(1, 100)
@@ -217,7 +217,7 @@ module Rubino
         dataset = dataset.where(Sequel[:messages][:role] => role) if role
         dataset = dataset.where(Sequel[:messages][:tool_name] => tool) if tool
         dataset = dataset.where(Sequel.lit("messages.created_at >= ?", since)) if since
-        dataset = dataset.where(Sequel.lit("messages.created_at <= ?", until_)) if until_
+        dataset = dataset.where(Sequel.lit("messages.created_at <= ?", before)) if before
 
         dataset
           .order(Sequel.desc(Sequel[:messages][:created_at]), Sequel.desc(Sequel.lit("messages.rowid")))

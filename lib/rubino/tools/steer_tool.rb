@@ -20,7 +20,8 @@ module Rubino
     # Mechanism reuse: it wraps BackgroundTasks#steer verbatim (the SAME wire the
     # human CLI uses) — no new transport, no new state.
     class SteerTool < Base
-      tool_name   "steer"
+      redaction_profile :none
+
 
       # Gated by the same `tools.task` delegation key — steering a child is
       # meaningless without the delegation substrate. Disabling delegation
@@ -36,22 +37,13 @@ module Rubino
                   "You can ONLY steer subagents you started (your direct children); you " \
                   "cannot steer yourself, a sibling, or a finished child. The note is " \
                   "queued, not delivered instantly — the child sees it between turns."
-      risk_level :low
 
-      params({
-        type: "object",
-        properties: {
-          task_id: { type: "string", description: "The id (sa_…) of YOUR running subagent to steer." },
-          note: { type: "string",
-                  description: "The steering note to fold into the child's next turn. Keep it short and self-contained." }
-        },
-        required: %w[task_id note]
-      })
+      param :task_id, desc: "The id (sa_…) of YOUR running subagent to steer."
+      param :note, desc: "The steering note to fold into the child's next turn. Keep it short and self-contained."
 
       def execute(task_id:, note:)
         task_id = task_id.to_s.strip
         note    = note.to_s.strip
-        return "Error: note is required" if note.empty?
 
         caller_id = Rubino.current_subagent_id
         registry  = BackgroundTasks.instance

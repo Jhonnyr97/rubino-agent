@@ -16,13 +16,18 @@ module Rubino
     # polluting the agent (it can `exit`, redefine constants, spawn threads,
     # leak globals) without affecting the host.
     class RubyTool < Base
-      tool_name   "ruby"
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :medium
+      end
+
+
+      security     ToolSecurity
+
       description "Evaluate Ruby code and return the result. " \
                   "Useful for calculations, data transformations, and scripting tasks. " \
                   "Runs in a separate Ruby process rooted at the workspace, with the " \
                   "project's lib/ (and the workspace root) on the load path, so " \
                   "`require 'my_project/file'` and relative requires of project code work."
-      risk_level :medium
 
       param :code, desc: "The Ruby code to evaluate"
 

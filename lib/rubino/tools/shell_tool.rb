@@ -24,6 +24,18 @@ module Rubino
     # filesystem if it confuses paths" — so catastrophic, unrecoverable
     # commands are refused here even if the policy was somehow bypassed.
     class ShellTool < Base # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
+      class ToolSecurity < Tools::ToolSecurity
+        def risk = :high
+        def allow_widening = true
+      end
+
+      class ToolPresentation < Tools::ToolPresentation
+        def stream_output? = true
+      end
+
+      security     ToolSecurity
+      presentation ToolPresentation
+
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
 
@@ -110,8 +122,6 @@ module Rubino
         DIFF_COMMAND.match?(command.to_s)
       end
 
-      tool_name   "shell"
-
       def description
         base = "Execute a shell command. " \
                "Foreground: blocks until the command exits or `timeout` seconds elapse " \
@@ -142,49 +152,27 @@ module Rubino
         false
       end
 
-      # Dynamic schema: conditional params (disable_sandbox, compress) depend on
-      # config state at schema-build time. Keep input_schema override.
-      def input_schema
-        props = {
-          command: {
-            type: "string",
-            description: "The shell command to execute"
-          },
-          cwd: {
-            type: "string",
-            description: "Working directory (defaults to current)"
-          },
-          timeout: {
-            type: "integer",
-            description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
-          },
-          run_in_background: {
-            type: "boolean",
-            description: "If true, start the command detached and return a run_id immediately."
-          }
-        }
-        if Security::Sandbox.escalation_allowed?
-          props[:disable_sandbox] = {
-            type: "boolean",
-            description: "Set true ONLY to re-run a command that a previous attempt failed to run " \
-                         "because the OS write-jail blocked a write OUTSIDE the workspace. It runs " \
-                         "the command outside the jail and REQUIRES explicit user approval. The " \
-                         "agent home (~/.rubino) stays protected even so — manage skills with the " \
-                         "`skill` tool, not a shell rm. Foreground only."
-          }
-        end
-        if compression_enabled?
-          props[:compress] = {
-            type: "boolean",
-            description: "Set false to skip output compression and return verbatim output (default true)."
-          }
-        end
-        { type: "object", properties: props, required: %w[command] }
+      # All params advertised unconditionally: disable_sandbox is refused with a
+      # note when the escape hatch is off, and compress is a no-op when output
+      # compression is off — the real gates live in #execute, not the schema.
+      params do
+        string :command, description: "The shell command to execute"
+        string :cwd, required: false, description: "Working directory (defaults to current)"
+        integer :timeout, required: false,
+                          description: "Foreground timeout in seconds (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT}). Ignored when run_in_background is true."
+        boolean :run_in_background, required: false,
+                                    description: "If true, start the command detached and return a run_id immediately."
+        boolean :disable_sandbox, required: false,
+                                  description: "Set true ONLY to re-run a command that a previous attempt failed to run " \
+                                               "because the OS write-jail blocked a write OUTSIDE the workspace. It runs " \
+                                               "the command outside the jail and REQUIRES explicit user approval. The " \
+                                               "agent home (~/.rubino) stays protected even so — manage skills with the " \
+                                               "`skill` tool, not a shell rm. Foreground only."
+        boolean :compress, required: false,
+                           description: "Set false to skip output compression and return verbatim output (default true)."
       end
 
-      risk_level :high
-
-      def execute(command:, cwd: nil, run_in_background: false, timeout: DEFAULT_TIMEOUT, disable_sandbox: nil, compress: nil)
+      def execute(command:, cwd: nil, run_in_background: false, timeout: DEFAULT_TIMEOUT, disable_sandbox: nil, compress: nil) # rubocop:disable Lint/UnusedMethodArgument
         timeout = [[timeout.to_i, 1].max, MAX_TIMEOUT].min
         # Escape hatch (§B): run outside the OS write-jail after explicit
         # approval. Honoured only when the operator hasn't disabled the hatch
@@ -197,7 +185,6 @@ module Rubino
         escalate             = requested_escalation && Security::Sandbox.escalation_allowed?
         escalation_refused   = requested_escalation && !escalate
 
-        return "Error: command is required" if command.nil? || command.to_s.empty?
         if escalate && run_in_background
           return { output: "Error: disable_sandbox is not supported for background commands — " \
                            "run it in the foreground.", error_code: :denied_command }
@@ -559,7 +546,7 @@ module Rubino
               line_buf << chunk
               while (nl = line_buf.index("\n"))
                 line = line_buf.slice!(0, nl + 1)
-                emit_chunk(Security::Redactor.redact_sensitive_text(line))
+                emit_chunk(Security::Redactor.resolve.redact(line, profile: :shell))
               end
               line_buf = line_buf[-capture_cap, capture_cap] || line_buf if line_buf.bytesize > capture_cap
 
@@ -576,7 +563,7 @@ module Rubino
             # killed it above.
           ensure
             # Flush any trailing partial line to the live stream.
-            emit_chunk(Security::Redactor.redact_sensitive_text(line_buf)) unless line_buf.empty?
+            emit_chunk(Security::Redactor.resolve.redact(line_buf, profile: :shell)) unless line_buf.empty?
             rd.close unless rd.closed?
           end
           capture.to_s(capped: capped_hit)
@@ -731,12 +718,7 @@ module Rubino
 
       def foreground_result(stdout:, duration_ms:, suffix: nil,
                             exit_code: nil, timed_out: false, cancelled: false)
-        # Redact credential values from command output before it enters
-        # context — matches Hermes terminal_tool (catches `cat .env`,
-        # `printenv`, `env` leaking keys). No code_file: shell output is not
-        # source, so the full ENV/JSON-assignment patterns apply too. The
-        # exit/cancel/timeout suffix is appended AFTER so it is never mangled.
-        text = Security::Redactor.redact_sensitive_text(stdout.to_s)
+        text = stdout.to_s
         text = "#{text}\n#{suffix}" if suffix
         { text: text,
           exit_code: exit_code,
