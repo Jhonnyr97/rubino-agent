@@ -16,33 +16,6 @@ module Rubino
         SUPPORTED_IMAGE_TYPES.include?(File.extname(path.to_s).downcase)
       end
 
-      # Detects image references in text (file paths or URLs)
-      # Extracts them and returns [cleaned_text, image_list]
-      def self.extract_images(text)
-        images = []
-        cleaned = text.dup
-
-        # Match file paths to images: /path/to/image.png or ./image.jpg
-        cleaned.gsub!(%r{(?:^|\s)((?:/|\./|~/)[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))}i) do
-          path = ::Regexp.last_match(1).strip
-          if File.exist?(File.expand_path(path))
-            images << { type: :file, path: File.expand_path(path) }
-            "" # Remove from text
-          else
-            ::Regexp.last_match(0)
-          end
-        end
-
-        # Match image URLs
-        cleaned.gsub!(%r{(https?://[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp)(?:\?[^\s]*)?)}i) do
-          url = ::Regexp.last_match(1)
-          images << { type: :url, url: url }
-          "" # Remove from text
-        end
-
-        [cleaned.strip, images]
-      end
-
       # Returns true if the model_id matches a known vision-capable family.
       # Heuristic only — Configuration#model_supports_vision? lets callers
       # override per-tenant (e.g. behind a proxy where model_id is the literal
