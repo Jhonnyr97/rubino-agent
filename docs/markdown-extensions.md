@@ -1,10 +1,16 @@
-# Claude Code / everything-claude-code Compatibility
+# Markdown extensions: agents, skills, commands & rules
 
-rubino reads the same `.md` files Claude Code and the `everything-claude-code` ecosystem
-use — agents, skills, commands, and project rules — so a directory structure set up for
-Claude Code works in rubino with **no migration step**. Drop your `CLAUDE.md`,
-`~/.claude/agents/`, `~/.claude/skills/`, and `~/.claude/commands/` files into place and
-rubino picks them up.
+rubino loads **agents, skills, commands, and project rules from plain markdown files**
+(YAML frontmatter + a markdown body) — so you can extend rubino without writing Ruby, and
+reuse portable extension packs. It's a first-class rubino capability, not a bridge to any
+one tool.
+
+rubino discovers these files under **both** its own locations (`~/.rubino/…`, `.rubino/…`)
+**and** the widely-used `~/.claude/…` / `.claude/…` locations. So an existing markdown
+extension pack from the ecosystem — [`everything-claude-code`](https://github.com/worldflowai/everything-claude-code)
+is one example — works by copying its files into place, and a `CLAUDE.md` / `AGENTS.md` in
+your project is read as project rules. (See [Security](#security): project-local files are
+trust-gated and all loaded content is injection-scanned.)
 
 ## Project rules (context files)
 
