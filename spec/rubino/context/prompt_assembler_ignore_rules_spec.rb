@@ -38,10 +38,15 @@ RSpec.describe Rubino::Context::PromptAssembler, "ignore_rules" do
   end
 
   it "injects project context for a trusted dir when ignore_rules is false" do
-    expect(system_prompt(ignore_rules: false)).to include("PROJECT_RULES_MARKER")
+    prompt = system_prompt(ignore_rules: false)
+    expect(prompt).to include("PROJECT_RULES_MARKER")
+    expect(prompt).to include("# Project Context")
+    expect(prompt).to include("The following project context files have been loaded")
   end
 
   it "suppresses project context when ignore_rules is true" do
-    expect(system_prompt(ignore_rules: true)).not_to include("PROJECT_RULES_MARKER")
+    prompt = system_prompt(ignore_rules: true)
+    expect(prompt).not_to include("PROJECT_RULES_MARKER")
+    expect(prompt).not_to include("# Project Context")
   end
 end
