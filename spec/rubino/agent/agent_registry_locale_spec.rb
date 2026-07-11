@@ -16,11 +16,11 @@ RSpec.describe Rubino::Agent::AgentRegistry do
     end
 
     it "builds the registry without raising on non-ASCII prompt bytes" do
-      expect { described_class.new }.not_to raise_error
+      expect { described_class.new(load_file_agents: false) }.not_to raise_error
     end
 
     it "loads built-in prompts as valid UTF-8 with the glyphs preserved" do
-      prompt = described_class.new.find("build").system_prompt
+      prompt = described_class.new(load_file_agents: false).find("build").system_prompt
 
       expect(prompt.encoding).to eq(Encoding::UTF_8)
       expect(prompt).to be_valid_encoding

@@ -851,4 +851,337 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
   end
+
+  # ── Slice D: Claude Code compatibility ──────────────────────────────────────
+
+  describe "agentskills.io frontmatter compatibility" do
+    it "loads a SKILL.md with the full agentskills.io field set" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "echo-service"))
+        File.write(File.join(dir, "echo-service", "SKILL.md"), <<~SKILL)
+          ---
+          name: echo-service
+          description: Echoes back any input for testing.
+          version: 1.0.0
+          license: MIT
+          platforms: [macos, linux]
+          prerequisites:
+            env_vars: [ECHO_SECRET]
+            commands: [echo]
+          compatibility: Works with POSIX shells.
+          metadata:
+            claude:
+              tags: [echo, testing]
+              related_skills: [hello-world]
+          ---
+
+          # Echo Service
+
+          Just echo your input: `echo "$1"`
+        SKILL
+
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [dir] }),
+          include_builtin: false
+        )
+        skill = registry.find("echo-service")
+        expect(skill).not_to be_nil
+        expect(skill.name).to eq("echo-service")
+        expect(skill.description).to include("Echoes back")
+        expect(skill.metadata["version"]).to eq("1.0.0")
+        expect(skill.metadata["license"]).to eq("MIT")
+        expect(skill.platforms).to contain_exactly("macos", "linux")
+        expect(skill.metadata.dig("metadata", "claude", "tags")).to contain_exactly("echo", "testing")
+        expect(skill.content).to include("echo \"$1\"")
+      end
+    end
+
+    it "works without optional agentskills.io fields (minimal SKILL.md)" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "minimal"))
+        File.write(File.join(dir, "minimal", "SKILL.md"), <<~SKILL)
+          ---
+          name: minimal
+          description: Bare minimum skill.
+          ---
+
+          Minimal body.
+        SKILL
+
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [dir] }),
+          include_builtin: false
+        )
+        expect(registry.find("minimal")).not_to be_nil
+      end
+    end
+  end
+
+  describe "platform filtering (agentskills.io platforms:)" do
+    it "excludes a Windows-only skill from summaries on macOS" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "win-skill"))
+        File.write(File.join(dir, "win-skill", "SKILL.md"), <<~SKILL)
+          ---
+          name: win-skill
+          description: Windows-only utility.
+          platforms: [windows]
+          ---
+
+          Powershell script.
+        SKILL
+
+        FileUtils.mkdir_p(File.join(dir, "unix-skill"))
+        File.write(File.join(dir, "unix-skill", "SKILL.md"), <<~SKILL)
+          ---
+          name: unix-skill
+          description: Cross-platform utility.
+          ---
+
+          Bash script.
+        SKILL
+
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [dir] }),
+          include_builtin: false
+        )
+        summaries = registry.summaries.map { |s| s.split(":", 2).first }
+        expect(summaries).to include("unix-skill")
+        # macOS is not Windows; the Windows skill is excluded from the catalogue.
+        expect(summaries).not_to include("win-skill")
+        # But it is still discoverable/loadable on demand.
+        expect(registry.find("win-skill")).not_to be_nil
+      end
+    end
+
+    it "includes a skill matching the current platform" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "mac-skill"))
+        File.write(File.join(dir, "mac-skill", "SKILL.md"), <<~SKILL)
+          ---
+          name: mac-skill
+          description: macOS-specific tool.
+          platforms: [macos]
+          ---
+
+          macOS tool.
+        SKILL
+
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [dir] }),
+          include_builtin: false
+        )
+        summaries = registry.summaries.map { |s| s.split(":", 2).first }
+        expect(summaries).to include("mac-skill")
+      end
+    end
+
+    it "includes a skill with no platform restriction" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "any-skill"))
+        File.write(File.join(dir, "any-skill", "SKILL.md"), <<~SKILL)
+          ---
+          name: any-skill
+          description: Runs anywhere.
+          ---
+
+          Any platform.
+        SKILL
+
+        registry = Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [dir] }),
+          include_builtin: false
+        )
+        expect(registry.summaries.map { |s| s.split(":", 2).first }).to include("any-skill")
+      end
+    end
+  end
+
+  describe "~/.claude/skills discovery path" do
+    def write_claude_skill(home, name, description)
+      FileUtils.mkdir_p(File.join(home, ".claude", "skills", name))
+      File.write(File.join(home, ".claude", "skills", name, "SKILL.md"),
+                 "---\nname: #{name}\ndescription: #{description}\n---\nbody")
+    end
+
+    it "discovers skills under ~/.claude/skills" do
+      Dir.mktmpdir do |home|
+        write_claude_skill(home, "claude-haiku", "Claude writes haiku")
+        original_home = Dir.home
+        ENV["HOME"] = home
+        begin
+          registry = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [] }),
+            include_builtin: false
+          )
+          expect(registry.names).to include("claude-haiku")
+        ensure
+          ENV["HOME"] = original_home
+        end
+      end
+    end
+
+    it "lets a rubino-path skill override a same-named claude-path skill" do
+      Dir.mktmpdir do |home|
+        write_claude_skill(home, "haiku-writer", "from claude")
+        Dir.mktmpdir do |rubino_dir|
+          FileUtils.mkdir_p(File.join(rubino_dir, "haiku-writer"))
+          File.write(File.join(rubino_dir, "haiku-writer", "SKILL.md"),
+                     "---\nname: haiku-writer\ndescription: from rubino\n---\nbody")
+          original_home = Dir.home
+          ENV["HOME"] = home
+          begin
+            registry = Rubino::Skills::Registry.new(
+              config: test_configuration("skills" => { "paths" => [rubino_dir] }),
+              include_builtin: false
+            )
+            expect(registry.find("haiku-writer").description).to eq("from rubino")
+          ensure
+            ENV["HOME"] = original_home
+          end
+        end
+      end
+    end
+
+    it "trust-gates project-local .claude/skills like .rubino/skills" do
+      Dir.mktmpdir do |tmp|
+        project = File.realpath(tmp)
+        FileUtils.mkdir_p(File.join(project, ".claude", "skills", "repo-skill"))
+        File.write(File.join(project, ".claude", "skills", "repo-skill", "SKILL.md"),
+                   "---\nname: repo-skill\ndescription: from the repo\n---\nbody")
+        allow(Rubino::Workspace).to receive(:primary_root).and_return(project)
+        Dir.chdir(project) do
+          trusted = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [] }),
+            include_builtin: false
+          )
+          expect(trusted.names).to include("repo-skill")
+
+          untrusted = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [] }),
+            include_builtin: false, include_project_local: false
+          )
+          expect(untrusted.names).not_to include("repo-skill")
+        end
+      end
+    end
+  end
+
+  describe "ContentPreprocessor" do
+    let(:preprocessor) { Rubino::Skills::ContentPreprocessor }
+
+    describe "template variable substitution" do
+      it "replaces ${RUBINO_SKILL_DIR} with the skill directory" do
+        Dir.mktmpdir do |dir|
+          result = preprocessor.substitute_template_vars(
+            "Run: ${RUBINO_SKILL_DIR}/script.sh",
+            skill_dir: dir
+          )
+          expect(result).to eq("Run: #{dir}/script.sh")
+        end
+      end
+
+      it "replaces ${RUBINO_SESSION_ID} with the session id" do
+        result = preprocessor.substitute_template_vars(
+          "Session: ${RUBINO_SESSION_ID}",
+          session_id: "abc-123"
+        )
+        expect(result).to eq("Session: abc-123")
+      end
+
+      it "leaves ${RUBINO_SKILL_DIR} unresolved when skill_dir is nil" do
+        result = preprocessor.substitute_template_vars(
+          "Path: ${RUBINO_SKILL_DIR}",
+          skill_dir: nil
+        )
+        expect(result).to eq("Path: ${RUBINO_SKILL_DIR}")
+      end
+
+      it "leaves ${RUBINO_SESSION_ID} unresolved when session_id is nil" do
+        result = preprocessor.substitute_template_vars(
+          "ID: ${RUBINO_SESSION_ID}",
+          session_id: nil
+        )
+        expect(result).to eq("ID: ${RUBINO_SESSION_ID}")
+      end
+
+      it "replaces both tokens in one pass" do
+        Dir.mktmpdir do |dir|
+          result = preprocessor.substitute_template_vars(
+            "Dir: ${RUBINO_SKILL_DIR}, Session: ${RUBINO_SESSION_ID}",
+            skill_dir: dir, session_id: "xyz"
+          )
+          expect(result).to eq("Dir: #{dir}, Session: xyz")
+        end
+      end
+
+      it "leaves unrelated ${TOKENS} alone" do
+        result = preprocessor.substitute_template_vars(
+          "${UNKNOWN_TOKEN} ${RUBINO_SKILL_DIR}",
+          skill_dir: "/tmp/s"
+        )
+        expect(result).to eq("${UNKNOWN_TOKEN} /tmp/s")
+      end
+    end
+
+    describe "preprocess (combined)" do
+      it "applies substitution by default (template_vars: true)" do
+        Dir.mktmpdir do |dir|
+          content = "Path: ${RUBINO_SKILL_DIR}"
+          result = preprocessor.preprocess(content, skill_dir: dir)
+          expect(result).to eq("Path: #{dir}")
+        end
+      end
+
+      it "skips substitution when template_vars is false" do
+        content = "Path: ${RUBINO_SKILL_DIR}"
+        result = preprocessor.preprocess(
+          content,
+          skill_dir: "/tmp/s",
+          config: { "template_vars" => false }
+        )
+        expect(result).to eq("Path: ${RUBINO_SKILL_DIR}")
+      end
+    end
+  end
+
+  # ── Slice E: /skill-name invocation via Executor#try_execute ─────────────────
+  describe "/skill-name slash command invocation" do
+    it "routes /skill-name to handle_skill_invocation and returns a prompt hash" do
+      Dir.mktmpdir do |dir|
+        FileUtils.mkdir_p(File.join(dir, "hello-skill"))
+        File.write(File.join(dir, "hello-skill", "SKILL.md"), <<~SKILL)
+          ---
+          name: hello-skill
+          description: Greets the user.
+          ---
+
+          Say hello in Klingon: `nuqneH`.
+        SKILL
+
+        # A registry on the exact path so the executor finds the skill.
+        allow(Rubino::Skills::Registry).to receive(:trusted).and_return(
+          Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+        )
+
+        executor = Rubino::Commands::Executor.new
+        result = executor.try_execute("/hello-skill please greet")
+        expect(result).to be_a(Hash)
+        expect(result[:prompt]).to include("[IMPORTANT: The user has invoked the \"hello-skill\" skill")
+        expect(result[:prompt]).to include("nuqneH")
+        expect(result[:prompt]).to include("The user has provided the following instruction")
+        expect(result[:prompt]).to include("please greet")
+      end
+    end
+
+    it "returns nil for a non-skill slash command (falls through)" do
+      executor = Rubino::Commands::Executor.new
+      result = executor.try_execute("/nonexistent-xyz-123")
+      # Falls through to custom command lookup → unknown error → :handled
+      expect(result).to be_truthy
+    end
+  end
 end

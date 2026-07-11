@@ -17,6 +17,13 @@ module Rubino
       # wins (lowest precedence). No behavior change when the dirs are absent.
       AGENT_NEUTRAL_PATHS = [".agents/skills", "~/.agents/skills"].freeze
 
+      # Claude Code / everything-claude-code ecosystem compatibility paths.
+      # Scanned BEFORE the rubino-specific paths so a same-named skill in
+      # ~/.rubino/skills or .rubino/skills overrides the Claude copy. The
+      # project-local `.claude/skills` is trust-gated exactly like
+      # `.rubino/skills` (project_local_path? check below).
+      CLAUDE_PATHS = [".claude/skills", "~/.claude/skills"].freeze
+
       # Skills shipped *inside the gem* (skills/<name>/SKILL.md at the gem
       # root, packaged via the gemspec's git-ls-files list). These are
       # ALWAYS discovered — they don't depend on the user's skills.paths
@@ -125,8 +132,13 @@ module Rubino
       # actually detected as Ruby. The skill is still discoverable and loadable
       # on demand (via the /skills picker and the `skill` tool) — gating only
       # governs the proactive system-prompt catalogue, not availability.
+      #
+      # Platform-scoped skills (agentskills.io `platforms:`) are ALSO excluded
+      # from the catalogue when the current OS doesn't match. Same gating
+      # contract: a Windows-restricted skill is hidden from the macOS catalogue
+      # but stays loadable on demand.
       def summaries
-        enabled.select { |skill| language_applicable?(skill) }.map(&:summary)
+        enabled.select { |skill| language_applicable?(skill) && skill.platform_compatible? }.map(&:summary)
       end
 
       # Loads and returns the full content of a skill by name. Returns nil when
@@ -235,7 +247,7 @@ module Rubino
         # Prepended (not appended) so the rubino paths override them on a name
         # collision, and BEFORE the trust filter so the project-local
         # `.agents/skills` is gated exactly like `.rubino/skills`.
-        paths = AGENT_NEUTRAL_PATHS + paths
+        paths = AGENT_NEUTRAL_PATHS + CLAUDE_PATHS + paths
         unless @include_project_local
           # Untrusted primary root: drop the project-local (cwd-relative) skill
           # dirs, keeping only absolute / home (~) paths the user controls.

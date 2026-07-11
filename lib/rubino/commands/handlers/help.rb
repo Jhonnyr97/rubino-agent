@@ -181,16 +181,23 @@ module Rubino
         def command_dirs
           paths = Rubino.configuration.dig("commands", "paths")
           paths = Rubino::Config::Defaults.to_hash.dig("commands", "paths") if paths.nil?
-          Array(paths).map { |dir| Loader.resolve_path(dir) }
+          # Include Claude Code compat paths so the "Searched:" line is honest.
+          all_paths = Loader::CLAUDE_PATHS + Array(paths)
+          all_paths.map { |dir| Loader.resolve_path(dir) }
         rescue StandardError
           Loader.default_command_paths
         end
 
-        # "  - <description>" suffix for a custom-command listing, omitted when the
-        # command carries no description so the line stays clean.
+        # "  [arg-hint]  - <description>" suffix for a custom-command listing.
+        # The argument hint is shown when present (Claude Code /command compat);
+        # the description follows after " - "; omitted when both are empty.
         def custom_desc(cmd)
+          hint = cmd.respond_to?(:argument_hint) ? cmd.argument_hint.to_s.strip : ""
           desc = cmd.description.to_s.strip
-          desc.empty? ? "" : "  - #{desc}"
+          parts = []
+          parts << "[#{hint}]" unless hint.empty?
+          parts << "- #{desc}" unless desc.empty?
+          parts.empty? ? "" : "  #{parts.join("  ")}"
         end
 
         # Emits one help row, wrapping the DESCRIPTION at the terminal width so

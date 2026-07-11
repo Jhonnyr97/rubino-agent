@@ -11,7 +11,7 @@ module Rubino
     # Enable it by setting commands.shell_injection_enabled: true in your
     # configuration — only do so in trusted, controlled environments.
     class Command
-      attr_reader :name, :description, :agent, :model, :path
+      attr_reader :name, :description, :agent, :model, :path, :argument_hint
 
       def initialize(path:)
         @path     = path
@@ -112,10 +112,15 @@ module Rubino
           @template = raw
         end
 
-        @name        = (@metadata["name"] || File.basename(@path, ".md")).to_s
-        @description = @metadata["description"] || ""
-        @agent       = @metadata["agent"]
-        @model       = @metadata["model"]
+        # Scan the rendered template body for prompt injection before it
+        # becomes a user message, mirroring Hermes's context-file scanning.
+        @template = Security::ContentScanner.scan(@template, source: @path)
+
+        @name          = (@metadata["name"] || File.basename(@path, ".md")).to_s
+        @description   = @metadata["description"] || ""
+        @argument_hint = @metadata["argument-hint"] || @metadata["argument_hint"]
+        @agent         = @metadata["agent"]
+        @model         = @metadata["model"]
       end
 
       def load_template

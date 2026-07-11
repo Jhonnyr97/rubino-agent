@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "rbconfig"
 require "yaml"
 
 module Rubino
@@ -57,6 +58,42 @@ module Rubino
         Array(@metadata["languages"]).map { |l| l.to_s.strip.downcase }.reject(&:empty?)
       end
 
+      # Platforms this skill is restricted to (e.g. ["macos", "linux"]), from the
+      # agentskills.io `platforms:` frontmatter. Empty/nil means the skill runs on
+      # all platforms. A skill restricted to a non-matching platform is excluded
+      # from the system-prompt catalogue (Registry#summaries) but stays
+      # discoverable/loadable on demand — same gating contract as `languages`.
+      def platforms
+        Array(@metadata["platforms"]).map { |p| p.to_s.strip.downcase }.reject(&:empty?)
+      end
+
+      # Whether this skill is compatible with the current OS platform.
+      # True when (a) no platform restriction is set, or (b) the current
+      # platform matches one of the listed platforms.
+      def platform_compatible?
+        scoped = platforms
+        return true if scoped.empty?
+
+        scoped.include?(current_platform)
+      end
+
+      private
+
+      def current_platform
+        @current_platform ||= begin
+          os = RbConfig::CONFIG["host_os"].downcase
+          if os.include?("darwin")
+            "macos"
+          elsif os.include?("mingw") || os.include?("mswin")
+            "windows"
+          else
+            "linux" # safest fallback for unknown Unix-likes (also explicit linux)
+          end
+        end
+      end
+
+      public
+
       def initialize(path:)
         @path = path
         @metadata = {}
@@ -72,9 +109,12 @@ module Rubino
         !@directory.nil?
       end
 
-      # Returns the full skill content (loaded lazily)
+      # Returns the full skill content (loaded lazily), scanned for prompt
+      # injection before it reaches the system prompt or a user message.
       def content
-        @content ||= load_content
+        return @content if @content
+
+        @content = Security::ContentScanner.scan(load_content, source: @path)
       end
 
       # Reads a bundled file by its relative path, sandboxed to the skill dir.
