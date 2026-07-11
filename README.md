@@ -193,7 +193,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 - **[Tools](docs/tools.md)** — the built-in tool set and approval behavior
 - **[Skills](docs/skills.md)** — reusable instruction packs, the 3-level disclosure, and `SKILL_LOADED` observability
 - **[Memory](docs/memory.md)** — the SQLite memory backend
-- **[Claude Code compatibility](docs/claude-code-compat.md)** — agents, skills, commands, and rules in the Claude Code format
+- **[Markdown extensions](docs/markdown-extensions.md)** — file-based agents, skills, commands, and rules (portable `.md` packs; also reads `~/.claude/…`)
 - **[Security](docs/security.md)** — approval model, hardline floor, TLS
 - **[Troubleshooting](docs/troubleshooting.md)** — keyed on the exact error strings
 - **[HTTP API](docs/api/v1.md)** · **[Jobs & cron](docs/jobs.md)** · **[OAuth providers](docs/oauth-providers.md)** · **[Architecture](docs/architecture.md)**
