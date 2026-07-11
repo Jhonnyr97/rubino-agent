@@ -112,6 +112,10 @@ module Rubino
           @template = raw
         end
 
+        # Scan the rendered template body for prompt injection before it
+        # becomes a user message, mirroring Hermes's context-file scanning.
+        @template = Security::ContentScanner.scan(@template, source: @path)
+
         @name          = (@metadata["name"] || File.basename(@path, ".md")).to_s
         @description   = @metadata["description"] || ""
         @argument_hint = @metadata["argument-hint"] || @metadata["argument_hint"]
