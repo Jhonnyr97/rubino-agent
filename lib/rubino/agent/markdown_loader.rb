@@ -188,11 +188,16 @@ module Rubino
         # Fields with no rubino equivalent: silently note and ignore.
         note_ignored(meta, name, path)
 
+        # Scan the body (agent system prompt) for prompt injection before it
+        # becomes part of the system prompt, mirroring Hermes's context-file
+        # scanning. Use the path as the source for diagnosability.
+        scanned_body = Security::ContentScanner.scan(body, source: path)
+
         Definition.new(
           name: name,
           type: type,
           description: description,
-          system_prompt: body,
+          system_prompt: scanned_body,
           model: model,
           tools: tools,
           permissions: permissions,

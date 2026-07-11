@@ -14,8 +14,9 @@ module Rubino
     # Each source is capped at 20,000 chars (head 70% + tail 20% truncation).
     # YAML frontmatter is stripped only from the rubino-own file
     # (.rubino.md / RUBINO.md), matching Hermes's .hermes.md / HERMES.md
-    # treatment.  Content scanning (threat detection) is NOT performed here —
-    # rubino does not have a _scan_context_content equivalent.
+    # treatment.  Content is scanned for prompt injection via
+    # Security::ContentScanner before injection, mirroring Hermes's
+    # _scan_context_content (prompt_builder.py:45).
     class FileDiscovery
       CONTEXT_FILE_MAX_CHARS = 20_000
       TRUNCATE_HEAD_RATIO = 0.7
@@ -51,6 +52,7 @@ module Rubino
         return nil unless content
 
         content = strip_yaml_frontmatter(content)
+        content = Security::ContentScanner.scan(content, source: File.basename(path))
         content = truncate_content(content, File.basename(path))
         { filename: File.basename(path), content: content }
       end
@@ -83,6 +85,7 @@ module Rubino
         content = read_and_check(path)
         return nil unless content
 
+        content = Security::ContentScanner.scan(content, source: File.basename(path))
         content = truncate_content(content, File.basename(path))
         filename = File.basename(path)
         { filename: filename, content: content }
@@ -97,6 +100,7 @@ module Rubino
         content = read_and_check(path)
         return nil unless content
 
+        content = Security::ContentScanner.scan(content, source: File.basename(path))
         content = truncate_content(content, File.basename(path))
         filename = File.basename(path)
         { filename: filename, content: content }
@@ -127,6 +131,7 @@ module Rubino
         return nil if parts.empty?
 
         combined = parts.join("\n\n")
+        combined = Security::ContentScanner.scan(combined, source: ".cursorrules")
         combined = truncate_content(combined, ".cursorrules")
         { filename: ".cursorrules", content: combined }
       end

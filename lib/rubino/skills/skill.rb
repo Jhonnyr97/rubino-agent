@@ -109,9 +109,12 @@ module Rubino
         !@directory.nil?
       end
 
-      # Returns the full skill content (loaded lazily)
+      # Returns the full skill content (loaded lazily), scanned for prompt
+      # injection before it reaches the system prompt or a user message.
       def content
-        @content ||= load_content
+        return @content if @content
+
+        @content = Security::ContentScanner.scan(load_content, source: @path)
       end
 
       # Reads a bundled file by its relative path, sandboxed to the skill dir.
