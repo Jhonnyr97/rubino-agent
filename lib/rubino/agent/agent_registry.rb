@@ -8,9 +8,22 @@ module Rubino
     class AgentRegistry
       PROMPTS_DIR = File.expand_path("prompts", __dir__)
 
-      def initialize
+      # +load_file_agents+ controls whether file-defined agents (`.md` with
+      # YAML frontmatter under `.claude/agents`, `.rubino/agents`, etc.) are
+      # discovered and registered after the built-in defaults. Default is
+      # true (production boots). Tests that need an isolated registry pass
+      # false (e.g. locale spec, prompt-override specs).
+      def initialize(load_file_agents: true)
         @agents = {}
         register_defaults!
+        load_agent_files! if load_file_agents
+      end
+
+      # Loads agent definitions from Markdown files (Claude Code AGENT format)
+      # and registers each into this registry. Safe to call multiple times —
+      # each call re-scans and re-registers (later wins on name collisions).
+      def load_agent_files!
+        MarkdownLoader.new(registry: self).load!
       end
 
       # Returns all primary agents.

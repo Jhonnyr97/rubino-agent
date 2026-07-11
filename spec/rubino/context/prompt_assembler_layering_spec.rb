@@ -209,7 +209,7 @@ RSpec.describe Rubino::Agent::AgentRegistry, "prompt overrides" do
     custom = Rubino::Config::Configuration.new(raw: raw, home_path: "/tmp")
     allow(Rubino).to receive(:configuration).and_return(custom)
 
-    registry = described_class.new
+    registry = described_class.new(load_file_agents: false)
     expect(registry.find("build").system_prompt).to eq(override_text)
   end
 
@@ -218,7 +218,7 @@ RSpec.describe Rubino::Agent::AgentRegistry, "prompt overrides" do
     default = Rubino::Config::Configuration.new(raw: raw, home_path: "/tmp")
     allow(Rubino).to receive(:configuration).and_return(default)
 
-    registry = described_class.new
+    registry = described_class.new(load_file_agents: false)
     expect(registry.find("build").system_prompt).to include("[Identity]")
   end
 end
