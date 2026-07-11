@@ -44,12 +44,13 @@ module Rubino
             required: false
 
       def execute(url:, format: "text")
-        fetch_url(url, format: format)
+        raw_uri = URI.parse(url)
+        fetch_url(url, format: format, original_host: raw_uri.host)
       end
 
       private
 
-      def fetch_url(url, format:, redirects: 5)
+      def fetch_url(url, format:, redirects: 5, original_host: nil)
         return "Error: Too many redirects" if redirects <= 0
 
         # Default a bare host to https:// (previous behaviour) before
@@ -72,7 +73,7 @@ module Rubino
           # Re-validate the redirect target from scratch (resolve + IP check);
           # never trust the Location header to point somewhere safe (SSRF).
           next_url = absolute_redirect(uri, response["location"])
-          fetch_url(next_url, format: format, redirects: redirects - 1)
+          fetch_url(next_url, format: format, redirects: redirects - 1, original_host: original_host)
         when Net::HTTPSuccess
           content_type = response["content-type"].to_s
           return binary_refusal(url, content_type) if binary_content_type?(content_type)
@@ -81,16 +82,23 @@ module Rubino
           # "source sequence is illegal/malformed utf-8" when the upstream
           # response is labelled text/* but contains stray non-UTF-8 bytes
           # (which is the common case for misencoded HTML / CRLF logs).
-          body = response.body.to_s.dup.force_encoding("UTF-8").scrub("?")
-          if body.bytesize > MAX_BODY_SIZE
-            body = body.byteslice(0,
-                                  MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?")
-          end
+          raw_body = response.body.to_s.dup.force_encoding("UTF-8").scrub("?")
+          body = if raw_body.bytesize > MAX_BODY_SIZE
+                   raw_body.byteslice(0,
+                                     MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?")
+                 else
+                   raw_body
+                 end
+
+          # Save the full raw response to disk so the user can read it with
+          # grep/read after the session (predictable filename from host+path).
+          spill_file = spill_raw_body(raw_body, uri, original_host: original_host)
 
           if format == "html"
-            body
+            append_spill_pointer(body, spill_file)
           else
-            maybe_js_render(safe, body, strip_html(body))
+            result = maybe_js_render(safe, body, strip_html(body))
+            append_spill_pointer(result, spill_file)
           end
         else
           "Error: HTTP #{response.code} - #{response.message}"
@@ -99,6 +107,31 @@ module Rubino
         "Refused for safety: #{e.message}"
       rescue StandardError => e
         "Error fetching URL: #{e.message}"
+      end
+
+      # Save the full raw body to a predictable spill file so the user can read
+      # it with grep/offset+limit after the session. Returns the file path or nil.
+      def spill_raw_body(body, uri, original_host: nil)
+        host = (original_host || uri.host).to_s.gsub(/[^a-zA-Z0-9.-]/, "_")
+        path_seg = uri.path.to_s.gsub(%r{[^a-zA-Z0-9._/-]}, "_").gsub(%r{/+}, "_")[0..80]
+        stamp = Time.now.strftime("%H%M%S")
+        safe_name = "webfetch_#{host}_#{path_seg}_#{stamp}.html"
+        safe_name = safe_name.gsub(/_{3,}/, "_").sub(/_\.html$/, ".html")
+
+        dir = File.join(Rubino.home_path, "tool-results")
+        FileUtils.mkdir_p(dir)
+        spill_path = File.join(dir, safe_name)
+        File.write(spill_path, body)
+        spill_path
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "webfetch.spill_failed", error: e.message)
+        nil
+      end
+
+      def append_spill_pointer(text, spill_file)
+        return text unless spill_file
+
+        "#{text}\n\n[Full raw body saved to #{spill_file} — read it with grep/offset+limit]"
       end
 
       # Build a Net::HTTP pinned to a validated IP so a DNS-rebinding server

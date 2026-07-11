@@ -258,7 +258,7 @@ RSpec.describe Rubino::Tools::WebFetchTool do
   end
 
   describe "format:html keeps the raw body verbatim (escape hatch)" do
-    it "returns the full raw HTML completely unchanged" do
+    it "returns the full raw HTML with a spill pointer appended" do
       raw = <<~HTML
         <html><body>
           <nav><a href="/about">About Us</a></nav>
@@ -269,9 +269,11 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       HTML
       stub_http(fake_success(body: raw, content_type: "text/html; charset=utf-8"))
       result = tool.call("url" => "https://example.com", "format" => "html")
-      # Byte-for-byte identical to the (UTF-8 scrubbed) raw body: nothing parsed,
-      # nothing stripped, chrome and scripts all preserved.
-      expect(result).to eq(raw.dup.force_encoding("UTF-8").scrub("?"))
+      # The raw HTML body is preserved verbatim. A spill pointer is appended so
+      # the user can read the full file after the session.
+      scrubbed = raw.dup.force_encoding("UTF-8").scrub("?")
+      expect(result).to start_with(scrubbed)
+      expect(result).to include("[Full raw body saved to")
       expect(result).to include("<nav>")
       expect(result).to include("<script>tracker();</script>")
       expect(result).to include("About Us")
