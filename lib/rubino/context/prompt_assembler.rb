@@ -467,7 +467,14 @@ module Rubino
         )
         return nil unless registry.enabled?(name)
 
-        content = registry.load_skill(name)
+        skill = registry.find(name)
+        return nil if skill.nil?
+
+        content = Skills::ContentPreprocessor.preprocess(
+          skill.content,
+          skill_dir: skill.directory? ? File.dirname(skill.path) : nil,
+          session_id: @session[:id]
+        )
         return nil if content.nil? || content.to_s.strip.empty?
 
         <<~PROMPT.strip
