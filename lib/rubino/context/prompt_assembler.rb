@@ -87,9 +87,9 @@ module Rubino
         # PromptAssembler.system_prompt_for / BackgroundReviewJob.
         @system_prompt_override = system_prompt_override
         # --ignore-rules suppresses project-context discovery
-        # (AGENTS.md/CLAUDE.md/.rubino.md/.cursorrules). The flag is threaded
-        # from Lifecycle so the CLI option genuinely skips discovery (#47), not
-        # just the trust gate.
+        # (.rubino.md/RUBINO.md/AGENTS.md/CLAUDE.md/.cursorrules). The flag
+        # is threaded from Lifecycle so the CLI option genuinely skips
+        # discovery (#47), not just the trust gate.
         @ignore_rules = ignore_rules
         @message_store = Session::Store.new
       end
@@ -232,7 +232,11 @@ module Rubino
         metadata = msg.metadata.is_a?(Hash) ? msg.metadata.dup : {}
         %i[tool_calls].each do |sym_key|
           str_key = sym_key.to_s
-          key = metadata.key?(sym_key) ? sym_key : (metadata.key?(str_key) ? str_key : nil)
+          key = if metadata.key?(sym_key)
+                  sym_key
+                else
+                  (metadata.key?(str_key) ? str_key : nil)
+                end
           next unless key
 
           metadata[key] = Array(metadata[key]).select { |tc| keep.include?(tc[:id] || tc["id"]) }
@@ -277,6 +281,7 @@ module Rubino
       # STABLE PREFIX and a VOLATILE TAIL for prompt caching (#311):
       #   PREFIX (cached): 1. Identity 2. Product preamble 3. Environment
       #                    4. User profile 5. Skills index 6. Project context
+      #                    (Hermes precedence chain via FileDiscovery)
       #   TAIL (uncached): 7. Relevant memories 8. Session summary
       # Each block is independent: if a section is empty/disabled it just
       # drops out without leaving a stray header.
@@ -349,7 +354,7 @@ module Rubino
         parts << active_skill if active_skill
 
         project_ctx = load_project_context
-        parts << "[Project Context]\n#{project_ctx}" if project_ctx
+        parts << project_ctx if project_ctx
 
         parts.join("\n\n")
       end
@@ -619,7 +624,16 @@ module Rubino
         # Discover from the PRIMARY workspace root (not just Dir.pwd) so project
         # context tracks terminal.cwd and the dir the trust gate vouched for.
         discovery = Context::FileDiscovery.new(base_path: Rubino::Workspace.primary_root)
-        discovery.load_project_context
+        result = discovery.load_project_context
+        return nil unless result
+
+        # Hermes-style header: "# Project Context" banner followed by the
+        # loaded file's content under a ## filename subheading.  Mirrors
+        # build_context_files_prompt (prompt_builder.py:1521).
+        header = "# Project Context\n\n" \
+                 "The following project context files have been loaded " \
+                 "and should be followed:\n\n"
+        "#{header}## #{result[:filename]}\n\n#{result[:content]}"
       rescue StandardError
         nil
       end
