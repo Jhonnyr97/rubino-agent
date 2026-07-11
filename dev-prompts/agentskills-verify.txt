@@ -1,0 +1,32 @@
+You are verifying the rubino-agent gem you run from (branch test/pre-release-gate). READ-ONLY audit
+(no code edits, no commit) to CLOSE the markdown-extensions work: confirm rubino's SKILL loading is
+compliant with the agentskills.io standard (the portable SKILL.md convention Hermes and Claude Code
+follow). Log narration to /tmp/rubino-dev/hermes.log.
+
+DO THIS:
+1. Read the agentskills.io spec (fetch https://agentskills.io or its SKILL.md schema docs via the web
+   tool; if unreachable, use the Hermes reference at
+   /Users/nilthonrojasapumayta/.hermes/hermes-agent/tools/skills_tool.py:6-91 which documents the
+   agentskills.io-compatible frontmatter it accepts). List the REQUIRED and OPTIONAL frontmatter
+   fields + the directory layout (SKILL.md + references/scripts) + the invocation/progressive-
+   disclosure behaviour the standard implies.
+2. Read rubino's skill implementation on this branch: lib/rubino/skills/skill.rb (frontmatter parser),
+   lib/rubino/skills/registry.rb (discovery paths incl. .claude/skills, trust gating),
+   lib/rubino/skills/content_preprocessor.rb (${RUBINO_SKILL_DIR}/`` !`cmd` `` substitution),
+   lib/rubino/skills/skill_tool.rb (view / progressive disclosure), and where the skill index is
+   injected into the system prompt.
+3. Compare field by field: which agentskills.io fields does rubino accept? Which does it ignore/reject?
+   Does it tolerate unknown fields without error? Does the directory layout (SKILL.md + references/)
+   match? Is progressive disclosure (index + on-demand body) + `/skill-name` invocation present? Are
+   there any INCOMPATIBILITIES that would make a valid agentskills.io skill fail to load or behave
+   wrong in rubino?
+4. Actually PROVE it: drop a canonical agentskills.io SKILL.md (with the full frontmatter — name,
+   description, version, license, platforms, metadata) into ~/.rubino/skills/<name>/ (or
+   ~/.claude/skills/<name>/) and confirm via `rubino-dev` that rubino discovers + loads it (list it,
+   view its body) without error.
+
+REPORT (do NOT edit code): the agentskills.io field set (required/optional) vs rubino's accepted set
+(a table); any incompatibilities or gaps (be honest — e.g. a required field rubino ignores, or a
+layout mismatch); the proof that a canonical skill loads; and a VERDICT: "rubino IS agentskills.io-
+compatible" or a precise list of what would need to change. If you find a real incompatibility, STOP
+and describe it (do not fix in this read-only audit — report so it can be scoped).
