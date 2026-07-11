@@ -12,7 +12,7 @@ RSpec.describe "Rubino::Commands::Executor usability commands" do
 
   let(:db)     { test_database }
   let(:ui)     { Rubino::UI::Null.new }
-  let(:loader) { Rubino::Commands::Loader.new(config: test_configuration) }
+  let(:loader) { Rubino::Commands::Loader.new(config: test_configuration, include_project_local: true) }
   let(:runner) { nil }
 
   before do

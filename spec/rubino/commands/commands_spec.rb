@@ -157,6 +157,80 @@ RSpec.describe Rubino::Commands::Loader do
       expect(loader.names).to eq([])
     end
   end
+
+  # -----------------------------------------------------------------------
+  # Claude Code / .claude/commands compatibility
+  # -----------------------------------------------------------------------
+
+  describe "Claude .claude/commands paths" do
+    it "includes Claude paths in command_paths when trusted" do
+      loader = described_class.new(config: config, include_project_local: true)
+      paths = loader.send(:command_paths)
+      expect(paths).to include(".claude/commands")
+      expect(paths).to include("~/.claude/commands")
+    end
+
+    it "filters out project-local .claude/commands when untrusted" do
+      loader = described_class.new(config: config, include_project_local: false)
+      paths = loader.send(:command_paths)
+      # .claude/commands (cwd-relative) is project-local → excluded.
+      expect(paths).not_to include(".claude/commands")
+      # ~/.claude/commands (home-relative → absolute) stays.
+      expect(paths).to include("~/.claude/commands")
+    end
+  end
+
+  describe ".claude/commands discovery" do
+    let(:project_claude) { File.join(tmp_dir, ".claude", "commands") }
+    let(:home_claude)    { File.join(tmp_dir, ".home-claude") }
+
+    before do
+      FileUtils.mkdir_p(project_claude)
+      File.write(File.join(project_claude, "hello.md"),
+                 "---\nname: hello\ndescription: Say hello\n---\nHello $ARGUMENTS")
+      FileUtils.mkdir_p(home_claude)
+      File.write(File.join(home_claude, "status.md"),
+                 "---\nname: status\ndescription: Show status\n---\nStatus check")
+    end
+
+    it "discovers a command from project .claude/commands/" do
+      stub_const("Rubino::Commands::Loader::CLAUDE_PATHS", [project_claude])
+      loader = described_class.new(config: config, include_project_local: true)
+      expect(loader.find("hello")).not_to be_nil
+      expect(loader.names).to include("/hello")
+    end
+
+    it "discovers a command from user-home ~/.claude/commands/" do
+      stub_const("Rubino::Commands::Loader::CLAUDE_PATHS", [home_claude])
+      loader = described_class.new(config: config, include_project_local: true)
+      expect(loader.find("status")).not_to be_nil
+      expect(loader.names).to include("/status")
+    end
+
+    it "renders $ARGUMENTS from a Claude-discovered command" do
+      stub_const("Rubino::Commands::Loader::CLAUDE_PATHS", [project_claude])
+      loader = described_class.new(config: config, include_project_local: true)
+      cmd = loader.find("hello")
+      expect(cmd.render("world")).to eq("Hello world")
+    end
+
+    it "project overrides user on name collision" do
+      File.write(File.join(home_claude, "review.md"),
+                 "---\nname: review\ndescription: home version\n---\nhome")
+      File.write(File.join(project_claude, "review.md"),
+                 "---\nname: review\ndescription: project version\n---\nproject")
+      stub_const("Rubino::Commands::Loader::CLAUDE_PATHS", [home_claude, project_claude])
+      loader = described_class.new(config: config, include_project_local: true)
+      cmd = loader.find("review")
+      expect(cmd.description).to eq("project version")
+    end
+
+    it "keeps user-level ~/.claude/commands even when untrusted" do
+      stub_const("Rubino::Commands::Loader::CLAUDE_PATHS", [home_claude])
+      loader = described_class.new(config: config, include_project_local: false)
+      expect(loader.names).to include("/status")
+    end
+  end
 end
 
 RSpec.describe Rubino::Commands::Command do
@@ -204,6 +278,78 @@ RSpec.describe Rubino::Commands::Command do
       cmd = write_command("simple.md", "Just some content\n")
       expect(cmd.name).to eq("simple")
       expect(cmd.description).to eq("")
+    end
+  end
+
+  # -----------------------------------------------------------------------
+  # Frontmatter — Claude Code / everything-claude-code compatibility
+  # -----------------------------------------------------------------------
+
+  describe "Claude Code frontmatter tolerance" do
+    it "parses description from Claude Code command file" do
+      cmd = write_command("review.md", <<~MD)
+        ---
+        description: Review staged changes for bugs
+        argument-hint: "[focus areas]"
+        allowed-tools: Bash(ls:*, cat:*), Read, Edit
+        model: claude-sonnet-4-20250514
+        ---
+        Review the staged diff. Focus on $ARGUMENTS.
+      MD
+      expect(cmd.description).to eq("Review staged changes for bugs")
+      expect(cmd.argument_hint).to eq("[focus areas]")
+      expect(cmd.model).to eq("claude-sonnet-4-20250514")
+      # unknown keys (allowed-tools) are tolerated silently
+      expect(cmd.name).to eq("review")
+    end
+
+    it "parses argument-hint with underscore variant" do
+      cmd = write_command("deploy.md", <<~MD)
+        ---
+        argument_hint: "[branch]"
+        description: Deploy to production
+        ---
+        Deploy $ARGUMENTS
+      MD
+      expect(cmd.argument_hint).to eq("[branch]")
+    end
+
+    it "tolerates disable-model-invocation without error" do
+      cmd = write_command("plan.md", <<~MD)
+        ---
+        description: Plan the next steps
+        disable-model-invocation: true
+        ---
+        Let's plan.
+      MD
+      expect(cmd.description).to eq("Plan the next steps")
+      expect { cmd.render("") }.not_to raise_error
+    end
+
+    it "renders $ARGUMENTS from a Claude-formatted command" do
+      cmd = write_command("review.md", <<~MD)
+        ---
+        description: Review staged changes
+        argument-hint: "[focus]"
+        ---
+        Review the staged diff. Focus on $ARGUMENTS.
+      MD
+      expect(cmd.render("auth module")).to eq("Review the staged diff. Focus on auth module.")
+    end
+
+    it "renders $1 positional param from a Claude-formatted command" do
+      cmd = write_command("greet.md", <<~MD)
+        ---
+        description: Greet someone
+        ---
+        Hello $1!
+      MD
+      expect(cmd.render("World")).to eq("Hello World!")
+    end
+
+    it "has empty argument_hint when not specified" do
+      cmd = write_command("simple.md", "---\ndescription: Just desc\n---\nBody")
+      expect(cmd.argument_hint).to be_nil
     end
   end
 

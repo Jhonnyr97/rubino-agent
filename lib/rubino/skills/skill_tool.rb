@@ -374,10 +374,14 @@ module Rubino
         Rubino.review_toolset ? "review" : "foreground"
       end
 
-      # ---- load (unchanged) -------------------------------------------------
+      # ---- load ----------------------------------------------------------------
 
       def load_body(skill, skill_name)
-        body = "Skill '#{skill_name}' loaded:\n\n#{skill.content}"
+        content = ContentPreprocessor.preprocess(
+          skill.content,
+          skill_dir: skill.directory? ? File.dirname(skill.path) : nil
+        )
+        body = "Skill '#{skill_name}' loaded:\n\n#{content}"
         body << linked_files_hint(skill, skill_name) unless skill.linked_files.empty?
         announce_loaded(skill_name)
         body
