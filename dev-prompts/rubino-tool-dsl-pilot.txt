@@ -1,0 +1,81 @@
+You are improving the rubino-agent gem you run from. Create a branch feature/rubino-tool-dsl off the
+current test/pre-release-gate (or off main if cleaner), and build SLICE 1 (pilot) of a new tool-
+authoring DSL. Do NOT git commit at the end (leave the work for review), do NOT push, do NOT git
+checkout/restore/revert other branches. Log narration to /tmp/rubino-dev/hermes.log.
+
+WHY: rubino's tool MACHINERY is excellent but the AUTHORING FACADE is hard — a tool author juggles 5
+loosely-coupled concept spaces (params / security / presentation / presentation_cli / live_card), an
+implicit stringly-typed return contract (bare String OR an ~11-key Hash OR Tools::Result, with THREE
+error conventions: raise / "Error: …" string / {error_code:}), a class-ivar inheritance footgun
+(`@tool_security` does NOT inherit — see base.rb:16-21), two param spellings (`param :x, desc:` vs
+`params do string :x, description: … end`), and a SEPARATE weaker DSL for user tools
+(`Rubino.define_tool` in custom_tool_loader.rb). Image/aux tools hand-wire ~40 lines of egress/sniff/
+workspace guards (vision_tool.rb:42-73) and build artifact hashes by hand (attach_file_tool.rb:68-79).
+
+GOAL: add `Rubino::Tool < Tools::Base` — a thin SUGAR layer that SYNTHESIZES the EXISTING
+ToolSecurity/ToolPresentation objects and Tools::Result under the hood (the same trick
+CustomToolLoader#build already uses at custom_tool_loader.rb:106-113). Build ON the existing split; do
+NOT rewrite Tools::Base or touch the ToolExecutor's redaction/compression/approval chokepoints. Every
+existing tool keeps working (Rubino::Tool is a strict superset). North star: SIMPLE, EASY, MAGIC via
+CONVENTIONS, but every default OVERRIDABLE.
+
+STUDY FIRST (quote file:line in your report): lib/rubino/tools/base.rb (params DSL, security/
+presentation/redaction_profile/live_card, name derivation base.rb:110-119, input_schema bridge,
+runtime accessors, execute contract), tool_security.rb, tool_presentation.rb, tool_presentation_cli.rb,
+lib/rubino/agent/tool_executor.rb (the return-hash keys it reads ~293-311, the errorish handling
+~342-367), lib/rubino/tools/result.rb (ERROR_PREFIX_RE, errorish?), custom_tool_loader.rb (the anon
+ToolSecurity synthesis + Rubino.define_tool), vision_tool.rb + attach_file_tool.rb (the image/artifact
+pain), lib/rubino/llm/auxiliary_client.rb + Attachments::Policy/Classify (the aux + egress guards).
+
+BUILD (SLICE 1 — the base DSL + the IMAGE tool as the proof):
+1. `Rubino::Tool < Tools::Base`:
+   - Result helpers: `ok(text, metrics: nil, diff: nil, json: nil, table: nil, artifact: nil, label:
+     nil)` → a success Tools::Result / the return-hash the executor expects; `error(message, code:
+     nil)` → an errorish result (align with how tool_executor treats a returned error vs a raise —
+     tool_executor.rb ~342-367). Do NOT name a helper `fail` (collides with Kernel#fail). A bare
+     String return must still work.
+   - ONE param spelling: `string :x, "desc", required: true/false, default: …` (+ integer/boolean/
+     array/object). `required` inferred from presence of `default:`. Keep the block `params do…end`
+     working too; unify on ONE positional-desc spelling for the sugar. Keep `def input_schema` for
+     dynamic schemas.
+   - `describe "…"` (alias of description).
+   - `risk :low|:medium|:high` macro that synthesizes a ToolSecurity subclass (default :low). Keep the
+     full `security SomeClass` escape hatch.
+   - AUTO-REGISTRATION: an `inherited` hook registers concrete subclasses into Tools::Registry (with an
+     `abstract!` opt-out for base classes); the MCP/custom paths stay unchanged. Remove the need to
+     hand-edit registry.rb register_defaults! for a Rubino::Tool subclass.
+   - KILL THE INHERITANCE FOOTGUN: in `inherited`, copy down @tool_security/@tool_presentation/
+     @live_card_header/@redaction_profile so `class Foo < SomeRubinoTool` keeps the declarations.
+   - `def run(**kwargs)` as the authored entry (bridge: Base#execute → run), OR keep execute — pick the
+     cleaner one and document it.
+2. The IMAGE tool support (the headline win — folds the security-critical egress guards into a
+   convention so they CAN'T be forgotten):
+   - an `image :path, "desc"` param TYPE that, at call time, applies the exact guards from
+     vision_tool.rb:42-73 (workspace containment, existence, extension allowlist, egress kill-switch
+     Attachments::Policy.aux_vision_egress?, content-sniff Attachments::Classify) and rejects with the
+     same messages if any fails — BEFORE #run sees the arg.
+   - `uses_aux :vision` (declares the aux dependency → registry gating like the existing aux tools) +
+     `ask_aux(prompt, image:)` wrapping LLM::AuxiliaryClient for vision.
+   - `attach_image(bytes_or_path, filename:, caption:)` that writes to a workspace tmp if needed,
+     builds the `{path, filename, content_type, byte_size}` artifact + emits the artifact event, and
+     returns the proper result — replacing the hand-built hash in attach_file_tool.rb:68-79.
+   - REWRITE `vision_tool` on top of `Rubino::Tool` (image param + uses_aux + ask_aux) as the proof —
+     it should shrink from ~90 lines to ~15 and behave identically. Also add ONE tiny example tool
+     (e.g. a trivial `current_time`) to show the ~12-line simple case.
+
+SECURITY PALETTO (do not violate): the sugar must NEVER silently widen permissions/redaction. Ground
+redaction default stays `:shell`; `redaction :none` (disables secret scrubbing) must be EXPLICIT, never
+inferred. Do not touch the executor chokepoints, workspace canonicalization, or Result's deny vocab.
+
+VERIFY: `bundle exec rspec spec/rubino/tools spec/rubino/agent` green; add specs for: Rubino::Tool
+auto-registers a subclass; `ok`/`error` produce the right Result (success vs errorish); a subclass of a
+Rubino::Tool keeps the parent's risk/redaction (footgun fixed); the `image` param rejects an out-of-
+workspace / non-image / egress-off path with the same messages; the rewritten vision_tool behaves like
+before. rubocop clean on touched/new files. Pre-existing host-flaky failures (RubyTool/PTY/EPERM,
+executor_dirs_spec:64) are env, not yours.
+
+REPORT (do NOT commit): the file:line study of the current contract; the `Rubino::Tool` API you built
+(macros + helpers + inheritance copy-down + auto-register); the before/after of vision_tool (line
+counts) and the ~12-line simple tool; how `image`/`uses_aux`/`attach_image` fold in the egress guards;
+the rspec + rubocop results; and an HONEST note of anything that could not be sugar-ed cleanly. If a
+piece balloons, STOP and describe it rather than inventing.
