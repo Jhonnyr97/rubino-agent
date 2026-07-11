@@ -474,17 +474,16 @@ RSpec.describe "Skills (directory layout + disclosure)" do
 
     it "Level 2: returns the body plus a list of bundled linked_files" do
       out = tool.call("name" => "data-helper")
-      expect(out).to include("Skill 'data-helper' loaded:")
+      expect(out).to include("<skill_content name=\"data-helper\">")
       expect(out).to include("Data Helper")
-      expect(out).to include("references/api.md")
-      expect(out).to include("scripts/run.py")
-      expect(out).to include("file_path")
+      expect(out).to include("<file>references/api.md</file>")
+      expect(out).to include("<file>scripts/run.py</file>")
     end
 
     it "Level 2: a flat-file skill has no bundled-files hint" do
       out = tool.call("name" => "legacy-flat")
-      expect(out).to include("Skill 'legacy-flat' loaded:")
-      expect(out).not_to include("Bundled files")
+      expect(out).to include("<skill_content name=\"legacy-flat\">")
+      expect(out).not_to include("<skill_resources>")
     end
 
     describe "observability (#skill-bench)" do
@@ -839,15 +838,18 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
 
       it "loads an enabled skill unchanged (no regression)" do
-        out = tool.call("name" => "data-helper")
-        expect(out).to include("Skill 'data-helper' loaded:")
+        # Fresh instance to avoid dedup from earlier tests on the shared @tool.
+        fresh = described_class.new(registry: registry)
+        out = fresh.call("name" => "data-helper")
+        expect(out).to include("<skill_content name=\"data-helper\">")
         expect(out).to include("Data Helper")
       end
 
       it "loads again once re-enabled" do
         state_repository.set("data-helper", enabled: false)
         state_repository.set("data-helper", enabled: true)
-        expect(tool.call("name" => "data-helper")).to include("Skill 'data-helper' loaded:")
+        fresh = described_class.new(registry: registry)
+        expect(fresh.call("name" => "data-helper")).to include("<skill_content name=\"data-helper\">")
       end
     end
   end

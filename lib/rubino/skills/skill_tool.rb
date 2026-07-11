@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "set"
 
 module Rubino
   module Skills
@@ -18,6 +19,7 @@ module Rubino
 
       def initialize(registry: nil)
         @registry = registry || Registry.new
+        @loaded_skill_names = Set.new
       end
 
       def name
@@ -377,12 +379,27 @@ module Rubino
       # ---- load ----------------------------------------------------------------
 
       def load_body(skill, skill_name)
+        if @loaded_skill_names.include?(skill_name)
+          return "Skill '#{skill_name}' is already active in this session."
+        end
+        @loaded_skill_names.add(skill_name)
+
         content = ContentPreprocessor.preprocess(
           skill.content,
           skill_dir: skill.directory? ? File.dirname(skill.path) : nil
         )
-        body = "Skill '#{skill_name}' loaded:\n\n#{content}"
-        body << linked_files_hint(skill, skill_name) unless skill.linked_files.empty?
+        body = <<~OUTPUT.strip
+          <skill_content name="#{skill_name}">
+          #{content}
+
+          Skill directory: #{File.dirname(skill.path)}
+          Relative paths in this skill are relative to the skill directory.
+          </skill_content>
+        OUTPUT
+        unless skill.linked_files.empty?
+          resources = skill.linked_files.map { |f| "    <file>#{f}</file>" }.join("\n")
+          body << "\n\n<skill_resources>\n#{resources}\n</skill_resources>"
+        end
         announce_loaded(skill_name)
         body
       end
@@ -393,11 +410,6 @@ module Rubino
           Interaction::Events::SKILL_LOADED,
           name: skill_name
         )
-      end
-
-      def linked_files_hint(skill, skill_name)
-        listing = skill.linked_files.map { |f| "  - #{f}" }.join("\n")
-        "\n\nBundled files (load with skill(name: \"#{skill_name}\", file_path: \"...\")):\n#{listing}"
       end
 
       def load_bundled_file(skill, skill_name, file_path)

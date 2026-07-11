@@ -12,17 +12,22 @@ module Rubino
       DIR_GLOB = File.join("*", "SKILL.md")
 
       # Agent-neutral skill dirs (the emerging `npx skills` / Gemini CLI /
-      # goose convention): discovered in ADDITION to the configured rubino
-      # paths, scanned before them so a rubino-path skill of the same name
-      # wins (lowest precedence). No behavior change when the dirs are absent.
-      AGENT_NEUTRAL_PATHS = [".agents/skills", "~/.agents/skills"].freeze
+      # goose convention): discovered BEFORE the configured rubino paths so
+      # a rubino-path skill of the same name wins (lowest precedence). Within
+      # each tier the user-home path is scanned FIRST (lower priority) and
+      # the project-local path LAST (higher priority, wins on collision) —
+      # matching the agentskills.io convention that project skills override
+      # user skills. No behaviour change when the dirs are absent.
+      AGENT_NEUTRAL_PATHS = ["~/.agents/skills", ".agents/skills"].freeze
 
       # Claude Code / everything-claude-code ecosystem compatibility paths.
       # Scanned BEFORE the rubino-specific paths so a same-named skill in
-      # ~/.rubino/skills or .rubino/skills overrides the Claude copy. The
-      # project-local `.claude/skills` is trust-gated exactly like
-      # `.rubino/skills` (project_local_path? check below).
-      CLAUDE_PATHS = [".claude/skills", "~/.claude/skills"].freeze
+      # ~/.rubino/skills or .rubino/skills overrides the Claude copy. User-home
+      # first (lower priority), project-local last (higher, wins on collision)
+      # per the agentskills.io convention. The project-local `.claude/skills`
+      # is trust-gated exactly like `.rubino/skills` (project_local_path?
+      # check below).
+      CLAUDE_PATHS = ["~/.claude/skills", ".claude/skills"].freeze
 
       # Skills shipped *inside the gem* (skills/<name>/SKILL.md at the gem
       # root, packaged via the gemspec's git-ls-files list). These are
@@ -138,7 +143,13 @@ module Rubino
       # contract: a Windows-restricted skill is hidden from the macOS catalogue
       # but stays loadable on demand.
       def summaries
-        enabled.select { |skill| language_applicable?(skill) && skill.platform_compatible? }.map(&:summary)
+        catalog.map(&:summary)
+      end
+
+      # Returns the filtered skill objects for disclosure (name + description +
+      # location per agentskills.io Step 3). Same gates as #summaries.
+      def catalog
+        enabled.select { |skill| language_applicable?(skill) && skill.platform_compatible? }
       end
 
       # Loads and returns the full content of a skill by name. Returns nil when
@@ -228,6 +239,10 @@ module Rubino
       def add_skills(paths)
         paths.each do |path|
           skill = Skill.new(path: path)
+          old = @skills[skill.name]
+          if old
+            warn "rubino: skill '#{skill.name}' at #{path} shadows #{old.path}"
+          end
           @skills[skill.name] = skill
         rescue StandardError => e
           # One malformed skill (unreadable file, undecodable bytes, a parse
@@ -240,13 +255,17 @@ module Rubino
       end
 
       def skill_paths
+        # User-home first (lower priority), project-local last (higher, wins
+        # on collision) — matching the agentskills.io convention.
         paths = @config.dig("skills", "paths") || [
-          ".rubino/skills",
-          "~/.rubino/skills"
+          "~/.rubino/skills",
+          ".rubino/skills"
         ]
-        # Prepended (not appended) so the rubino paths override them on a name
-        # collision, and BEFORE the trust filter so the project-local
-        # `.agents/skills` is gated exactly like `.rubino/skills`.
+        # Prepended so the rubino paths override agent-neutral / Claude paths on
+        # a name collision, and BEFORE the trust filter so the project-local
+        # `.agents/skills` is gated exactly like `.rubino/skills`. Each tier
+        # already has user-home first (lower) and project-local last (higher,
+        # wins) — see the constant doc-comments above.
         paths = AGENT_NEUTRAL_PATHS + CLAUDE_PATHS + paths
         unless @include_project_local
           # Untrusted primary root: drop the project-local (cwd-relative) skill
@@ -254,11 +273,13 @@ module Rubino
           paths = paths.reject { |p| project_local_path?(p) }
         end
 
-        # Built-in (gem-bundled) skills are scanned FIRST so a user skill of the
-        # same name — discovered later in .rubino/skills or ~/.rubino/skills —
-        # overrides the built-in on the registry's name-indexed merge (last
-        # writer wins in #add_skills). That lets a user shadow/customize a
-        # shipped skill while still getting the built-ins for free by default.
+        # Built-in (gem-bundled) skills are scanned FIRST so a user or project
+        # skill of the same name — discovered later — overrides the built-in on
+        # the registry's name-indexed merge (last writer wins in #add_skills).
+        # That lets a user shadow/customize a shipped skill while still getting
+        # the built-ins for free by default. User-home paths come before
+        # project-local paths within each tier so project skills override user
+        # skills per the agentskills.io convention.
         @include_builtin ? [BUILTIN_SKILLS_DIR, *paths] : paths
       end
 

@@ -40,10 +40,10 @@ module Rubino
       # so a fresh install shows only the create nudge instead of an empty
       # <available_skills> block.
       def catalogue
-        summaries = @registry.summaries
-        return nil if summaries.empty?
+        skills = @registry.catalog
+        return nil if skills.empty?
 
-        lines = summaries.map { |s| "  - #{s}" }.join("\n")
+        lines = skills.map { |s| "  - #{s.catalog_entry}" }.join("\n")
         <<~PROMPT.strip
           ## Skills (mandatory)
           The skill catalogue below is the FIRST thing to consult on every task — read it before you plan or act. If a skill matches or is even partially relevant, you MUST load it with skill(name) and follow its instructions BEFORE answering. When unsure, load it: missing a skill's steps, pitfalls, or required conventions is far worse than loading one you didn't need. Skills carry specialized knowledge — APIs, tool-specific commands, and proven workflows that outperform general-purpose approaches — and the user's required conventions and quality standards, so load the matching skill even for tasks you already know how to do, because the skill defines how it must be done here.
@@ -66,7 +66,7 @@ module Rubino
       # Heads the block with the "## Skills" header when the catalogue is absent
       # (fresh install) so the header is never orphaned.
       def creation_nudge
-        header = @registry.summaries.empty? ? "## Skills\n" : ""
+        header = @registry.catalog.empty? ? "## Skills\n" : ""
         <<~PROMPT.strip
           #{header}### Creating skills
           When you finish a task that was complex, multi-step (typically 5+ tool calls), and likely to recur — and no existing skill already covers it — proactively capture it as a new skill so the next run is faster and more reliable. Do this at the natural end of the work, without being asked, and without interrupting the user mid-task. If the work was trivial, one-off, or already covered by a loaded skill, do NOT create one.
