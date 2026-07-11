@@ -382,3 +382,70 @@ Custom tools:
 - Can override built-in tools by name
 - Support all risk levels and approval flows
 - Can execute any system command or Ruby code
+
+---
+## Inline Tool Card (`live_card`)
+
+A tool can opt into the multiplexer dropdown **while it runs** by declaring a `live_card`
+lambda in its class:
+
+```ruby
+class MyBuildTool < Tools::Base
+  live_card ->(args) { "🔨 build #{args[:target]}" }
+
+  # … rest of tool definition
+end
+```
+
+The lambda receives the tool's arguments hash and returns a header string shown as the
+dropdown-row label. Fast/quiet tools declare nothing — the default is to **not** appear in
+the dropdown (opt-in).
+
+**While the tool runs**, the user sees its entry in the multiplexer:
+
+- **↑↓** navigates to it, **⏎** clears the timeline and shows the tool's streaming output
+  there
+- **←** returns to the main timeline
+
+An inline tool **blocks** the agent thread (it runs synchronously) — the card is the live
+window on that blocking operation, exactly like a background shell or subagent. The adapter
+is torn down automatically when the tool completes or fails.
+
+## Background Crash-Safe Logging
+
+When a background subagent or shell runs, rubino writes its transcript to a per-task log
+file that survives a process crash (sync-flushed on every write):
+
+| Entry type | Log path |
+|---|---|
+| Subagent (`task`) | `<workspace>/.rubino/sessions/<session_id>/tasks/<sa_id>.jsonl` |
+| Background shell | `<workspace>/.rubino/logs/bg/<bg_id>.log` |
+
+- The **subagent log** is a JSONL file — one JSON object per line (Append-only, flushed
+  immediately). It records every turn: user messages, assistant blocks (text + tool use),
+  tool results, and a terminal `result` event. Mirrors Claude Code's task log format.
+- The **background shell log** is a plain file capturing stdout+stderr, opened with
+  `sync = true` so every write hits the disk. The log path is in the shell handle, so
+  the user can `tail -f` it from another terminal.
+
+Both paths live under the workspace root (not `~/.rubino`) so the OS write-jail permits
+them — the agent process always has write access to its own workspace session/log dirs.
+
+## Approval-Preview via ToolPresentation
+
+Each tool can customize its approval-prompt display by overriding
+`ToolPresentation#preview_arguments` in its presentation subclass:
+
+```ruby
+class ToolPresentation < Tools::ToolPresentation
+  def preview_arguments(label, arguments)
+    # build and return a formatted string (diff preview, content snippet, …)
+    # return nil to fall back to the executor's generic key-value formatter
+  end
+end
+```
+
+Receives the display label (e.g. `"edit"`, `"echo (mcp:chaos)"`) and the raw arguments
+hash. Returns a complete formatted string for the approval prompt, or `nil` to use the
+default. The `edit` and `multi_edit` tools ship with previews that show the diff/file
+content inline at the approval prompt.
