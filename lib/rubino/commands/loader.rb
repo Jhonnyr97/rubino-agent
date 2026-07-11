@@ -6,8 +6,22 @@ module Rubino
     class Loader
       COMMAND_GLOB = "*.md"
 
-      def initialize(config: nil)
+      # Claude Code / everything-claude-code ecosystem compatibility paths.
+      # Scanned BEFORE the rubino-specific paths so a same-named command in
+      # .rubino/commands or ~/.rubino/commands overrides the Claude copy. The
+      # project-local `.claude/commands` is trust-gated exactly like
+      # `.rubino/commands` (project_local_path? check below).
+      CLAUDE_PATHS = [".claude/commands", "~/.claude/commands"].freeze
+
+      def initialize(config: nil, include_project_local: nil)
         @config = config || Rubino.configuration
+        # Auto-trust-gate: when the caller doesn't say, check folder-trust.
+        # Explicit true/false wins (tests, cross-cutting overrides).
+        @include_project_local = if include_project_local.nil?
+                                   self.class.project_local_trusted?
+                                 else
+                                   include_project_local
+                                 end
         @commands = {}
         @discovered = false
       end
@@ -76,7 +90,17 @@ module Rubino
       private
 
       def command_paths
-        @config.dig("commands", "paths") || Config::Defaults.to_hash.dig("commands", "paths")
+        paths = @config.dig("commands", "paths") ||
+                Config::Defaults.to_hash.dig("commands", "paths")
+        # Prepended (not appended) so the rubino paths override Claude paths
+        # on a name collision (later entries win in discover!'s hash merge).
+        paths = CLAUDE_PATHS + Array(paths)
+        unless @include_project_local
+          # Untrusted primary root: drop the project-local (cwd-relative)
+          # command dirs, keeping only absolute / home (~) paths.
+          paths = paths.reject { |p| project_local_path?(p) }
+        end
+        paths
       end
 
       # Default search paths, with the home sentinel resolved to a real dir.
@@ -96,6 +120,34 @@ module Rubino
         else
           File.expand_path(dir)
         end
+      end
+
+      # Mirrors Skills::Registry.project_local_trusted?: trust-gate the cwd,
+      # but never let the check itself break discovery on a real error.
+      def self.project_local_trusted?
+        Rubino::Trust.trusted?(Rubino::Workspace.primary_root)
+      rescue StandardError
+        true
+      end
+
+      # A command path is "project-local" when it resolves under the primary
+      # workspace root (the cwd a hostile repo could ship commands in), as
+      # opposed to an absolute or ~ path the user owns. Sentinel paths like
+      # <RUBINO_HOME>/commands are home-relative, never project-local.
+      def project_local_path?(path)
+        return false if path.to_s.start_with?("~", "/", "<")
+
+        expanded = canonical_dir(File.expand_path(path.to_s))
+        root = canonical_dir(File.expand_path(Workspace.primary_root))
+        expanded == root || expanded.start_with?("#{root}#{File::SEPARATOR}")
+      rescue StandardError
+        true
+      end
+
+      def canonical_dir(path)
+        (File.realpath(path) if File.exist?(path)) || path
+      rescue StandardError
+        path
       end
     end
   end
