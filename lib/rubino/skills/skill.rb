@@ -153,6 +153,12 @@ module Rubino
         "#{@name}: #{@description}"
       end
 
+      # Full catalog entry with location — used by PromptIndex for the
+      # agentskills.io disclosure format (name + description + path).
+      def catalog_entry
+        "#{@name}: #{@description}\n  location: #{@path}"
+      end
+
       private
 
       def directory_skill?
@@ -266,6 +272,24 @@ module Rubino
         else
           @name = default_name
           @description = raw.lines.first&.strip&.sub(/^#\s*/, "") || ""
+        end
+
+        # ── agentskills.io lenient validation (Step 2) ──
+
+        # G2: A skill without a description can't be disclosed — skip it.
+        if @description.to_s.strip.empty?
+          raise Rubino::Error, "empty description — a description is essential for disclosure"
+        end
+
+        # G3: Name doesn't match directory — warn, but load anyway.
+        dir_name = default_name
+        if directory? && @name != dir_name
+          warn "rubino: skill name '#{@name}' doesn't match directory '#{dir_name}' in #{@path}"
+        end
+
+        # G4: Name exceeds 64 characters — warn, but load anyway.
+        if @name.length > 64
+          warn "rubino: skill name '#{@name}' exceeds 64 characters in #{@path}"
         end
       end
 
