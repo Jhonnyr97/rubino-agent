@@ -75,6 +75,14 @@ module Rubino
         agent_result = agent_switch_handler.handle_command(name, arguments)
         return agent_result if agent_result
 
+        # Skill invocation via `/skill-name` — mirrors Hermes's
+        # build_skill_invocation_message: loads the full SKILL.md body and
+        # injects it as a user message with an activation note, skill directory,
+        # and supporting-file hints. Checked BEFORE custom .md commands so a
+        # skill named "deploy" isn't shadowed by a user's `deploy.md`.
+        skill_result = handle_skill_invocation(name, arguments)
+        return skill_result if skill_result
+
         # Look up custom command
         command = @loader.find(name)
         unless command
@@ -268,6 +276,69 @@ module Rubino
 
       def skills_handler
         @skills_handler ||= Handlers::Skills.new(ui: @ui)
+      end
+
+      # Mirrors Hermes's build_skill_invocation_message: when the user types
+      # `/skill-name <instruction>`, the full SKILL.md body is loaded, preprocessed
+      # (template vars, optional inline shell), and injected as a user message with
+      # an activation note, the skill directory, and supporting-file hints. The
+      # user's trailing instruction is appended.
+      #
+      # Returns a Hash with `:prompt` (the formatted message) when the name
+      # matches a skill, or nil when it doesn't (fall through to custom commands).
+      def handle_skill_invocation(name, arguments)
+        registry = Skills::Registry.trusted
+        skill = registry.find(name)
+        return nil unless skill
+
+        return nil unless registry.enabled?(skill.name)
+
+        session_id = @runner&.session&.dig(:id)
+        skill_dir = skill.directory? ? File.dirname(skill.path) : nil
+
+        content = Skills::ContentPreprocessor.preprocess(
+          skill.content,
+          skill_dir: skill_dir,
+          session_id: session_id
+        )
+
+        parts = ["[IMPORTANT: The user has invoked the \"#{skill.name}\" skill, " \
+                 "indicating they want you to follow its instructions. " \
+                 "The full skill content is loaded below.]",
+                 "",
+                 content.strip]
+
+        if skill_dir
+          parts.push("",
+                     "[Skill directory: #{skill_dir}]",
+                     "Resolve any relative paths in this skill (e.g. " \
+                     "`scripts/foo.js`, `templates/config.yaml`) against that " \
+                     "directory, then run them with the terminal tool using the " \
+                     "absolute path.")
+        end
+
+        supporting = skill.current_linked_files
+        unless supporting.empty?
+          parts.push("",
+                     "[This skill has supporting files:]")
+          supporting.each { |sf| parts.push("- #{sf}  ->  #{File.join(skill_dir, sf)}") }
+          parts.push("\nLoad any of these with skill(name: \"#{skill.name}\", " \
+                     "file_path: \"<path>\"), or run scripts directly by " \
+                     "absolute path (e.g. `node #{skill_dir}/scripts/foo.js`).")
+        end
+
+        user_instruction = arguments.to_s.strip
+        unless user_instruction.empty?
+          parts.push("",
+                     "The user has provided the following instruction alongside " \
+                     "the skill invocation: #{user_instruction}")
+        end
+
+        { prompt: parts.join("\n") }
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "executor.skill_invocation_failed",
+                            name: name, error: "#{e.class}: #{e.message}")
+        nil
       end
 
       def mcp_handler
