@@ -69,7 +69,11 @@ module Rubino
       def do_add(kind, content)
         return error("content is required for add") if blank?(content)
 
-        memory = backend.store(kind: kind, content: content)
+        memory = backend.store(
+          kind: kind,
+          content: content,
+          source_session_id: Rubino.memory_source_session_id
+        )
         "Memory added (id=#{memory[:id][0, 8]}, kind=#{kind})."
       rescue ::Rubino::Memory::Store::ThreatDetectedError => e
         threat_error(e)

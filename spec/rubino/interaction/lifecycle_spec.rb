@@ -432,8 +432,9 @@ RSpec.describe Rubino::Interaction::Lifecycle do
                     "retry_backoff_seconds" => 0 },
         # interval 1 = every turn, so this DETACHMENT test (not the throttle
         # test below) always enqueues the review row regardless of turn number.
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 1 },
-        "skills" => { "auto_distill" => false }
+        # Memory is now inline (Memory::Sync), so skills drives the queue path.
+        "memory" => { "enabled" => true, "auto_extract" => false },
+        "skills" => { "auto_distill" => true, "auto_distill_interval" => 1 }
       )
     end
     let(:polishing) { instance_spy(Rubino::Interaction::Polishing) }
@@ -507,8 +508,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     it "does NOT enqueue BackgroundReviewJob on a non-interval turn (#412 throttle)" do
       throttled = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
-        "skills" => { "auto_distill" => false }
+        "memory" => { "enabled" => true, "auto_extract" => false },
+        "skills" => { "auto_distill" => true, "auto_distill_interval" => 10 }
       )
       lc = described_class.new(session: { id: "sess-9", model: "gpt-4o" },
                                event_bus: event_bus, ui: null_ui, config: throttled,
@@ -523,8 +524,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     it "DOES enqueue BackgroundReviewJob on an interval-boundary turn (#412)" do
       throttled = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
-        "skills" => { "auto_distill" => false }
+        "memory" => { "enabled" => true, "auto_extract" => false },
+        "skills" => { "auto_distill" => true, "auto_distill_interval" => 10 }
       )
       lc = described_class.new(session: { id: "sess-10", model: "gpt-4o" },
                                event_bus: event_bus, ui: null_ui, config: throttled,
@@ -543,8 +544,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     it "enqueues the review inter-turn on the INTERACTIVE REPL regardless of the aux slot (#608c)" do
       shared = test_configuration(
         "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-        "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => 10 },
-        "skills" => { "auto_distill" => false }
+        "memory" => { "enabled" => true, "auto_extract" => false },
+        "skills" => { "auto_distill" => true, "auto_distill_interval" => 10 }
         # NB: no "auxiliary" override → compression resolves to the main endpoint,
         # which used to SUPPRESS the extract; the warm-prefix fork does not.
       )
@@ -568,8 +569,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       def lifecycle_for(memory_interval:, distill: false, message_count: 1, turn_index: 1)
         cfg = test_configuration(
           "jobs" => { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 },
-          "memory" => { "enabled" => true, "auto_extract" => true, "auto_extract_interval" => memory_interval },
-          "skills" => { "auto_distill" => distill }
+          "memory" => { "enabled" => true, "auto_extract" => false },
+          "skills" => { "auto_distill" => distill, "auto_distill_interval" => memory_interval }
         )
         lc = described_class.new(session: { id: "sess-gate-#{turn_index}-#{rand(1_000)}", model: "gpt-4o" },
                                  event_bus: event_bus, ui: null_ui, config: cfg, polishing: polishing)
@@ -579,8 +580,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
       end
 
       it "does NOT kick the polishing worker on a turn that enqueues nothing" do
-        # Non-interval turn (1 % 10 != 0), distill off, < 20 messages => no row.
-        lc = lifecycle_for(memory_interval: 10, turn_index: 1, message_count: 1)
+        # Non-interval turn (1 % 10 != 0), distill off => no row.
+        lc = lifecycle_for(memory_interval: 10, distill: false, turn_index: 1, message_count: 1)
 
         lc.send(:enqueue_post_turn_jobs)
 
@@ -589,8 +590,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
         expect(db_connection.db[:jobs].count).to eq(0)
       end
 
-      it "kicks the polishing worker when a memory row was actually enqueued" do
-        lc = lifecycle_for(memory_interval: 1, turn_index: 1, message_count: 1)
+      it "kicks the polishing worker when a skills row was actually enqueued" do
+        lc = lifecycle_for(memory_interval: 1, distill: true, turn_index: 1, message_count: 1)
 
         lc.send(:enqueue_post_turn_jobs)
 

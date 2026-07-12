@@ -92,8 +92,14 @@ module Rubino
         # 6. Persist session state
         update_session_state
 
-        # 7. Enqueue post-turn jobs
+        # 7. Enqueue post-turn jobs (skills only — memory is inline below)
         enqueue_post_turn_jobs
+
+        # 7b. Inline post-turn memory extraction (hermes parity).
+        # Fire-and-forget: runs on a daemon thread, never blocks the next
+        # prompt. Skipped on aborted/interrupted turns (stop_reason != :completed).
+        Memory::Sync.sync_after_turn(@session[:id], stop_reason: @last_stop_reason,
+                                                    config: @config)
 
         # 8. Finish
         # Carry the final assistant text as the terminal event's authoritative
@@ -438,28 +444,24 @@ module Rubino
         turn_no = current_turn_index
 
         # Post-turn housekeeping is the Hermes-style warm-prefix review fork
-        # (BackgroundReviewJob) — the SINGLE mechanism that mines durable memory
-        # AND distills skills. Unlike the old divergent aux calls (the structured
-        # memory extractor + DistillSkillJob, both of which evicted the live KV
-        # slot and so had to be suppressed in interactive), the fork REUSES the
-        # parent turn's cached system prompt + conversation snapshot, so its
-        # request EXTENDS the warm prefix instead of busting it — no eviction, no
-        # "freeze after N turns". That is why it runs inter-turn in the
-        # interactive REPL with NO evicts-live-slot gate, exactly as Hermes does.
+        # (BackgroundReviewJob) for SKILLS only. Memory extraction now runs
+        # INLINE post-turn via Memory::Sync (hermes parity) — not through the
+        # DB job queue. Skills remain on the queue with their own interval.
         #
-        # Throttled per surface like Hermes' nudge intervals (memory and skills
-        # each have their own cadence); enqueue ONCE when EITHER surface is due —
-        # the job intersects the config-enabled surfaces itself, so a single
-        # fork covers whichever halves are live.
-        review_due =
-          (@config.skills_auto_distill? &&
-           interval_due?(turn_no, @config.skills_auto_distill_interval)) ||
-          (@config.memory_auto_extract? &&
-           interval_due?(turn_no, @config.memory_auto_extract_interval))
+        # Unlike the old divergent aux calls (the structured memory extractor +
+        # DistillSkillJob, both of which evicted the live KV slot), the fork
+        # REUSES the parent turn's cached system prompt + conversation snapshot,
+        # so its request EXTENDS the warm prefix instead of busting it — no
+        # eviction, no "freeze after N turns".
+        skills_due =
+          @config.skills_auto_distill? &&
+          interval_due?(turn_no, @config.skills_auto_distill_interval)
 
         enqueued = false
-        if review_due
-          queue.enqueue("BackgroundReviewJob", { session_id: @session[:id] }, drain_inline: drain_inline)
+        if skills_due
+          queue.enqueue("BackgroundReviewJob",
+                        { session_id: @session[:id], surfaces: ["skill"] },
+                        drain_inline: drain_inline)
           @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
           enqueued = true
         end
