@@ -4,13 +4,6 @@
 
 ### Added
 
-- **`web_screenshot` tool.** Capture a PNG screenshot of a web page (JS-rendered
-  via ferrum + headless Chrome) and attach it as a downloadable artifact for the
-  user. The image is a user-facing artifact, not fed to the model, so it works
-  regardless of model vision support. Gated by `tools.web` alongside `web_fetch`
-  and `web_search`; requires the optional `ferrum` gem + a Chrome/Chromium binary
-  (run `rubino setup` to install the JS extra, or install.sh's `INSTALL_JS`
-  opt-in).
 - **install.sh gains `INSTALL_DOCS` opt-in.** The installer now offers to install
   `pdf-reader` (for in-process PDF reading in `web_fetch`/`read_attachment`),
   mirroring the existing `INSTALL_JS` pattern with env-var override

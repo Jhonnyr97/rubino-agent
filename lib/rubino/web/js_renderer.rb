@@ -94,28 +94,6 @@ module Rubino
         nil
       end
 
-      # Capture a PNG screenshot of `url` in headless Chrome and write it to
-      # `path`. Returns the path on success, nil on any failure (missing
-      # gem/browser, timeout, crash). The caller (web_screenshot tool) applies
-      # UrlSafety BEFORE calling — the SAME rationale as #render.
-      def screenshot(url, path, full_page: false, timeout: TIMEOUT)
-        return nil unless available?
-
-        require "ferrum"
-        browser = new_browser(timeout)
-        begin
-          browser.go_to(url)
-          browser.network.wait_for_idle(timeout: timeout)
-          browser.screenshot(path: path, full: full_page)
-          path
-        ensure
-          browser.quit
-        end
-      rescue StandardError => e
-        Rubino.logger&.warn(event: "webfetch.js_screenshot.failed",
-                            error: "#{e.class}: #{e.message}")
-        nil
-      end
 
       def new_browser(timeout)
         options = {
