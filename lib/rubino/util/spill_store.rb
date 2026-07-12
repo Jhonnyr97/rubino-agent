@@ -14,13 +14,13 @@ module Rubino
     #
     # Both were write-only: nothing ever deleted them. A long-running session or
     # a CI box that runs thousands of large-output tools accumulated these files
-    # FOREVER, and destroying a session (CleanupSessionsJob / Repository#destroy!)
+    # FOREVER, and destroying a session (CleanupService / Repository#destroy!)
     # only deleted DB rows, leaving the files orphaned. This module:
     #
     #   1. deletes a single session's spill+paste files when it is destroyed
     #      (#destroy_session_files), and
     #   2. evicts spill/paste files past an age and/or total-size budget
-    #      (#evict!), called opportunistically and from CleanupSessionsJob.
+    #      (#evict!), called opportunistically from CleanupService at startup.
     #
     # All methods are best-effort: an IO error must never take down the agent.
     module SpillStore

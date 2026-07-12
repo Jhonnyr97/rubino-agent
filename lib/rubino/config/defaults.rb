@@ -436,6 +436,20 @@ module Rubino
           # legitimately slow aux-LLM job is never yanked out from under itself.
           "lock_lease_seconds" => 900
         },
+        # Session/spill cleanup (opportunistic at startup, not a cron job).
+        # Deletes ENDED sessions older than period_days + their spill files.
+        # Throttled to at most once per 24h.
+        #
+        #   period_days (default 30)       — retention window in days.
+        #     nil / false / "off" / 0 / negative → OFF (cleanup disabled).
+        #     Do NOT overload 0 as "retain forever" — use nil/false/"off".
+        #   min_retention_days (default 1) — floor: newer sessions are
+        #     UNTOUCHABLE regardless of status. Prevents the Claude Code
+        #     0-day wipe-the-workspace bug.
+        "cleanup" => {
+          "period_days" => 30,
+          "min_retention_days" => 1
+        },
         # Nested-subagent (the `task` delegation tool) caps. A subagent CAN now
         # spawn its own subagents; these three caps bound the tree so depth ×
         # fan-out cannot blow past the process's thread/cost budget. All three are

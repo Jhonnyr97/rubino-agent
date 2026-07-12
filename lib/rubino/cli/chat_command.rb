@@ -3303,6 +3303,10 @@ module Rubino
       def ensure_setup!
         ensure_database_ready!
 
+        # Opportunistic session/spill cleanup at startup (throttled 1x/24h).
+        # Best-effort, non-fatal — a failure must never block chat.
+        Rubino::CleanupService.run_once
+
         # Same opt-in gate as ServerCommand: fake provider is dev-only and
         # must not be reachable without RUBINO_ALLOW_FAKE=1.
         if Rubino.configuration.dig("model", "provider").to_s == "fake" &&

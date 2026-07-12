@@ -109,7 +109,7 @@ Rubino::Jobs::Queue.new.enqueue("MyJob", session_id: "abc")
 | `BackgroundReviewJob` | `Handlers::BackgroundReviewJob` | `{session_id, surfaces?}` | the single post-turn / session-end **review fork** — forks the session, re-emits the parent turn's byte-identical system prompt (extends the warm KV prefix, no eviction), and runs a restricted-toolset agent that mines durable **memory** (via the `memory` tool) **and** distils **skills** (via the `skill` tool). Gated on `memory.auto_extract` / `skills.auto_distill`; see [memory.md](memory.md#how-facts-are-extracted-write-path) and [skills.md](skills.md#creating-skills) |
 | `CompactSessionJob` | `Handlers::CompactSessionJob` | `{session_id}` | `Context::Compressor#compact!` |
 | `SummarizeSessionJob` | `Handlers::SummarizeSessionJob` | `{session_id}` | `Context::SummaryBuilder#build_and_save!` |
-| `CleanupSessionsJob` | `Handlers::CleanupSessionsJob` | `{retention_days?}` | deletes `sessions` rows with `status="ended"` older than retention (default 30d) |
+| ~~`CleanupSessionsJob`~~ | — | — | **REMOVED** — replaced by opportunistic-at-startup `CleanupService` (see config `cleanup.period_days`), not a cron job |
 
 ### CLI
 
