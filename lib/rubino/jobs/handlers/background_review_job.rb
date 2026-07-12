@@ -288,13 +288,19 @@ module Rubino
           # MEMORY instead of collapsing everything into one bucket — and it is
           # also HALF the cost (one fork turn, not two) on a slow local backend.
           # A single enabled surface keeps its own focused prompt.
-          Rubino.with_review_toolset(allowed) do
-            if skills_on && memory_on
-              runner.run!(COMBINED_REVIEW_PROMPT)
-            elsif skills_on
-              runner.run!(SKILL_REVIEW_PROMPT)
-            else
-              runner.run!(MEMORY_REVIEW_PROMPT)
+          # Bind the PARENT session id as the memory source so facts mined by
+          # this disposable child review session are attributed to the driving
+          # parent, not the throwaway child. ToolExecutor respects an existing
+          # binding and skips its own override when one is already set.
+          Rubino.with_memory_source_session_id(parent[:id]) do
+            Rubino.with_review_toolset(allowed) do
+              if skills_on && memory_on
+                runner.run!(COMBINED_REVIEW_PROMPT)
+              elsif skills_on
+                runner.run!(SKILL_REVIEW_PROMPT)
+              else
+                runner.run!(MEMORY_REVIEW_PROMPT)
+              end
             end
           end
         ensure

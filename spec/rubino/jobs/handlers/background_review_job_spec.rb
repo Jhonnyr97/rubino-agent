@@ -142,6 +142,46 @@ RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
     described_class.new.perform({ session_id: session[:id], surfaces: ["memory"] })
   end
 
+  it "binds the PARENT session id as memory_source_session_id during the review" do
+    session = parent_with_answer
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    captured_source = nil
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!) do
+      captured_source = Rubino.memory_source_session_id
+    end
+    allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+
+    described_class.new.perform({ session_id: session[:id], surfaces: ["memory"] })
+
+    # The memory source must be the PARENT (driving) session, not the child.
+    expect(captured_source).to eq(session[:id])
+    # After the review, memory_source_session_id is cleaned up.
+    expect(Rubino.memory_source_session_id).to be_nil
+  end
+
+  it "defaults to both surfaces when nil (combined prompt, both tools allowed)" do
+    session = parent_with_answer
+    allow(Rubino).to receive(:configuration).and_return(config_with(memory: true, skills: true))
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    prompts = []
+    toolset = nil
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!) do |prompt|
+      prompts << prompt
+      toolset = Rubino.review_toolset
+    end
+    allow(Rubino::Agent::Runner).to receive(:new).and_return(runner)
+
+    # No explicit surfaces → nil → defaults to both.
+    described_class.new.perform({ session_id: session[:id] })
+
+    expect(prompts).to eq([described_class::COMBINED_REVIEW_PROMPT])
+    expect(toolset).to include("skill", "memory")
+  end
+
   it "swallows a runner failure and still cleans up the child" do
     session = parent_with_answer
     allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")

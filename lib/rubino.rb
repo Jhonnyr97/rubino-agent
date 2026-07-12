@@ -278,9 +278,10 @@ module Rubino
     end
 
     # The source session id that MemoryTool reads to attribute created facts to
-    # the session whose turn triggered the extraction. Bound by the post-turn
-    # memory sync daemon thread (Memory::Sync) around the review turn; nil on
-    # every normal run (facts from a direct user prompt are unattributed).
+    # the session whose turn triggered the extraction. Bound by the unified
+    # review fork (BackgroundReviewJob) around the review turn; ToolExecutor
+    # skips its own override when this is already set. Nil on every normal run
+    # (facts from a direct user prompt get @session_id attribution).
     def memory_source_session_id
       Thread.current[:rubino_memory_source_session_id]
     end

@@ -276,9 +276,17 @@ module Rubino
             end
           end
         end
-        raw = Rubino.with_memory_source_session_id(@session_id) do
-          tool.call(arguments)
-        end
+        # Attribute the memory write to the parent session when one is already
+        # bound (e.g. by the review fork), so facts mined by a disposable child
+        # review session are attached to the triggering parent. Otherwise stamp
+        # with the current session id (direct user-initiated memory writes).
+        raw = if Rubino.memory_source_session_id
+                tool.call(arguments)
+              else
+                Rubino.with_memory_source_session_id(@session_id) do
+                  tool.call(arguments)
+                end
+              end
         if raw.is_a?(Tools::Result)
           raw = Tools::Result.new(
             name: name,

@@ -432,7 +432,7 @@ RSpec.describe Rubino::Interaction::Lifecycle do
                     "retry_backoff_seconds" => 0 },
         # interval 1 = every turn, so this DETACHMENT test (not the throttle
         # test below) always enqueues the review row regardless of turn number.
-        # Memory is now inline (Memory::Sync), so skills drives the queue path.
+        # Memory and skills now ride the same unified review fork.
         "memory" => { "enabled" => true, "auto_extract" => false },
         "skills" => { "auto_distill" => true, "auto_distill_interval" => 1 }
       )

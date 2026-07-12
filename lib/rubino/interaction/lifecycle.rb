@@ -96,14 +96,9 @@ module Rubino
         # 6. Persist session state
         update_session_state
 
-        # 7. Enqueue post-turn jobs (skills only — memory is inline below)
+        # 7. Enqueue post-turn jobs (skills + memory — both ride the unified
+        #    warm-prefix review fork now; no separate inline extraction path).
         enqueue_post_turn_jobs
-
-        # 7b. Inline post-turn memory extraction (hermes parity).
-        # Fire-and-forget: runs on a daemon thread, never blocks the next
-        # prompt. Skipped on aborted/interrupted turns (stop_reason != :completed).
-        Memory::Sync.sync_after_turn(@session[:id], stop_reason: @last_stop_reason,
-                                                    config: @config)
 
         # 8. Finish
         # Carry the final assistant text as the terminal event's authoritative
@@ -449,9 +444,9 @@ module Rubino
         turn_no = current_turn_index
 
         # Post-turn housekeeping is the Hermes-style warm-prefix review fork
-        # (BackgroundReviewJob) for SKILLS only. Memory extraction now runs
-        # INLINE post-turn via Memory::Sync (hermes parity) — not through the
-        # DB job queue. Skills remain on the queue with their own interval.
+        # (BackgroundReviewJob) for BOTH skills and memory — the SINGLE unified
+        # extraction mechanism. Both surfaces ride the same warm-prefix fork;
+        # when both are due the same turn, ONE combined turn runs (not two).
         #
         # Unlike the old divergent aux calls (the structured memory extractor +
         # DistillSkillJob, both of which evicted the live KV slot), the fork
@@ -461,15 +456,20 @@ module Rubino
         skills_due =
           @config.skills_auto_distill? &&
           interval_due?(turn_no, @config.skills_auto_distill_interval)
+        memory_due =
+          @config.memory_auto_extract? &&
+          interval_due?(turn_no, @config.memory_auto_extract_interval)
 
-        enqueued = false
-        if skills_due
-          queue.enqueue("BackgroundReviewJob",
-                        { session_id: @session[:id], surfaces: ["skill"] },
-                        drain_inline: drain_inline)
-          @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
-          enqueued = true
-        end
+        surfaces = []
+        surfaces << "skill" if skills_due
+        surfaces << "memory" if memory_due
+        return if surfaces.empty?
+
+        queue.enqueue("BackgroundReviewJob",
+                      { session_id: @session[:id], surfaces: surfaces },
+                      drain_inline: drain_inline)
+        @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
+        enqueued = true
 
         # NB: there is no per-turn session-summary job. The running summary that
         # PromptAssembler injects is produced by the THRESHOLD-GATED compaction

@@ -320,27 +320,31 @@ module Rubino
 
       private
 
-      # Run the end-of-session review fork (#554) — the post-session SKILL
-      # distillation path. Memory extraction now runs INLINE post-turn via
-      # Memory::Sync (hermes parity), so the end-of-session catch-all only
-      # handles skills. BackgroundReviewJob still mines durable memory on its
-      # own through the combined prompt when the inline hook is disabled, but
-      # with both config flags off this is a no-op.
+      # Run the end-of-session review fork (#554) — the post-session skill
+      # distillation AND memory catch-all. Both surfaces ride the SAME unified
+      # warm-prefix review (BackgroundReviewJob), so a short session that exits
+      # before the turn-interval boundary still gets its facts mined and skills
+      # distilled — exactly the same delivery guarantee for both.
       #
       # INTERACTIVE (the in-chat `/new` handoff, or any REPL still alive): enqueue
       # the review DETACHED (drain_inline: false) so the prompt is never blocked —
       # the still-running polishing worker drains it off the process-global queue.
       # HEADLESS one-shot / API: the process is about to EXIT, so a detached job
       # would never drain; run the fork INLINE and synchronously before exit so
-      # the session's skills are distilled first.
+      # the session's facts and skills are mined first.
       #
       # +handoff+ is retained for call-site compatibility but no longer branches:
       # the ONLY handoff caller (chat_command `/new`) is interactive, already
       # covered by the @interactive branch below.
       def flush_memory_on_session_end!(handoff: false) # rubocop:disable Lint/UnusedMethodArgument
-        return unless @config.skills_auto_distill?
+        # Request both surfaces; the job provides the config-intersection gate
+        # AND the combined-prompt path when both are enabled.
+        surfaces = []
+        surfaces << "skill" if @config.skills_auto_distill?
+        surfaces << "memory" if @config.memory_auto_extract?
+        return if surfaces.empty?
 
-        payload = { session_id: @session[:id], surfaces: ["skill"] }
+        payload = { session_id: @session[:id], surfaces: surfaces }
         if @interactive
           Jobs::Queue.new.enqueue("BackgroundReviewJob", payload, drain_inline: false)
         else
