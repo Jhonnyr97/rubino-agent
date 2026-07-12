@@ -153,11 +153,11 @@ RSpec.describe Rubino::Skills::SkillTool do
   # foreground call already renders as a `● skill` tool row). So the tool must
   # tag each write with the right origin.
   describe "event origin tagging" do
-    def capture(event)
+    def capture(event, &block)
       bus = Rubino::Interaction::EventBus.new
       seen = []
       bus.on(event) { |p| seen << p }
-      Rubino.with_event_bus(bus) { yield }
+      Rubino.with_event_bus(bus, &block)
       seen
     end
 

@@ -5,8 +5,6 @@ module Rubino
     # Tool for finding files by glob patterns.
     # Returns matching file paths sorted by modification time.
     class GlobTool < Base
-
-
       description "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
                   "Returns matching file paths sorted by modification time."
 
@@ -14,12 +12,11 @@ module Rubino
       param :path,    desc: "Base directory to search in (defaults to current directory)", required: false
       param :max_results, type: :integer, desc: "Maximum number of results (default: 100)", required: false
       param :include_ignored, type: :boolean,
-            desc: "Include files git ignores (.gitignore, build artifacts). " \
-                  "Default false — results honor .gitignore like grep does.",
-            required: false
+                              desc: "Include files git ignores (.gitignore, build artifacts). " \
+                                    "Default false — results honor .gitignore like grep does.",
+                              required: false
 
       def execute(pattern:, path: ".", max_results: 100, include_ignored: false)
-
         # Glob is BROAD (#406): it resolves any path like Hermes/Claude/Codex.
         # The read allowlist was never the data-loss boundary (that's on the
         # WRITE path); glob only lists file PATHS (no content), so there is

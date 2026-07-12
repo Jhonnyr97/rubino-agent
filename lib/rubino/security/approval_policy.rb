@@ -128,6 +128,8 @@ module Rubino
       # permissions:allow, command_allowlist), so neither can be overridden
       # by a fast-path the way yolo used to override deny rules.
       def decide(tool, arguments: {}) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity -- one canonical, deliberately linear deny-before-allow decision ladder; splitting it would scatter the ordering invariant
+        arguments = arguments.transform_keys(&:to_sym) if arguments.respond_to?(:transform_keys)
+
         @last_deny_reason = nil
         @last_ask_reason = nil
         @doom_loop_warning = false
@@ -351,7 +353,7 @@ module Rubino
         return false unless tool.name == "skill"
 
         args = arguments || {}
-        %w[create edit patch write_file delete].include?((args["action"] || args[:action]).to_s)
+        %w[create edit patch write_file delete].include?(args[:action].to_s)
       end
 
       # True when this is a shell call requesting the out-of-jail escape hatch
@@ -363,7 +365,7 @@ module Rubino
         return false unless tool.name == "shell"
 
         args = arguments || {}
-        raw = args.key?("disable_sandbox") ? args["disable_sandbox"] : args[:disable_sandbox]
+        raw = args[:disable_sandbox]
         (raw == true || raw.to_s == "true") && Sandbox.escalation_allowed?
       end
 
@@ -460,9 +462,9 @@ module Rubino
       def secret_targets(tool, arguments)
         args = arguments || {}
         if tool.name == "apply_patch"
-          base = (args["base_path"] || args[:base_path]).to_s
+          base = args[:base_path].to_s
           base = Tools::Base.workspace_root if base.empty?
-          return patch_target_paths(args["patch"] || args[:patch], base)
+          return patch_target_paths(args[:patch], base)
         end
 
         raw = self.class.command_string(tool, arguments)
@@ -510,23 +512,23 @@ module Rubino
       # in ToolExecutor. One builder so the granularity stays identical:
       # approving `shell ls` never auto-approves `shell rm -rf /`.
       def self.command_string(tool, arguments)
-        args = arguments || {}
+        args = (arguments || {}).transform_keys(&:to_sym)
         case tool.name
         when "shell"
-          (args["command"] || args[:command]).to_s
+          args[:command].to_s
         when "read", "write", "edit", "multi_edit", "attach_file"
-          (args["file_path"] || args[:file_path]).to_s
+          args[:file_path].to_s
         when "grep", "glob"
           # The SEARCH ROOT (a dir or a file) is what the secret gate resolves —
           # `pattern` is the regex/glob, not a path. (Default "." like the tools.)
-          (args["path"] || args[:path] || ".").to_s
+          (args[:path] || ".").to_s
         when "shell_output", "shell_kill", "shell_input"
-          (args["run_id"] || args[:run_id]).to_s
+          args[:run_id].to_s
         when "skill"
           # "<action> <name>" so the approval scope distinguishes a create from
           # a load and one skill name from another (granularity parity, #405).
-          action = args["action"] || args[:action] || "load"
-          name   = args["name"] || args[:name]
+          action = args[:action] || "load"
+          name   = args[:name]
           [action, name].join(" ").strip
         else
           args.values.first.to_s

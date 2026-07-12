@@ -11,9 +11,6 @@ module Rubino
     # result — not the truncated notice), or `failed` (with the error). With no
     # `task_id` it lists every tracked background subagent (the /tasks analogue).
     class TaskResultTool < Base
-
-
-
       # Shares the `task` config gate — disabling delegation disables its
       # companion poll/stop tools too.
       def config_key
@@ -25,11 +22,12 @@ module Rubino
                   "result), or `failed` (with the error). Call without a task_id to list " \
                   "all tracked background subagents."
 
-      param :task_id, desc: "The task id (sa_…) returned by `task`. Omit to list all background subagents.", required: false
+      param :task_id, desc: "The task id (sa_…) returned by `task`. Omit to list all background subagents.",
+                      required: false
 
       def execute(task_id: nil)
         task_id = task_id.to_s.strip
-        registry = BackgroundTasks.instance
+        registry = Tools::BackgroundTasks.instance
 
         return list_all(registry) if task_id.empty?
 

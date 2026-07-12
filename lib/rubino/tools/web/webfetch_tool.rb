@@ -9,8 +9,6 @@ module Rubino
   module Tools
     # Tool for fetching web page content and converting to text/markdown.
     class WebFetchTool < Base
-
-
       MAX_BODY_SIZE = 100_000
       TIMEOUT = 30
 
@@ -30,7 +28,6 @@ module Rubino
       # ARIA landmark roles that mark page chrome rather than content.
       BOILERPLATE_ROLES = %w[navigation banner contentinfo search complementary].freeze
 
-
       # Gated by `tools.web` (shared with websearch), not `tools.webfetch`.
       def config_key
         "web"
@@ -41,7 +38,7 @@ module Rubino
 
       param :url, desc: "The URL to fetch content from"
       param :format, type: :string, desc: "Output format: 'text' (default, strips HTML) or 'html' (raw)",
-            required: false
+                     required: false
 
       def execute(url:, format: "text")
         raw_uri = URI.parse(url)
@@ -85,7 +82,7 @@ module Rubino
           raw_body = response.body.to_s.dup.force_encoding("UTF-8").scrub("?")
           body = if raw_body.bytesize > MAX_BODY_SIZE
                    raw_body.byteslice(0,
-                                     MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?")
+                                      MAX_BODY_SIZE).to_s.force_encoding("UTF-8").scrub("?")
                  else
                    raw_body
                  end

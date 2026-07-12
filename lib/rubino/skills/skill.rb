@@ -258,8 +258,12 @@ module Rubino
             begin
               @metadata = YAML.safe_load(parts[1], permitted_classes: [Symbol]) || {}
             rescue Psych::SyntaxError => e
-              warn "rubino: skipping malformed frontmatter in #{@path} " \
-                   "(line #{e.line}: #{e.problem})"
+              Rubino.logger.warn(
+                event: "skills.malformed_frontmatter",
+                path: @path,
+                line: e.line,
+                problem: e.problem
+              )
               @metadata = {}
             end
             @metadata = {} unless @metadata.is_a?(Hash)
@@ -284,13 +288,25 @@ module Rubino
         # G3: Name doesn't match directory — warn, but load anyway.
         dir_name = default_name
         if directory? && @name != dir_name
-          warn "rubino: skill name '#{@name}' doesn't match directory '#{dir_name}' in #{@path}"
+          Rubino.logger.warn(
+            event: "skills.name_mismatch",
+            name: @name,
+            directory: dir_name,
+            path: @path
+          )
         end
 
         # G4: Name exceeds 64 characters — warn, but load anyway.
+        # rubocop:disable Style/GuardClause
         if @name.length > 64
-          warn "rubino: skill name '#{@name}' exceeds 64 characters in #{@path}"
+          Rubino.logger.warn(
+            event: "skills.name_too_long",
+            name: @name,
+            length: @name.length,
+            path: @path
+          )
         end
+        # rubocop:enable Style/GuardClause
       end
 
       # For a directory skill the name is the directory name; for a flat file

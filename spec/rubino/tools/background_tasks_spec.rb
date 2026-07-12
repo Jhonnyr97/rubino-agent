@@ -489,5 +489,48 @@ RSpec.describe Rubino::Tools::BackgroundTasks do
       # stop_entry on a shell? entry calls #stop (no-op on adapter)
       expect { registry.stop_entry(adapter) }.not_to raise_error
     end
+
+    # BUG A — retain-for-replay: a finished adapter is kept in the registry
+    # so its output buffer is re-playable via find + output_all after the
+    # tool finishes. #running still excludes it (finish! sets live?=false).
+    it "a finished (retained) inline adapter is still retrievable by find after finish!" do
+      registry.register_inline(adapter)
+      adapter.write("hello stdout\n")
+      adapter.finish!
+
+      found = registry.find("il_test99")
+      expect(found).to be(adapter)
+      expect(found.output_all).to eq("hello stdout\n")
+      expect(found.live?).to be(false)
+    end
+
+    it "bounded reap evicts oldest finished adapters when cap exceeded" do
+      cap = described_class::MAX_RETAINED_INLINE
+      live_one = Rubino::Tools::InlineToolAdapter.new(
+        id: "il_live", tool_name: "shell", command_hint: "live"
+      )
+      registry.register_inline(live_one) # live → not evicted
+
+      # Register cap+2 adapters so the final register_inline triggers a reap:
+      # the cap+1st adapter is live at registration time (finish! happens
+      # AFTER register_inline), so finished.size == cap and no eviction fires
+      # yet. The cap+2nd registration sees cap+1 finished adapters and
+      # evicts the oldest.
+      (cap + 2).times do |i|
+        a = Rubino::Tools::InlineToolAdapter.new(
+          id: "il_finished_#{i}", tool_name: "shell", command_hint: "cmd #{i}"
+        )
+        registry.register_inline(a)
+        a.finish!
+      end
+
+      # The oldest finished one (il_finished_0) should be evicted
+      expect(registry.find("il_finished_0")).to be_nil
+      # The newest finished one should still be there
+      expect(registry.find("il_finished_#{cap + 1}")).not_to be_nil
+      # The live one was never touched
+      expect(registry.find("il_live")).to be(live_one)
+      expect(registry.running.map(&:id)).to include("il_live")
+    end
   end
 end

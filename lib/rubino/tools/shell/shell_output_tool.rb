@@ -7,20 +7,18 @@ module Rubino
     #
     # By default returns only the bytes produced since the last call —
     # repeated polling shows incremental progress like `tail -F`. Pass
-    # `mode: "all"` for the full buffer (bounded by ShellRegistry::RING_BYTES).
+    # `mode: "all"` for the full buffer (bounded by Tools::ShellRegistry::RING_BYTES).
     class ShellOutputTool < Base
-
       description "Read output from a background shell started via `shell` with " \
                   "run_in_background: true. By default returns only new bytes since " \
                   "the previous read. Pass mode: 'all' for the full buffered output."
 
       param :run_id, desc: "The run_id returned by `shell` when launched in background"
       param :mode, type: :string, required: false,
-            desc: "'new' (default) = bytes since last read; 'all' = full buffer"
+                   desc: "'new' (default) = bytes since last read; 'all' = full buffer"
 
       def execute(run_id:, mode: "new")
-
-        registry = ShellRegistry.instance
+        registry = Tools::ShellRegistry.instance
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 

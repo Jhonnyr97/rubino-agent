@@ -65,6 +65,12 @@ module Rubino
 
       # Executes a single tool call, returns a Tools::Result.
       def execute(name:, arguments:, call_id:)
+        # Normalize arguments to symbol keys ONCE, before any downstream consumer
+        # (live_card_header, preview_arguments, tool.call, SkillTool#call) reads
+        # them. RubyLLM::Tool#call does the same transform_keys(&:to_sym), so
+        # doing it here makes it idempotent and removes every string-key fallback.
+        arguments = arguments.transform_keys(&:to_sym) if arguments.respond_to?(:transform_keys)
+
         # Cancellation checkpoint BEFORE the tool runs (#335b). On the streaming
         # path ruby_llm dispatches tool calls mid-stream through ToolBridge into
         # here, and the loop's per-iteration #check! is far above us — so without
@@ -228,10 +234,12 @@ module Rubino
                                 error: e.message, error_class: e.class.name)
             header = name.to_s
           end
+          defer_after = tool.class.respond_to?(:live_card_after) ? tool.class.live_card_after : nil
           inline_adapter = Tools::InlineToolAdapter.new(
             id: "il_#{SecureRandom.hex(4)}",
             tool_name: name,
-            command_hint: header.to_s
+            command_hint: header.to_s,
+            after: defer_after&.to_f
           )
           Tools::BackgroundTasks.instance.register_inline(inline_adapter)
         end
@@ -245,24 +253,27 @@ module Rubino
            (@ui.respond_to?(:tool_chunk) || @event_bus || inline_adapter)
           tool.stream_chunk = lambda do |chunk|
             streamed = true
-            # Tee into the inline adapter's buffer so the attach view has
-            # output to show (zero new branches — the adapter duck-types
-            # the background-entry interface the existing attach reads).
-            inline_adapter&.write(chunk)
-            # Read stream_kind LAZILY: the tool only knows its output kind
-            # (e.g. :diff for `git diff`) once #call has inspected the command,
-            # which happens AFTER this lambda is installed.
-            kind = tool.respond_to?(:stream_kind) ? (tool.stream_kind || :plain) : :plain
-            @ui.tool_chunk(name, chunk, kind: kind) if @ui.respond_to?(:tool_chunk)
-            # Mirror the chunk onto the bus so the API/SSE stream isn't silent
-            # during a long tool call: the Recorder maps TOOL_PROGRESS to a
-            # `tool.progress` event, which resets the idle watchdog. Without
-            # this a busy tool (a long shell stream, or an aux-LLM-backed tool,
-            # no run-events) is killed at the 300s idle timeout. Throttled so a
-            # chatty tool (shell streaming thousands of stdout lines) doesn't
-            # write a DB row + SSE frame per line — one heartbeat per interval
-            # is enough to keep the watchdog satisfied.
-            last_progress_at = emit_tool_progress(name, chunk, last_progress_at) if @event_bus
+            # Feed the inline adapter's buffer. When deferred, #emit
+            # returns nil (buffer only); otherwise it returns the chunk
+            # to stream (or the accumulated drain when visibility flips).
+            # Without an adapter, the chunk passes through unchanged.
+            ui_chunk = inline_adapter ? inline_adapter.emit(chunk) : chunk
+            if ui_chunk
+              # Read stream_kind LAZILY: the tool only knows its output kind
+              # (e.g. :diff for `git diff`) once #call has inspected the command,
+              # which happens AFTER this lambda is installed.
+              kind = tool.respond_to?(:stream_kind) ? (tool.stream_kind || :plain) : :plain
+              @ui.tool_chunk(name, ui_chunk, kind: kind) if @ui.respond_to?(:tool_chunk)
+              # Mirror the chunk onto the bus so the API/SSE stream isn't silent
+              # during a long tool call: the Recorder maps TOOL_PROGRESS to a
+              # `tool.progress` event, which resets the idle watchdog. Without
+              # this a busy tool (a long shell stream, or an aux-LLM-backed tool,
+              # no run-events) is killed at the 300s idle timeout. Throttled so a
+              # chatty tool (shell streaming thousands of stdout lines) doesn't
+              # write a DB row + SSE frame per line — one heartbeat per interval
+              # is enough to keep the watchdog satisfied.
+              last_progress_at = emit_tool_progress(name, ui_chunk, last_progress_at) if @event_bus
+            end
           end
         end
         raw = tool.call(arguments)
@@ -317,9 +328,7 @@ module Rubino
         redactor = Security::Redactor.resolve
         profile  = tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell
         # Body redaction runs early (never compressed — human-facing only).
-        if body && profile != :none
-          body = redactor.redact(body, profile: profile)
-        end
+        body = redactor.redact(body, profile: profile) if body && profile != :none
         # Skip the body block when the tool already streamed its output line by
         # line via #tool_chunk: `body` is the SAME content (e.g. ShellTool's
         # Util::Output.preview of the captured stdout), so rendering it again
@@ -336,9 +345,7 @@ module Rubino
         # Model-facing text redaction runs AFTER compression so a skeleton built
         # from raw_source (unredacted) doesn't reintroduce secrets the original
         # text path would mask. The common compression-OFF path is a single pass.
-        if text && profile != :none
-          text = redactor.redact(text, profile: profile)
-        end
+        text = redactor.redact(text, profile: profile) if text && profile != :none
         result = Tools::Result.success(
           name: name,
           call_id: call_id,
@@ -366,9 +373,15 @@ module Rubino
                      result: result, status: "failed", error: e.message)
         result
       ensure
+        inline_adapter&.finish!
         if inline_adapter
-          inline_adapter.finish!
-          Tools::BackgroundTasks.instance.unregister_inline(inline_adapter.id)
+          # RETAIN the adapter in the registry so its output buffer survives
+          # beyond tool finish. finish! sets @live=false, which excludes it
+          # from #running (Bug B's dropdown removal still works). The adapter
+          # stays retrievable via find(id) — drilling into a finished inline
+          # live_card re-paints output_all faithfully. A bounded reap (cap on
+          # retained adapters) prevents unbounded growth; eviction runs on
+          # register_inline (oldest finished first).
         end
         tool.cancel_token = nil if tool.respond_to?(:cancel_token=)
         tool.read_tracker = nil if tool.respond_to?(:read_tracker=)
@@ -423,7 +436,7 @@ module Rubino
         # summary; tag the subagent name (recovered from the call arguments) so
         # the consumer can render "X answered" and group it with the start.
         if name == "task" && arguments.is_a?(Hash)
-          subagent = arguments["subagent"] || arguments[:subagent]
+          subagent = arguments[:subagent]
           payload[:subagent] = subagent.to_s unless subagent.nil?
         end
         @event_bus&.emit(Interaction::Events::TOOL_FINISHED, **payload)
@@ -434,8 +447,8 @@ module Rubino
       def subagent_tag(arguments)
         return {} unless arguments.is_a?(Hash)
 
-        subagent = arguments["subagent"] || arguments[:subagent]
-        prompt   = arguments["prompt"]   || arguments[:prompt]
+        subagent = arguments[:subagent]
+        prompt   = arguments[:prompt]
         tag = {}
         tag[:subagent] = subagent.to_s unless subagent.nil?
         tag[:prompt]   = truncate_for_event(prompt.to_s) unless prompt.nil?
@@ -740,7 +753,7 @@ module Rubino
       def compress_requested?(arguments)
         return true unless arguments.is_a?(Hash)
 
-        value = arguments.key?("compress") ? arguments["compress"] : arguments[:compress]
+        value = arguments[:compress]
         value != false
       end
 
@@ -806,7 +819,7 @@ module Rubino
       # Emits compression.drill_in for a retrieve_output call (the deliberate
       # recovery), carrying the id. Best-effort: telemetry never breaks the call.
       def log_retrieve_drill_in(arguments)
-        id = arguments.is_a?(Hash) ? (arguments["id"] || arguments[:id]) : nil
+        id = arguments.is_a?(Hash) ? arguments[:id] : nil
         Rubino.logger&.info(event: "compression.drill_in", tool: "retrieve_output", id: id.to_s)
       rescue StandardError
         nil

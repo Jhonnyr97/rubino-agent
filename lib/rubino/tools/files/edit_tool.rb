@@ -20,12 +20,12 @@ module Rubino
         # Diff preview for the approval prompt: "- old" then "+ new" so the
         # user can see what will change BEFORE approving.
         def preview_arguments(label, arguments)
-          old_s = arguments["old_string"] || arguments[:old_string]
-          new_s = arguments["new_string"] || arguments[:new_string]
+          old_s = arguments[:old_string]
+          new_s = arguments[:new_string]
           return nil unless old_s.is_a?(String) && new_s.is_a?(String)
 
-          path = arguments["file_path"] || arguments[:file_path]
-          ra   = arguments["replace_all"] || arguments[:replace_all]
+          path = arguments[:file_path]
+          ra   = arguments[:replace_all]
           header = ra ? "#{label} (replace_all) wants to run: #{path}" : "#{label} wants to run: #{path}"
 
           minus = Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" }
@@ -53,8 +53,8 @@ module Rubino
       param :old_string, desc: "The exact text to find and replace"
       param :new_string, desc: "The text to replace it with"
       param :replace_all, type: :boolean,
-            desc: "Replace all occurrences (default: false, replaces first only)",
-            required: false
+                          desc: "Replace all occurrences (default: false, replaces first only)",
+                          required: false
 
       def execute(file_path:, old_string:, new_string:, replace_all: false)
         # Input guards (#329a/b): reject an empty needle (a literal sub/gsub on

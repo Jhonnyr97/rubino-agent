@@ -10,8 +10,7 @@ module Rubino
         def risk = :medium
       end
 
-
-      security     ToolSecurity
+      security ToolSecurity
 
       GRACE_SECONDS = 2
 
@@ -22,8 +21,7 @@ module Rubino
       param :run_id, desc: "The run_id returned by `shell` when launched in background"
 
       def execute(run_id:)
-
-        registry = ShellRegistry.instance
+        registry = Tools::ShellRegistry.instance
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 

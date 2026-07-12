@@ -5,7 +5,6 @@ module Rubino
     # Tool for managing a task/todo list during a session.
     # Allows the agent to track progress on complex multi-step tasks.
     class TodoTool < Base
-
       redaction_profile :none
 
       def name
@@ -21,9 +20,9 @@ module Rubino
           object do
             string :content, description: "Brief description of the task"
             string :status, enum: %w[pending in_progress completed cancelled],
-                   description: "Current task status"
+                            description: "Current task status"
             string :priority, enum: %w[high medium low],
-                   description: "Task priority level"
+                              description: "Task priority level"
           end
         end
       end

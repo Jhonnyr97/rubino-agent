@@ -212,8 +212,13 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/unknown.*NonExistentTool/).to_stderr
-        expect { loader.load! }.to output(/unknown.*AnotherFake/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        loader.load!
+        logged = log_io.string
+        expect(logged).to include("agent.md.unknown_tool")
+        expect(logged).to include("NonExistentTool")
+        expect(logged).to include("AnotherFake")
 
         expect(registry.find("unknown-tool").tools).to contain_exactly("shell")
       end
@@ -271,7 +276,11 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/disallowedTools.*NonExistentTool.*could not be mapped/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        loader.load!
+        expect(log_io.string).to include("agent.md.unknown_deny_tool")
+        expect(log_io.string).to include("NonExistentTool")
       end
     end
   end
@@ -293,7 +302,10 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/bypassPermissions.*no rubino equivalent/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        loader.load!
+        expect(log_io.string).to include("agent.md.bypass_permissions")
 
         # Agent still loads — bypassPermissions is just a no-op
         expect(registry.find("bypasser")).not_to be_nil
@@ -369,7 +381,7 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
   # ------------------------------------------------------------------
 
   describe "ignored fields" do
-    it "warns about unsupported fields without rejecting the agent" do
+    it "logs unsupported fields at debug without rejecting the agent" do
       Dir.mktmpdir do |tmp|
         dir = File.join(tmp, "agents")
         FileUtils.mkdir_p(dir)
@@ -381,8 +393,12 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/color.*not supported/).to_stderr
-        expect { loader.load! }.to output(/effort.*not supported/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io, level: "debug")
+        loader.load!
+        expect(log_io.string).to include("agent.md.ignored_field")
+        expect(log_io.string).to include("color")
+        expect(log_io.string).to include("effort")
 
         expect(registry.find("fancy")).not_to be_nil
       end
@@ -605,7 +621,10 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/malformed frontmatter/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        loader.load!
+        expect(log_io.string).to include("agent.md.malformed_frontmatter")
         expect(registry.find("bad")).to be_nil
       end
     end
@@ -620,7 +639,10 @@ RSpec.describe Rubino::Agent::MarkdownLoader do
         loader = described_class.new(registry: registry, include_project_local: true)
         allow(loader).to receive(:scan_dirs).and_return([dir])
 
-        expect { loader.load! }.to output(/non-Hash frontmatter/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        loader.load!
+        expect(log_io.string).to include("agent.md.nonhash_frontmatter")
       end
     end
   end

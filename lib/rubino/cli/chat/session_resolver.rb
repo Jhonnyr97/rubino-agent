@@ -201,6 +201,17 @@ module Rubino
             # Pass the persisted call_id so a `task` row's close label resolves
             # from the per-call_id name stash (#35) rather than a shared ivar.
             ui.tool_started(name, arguments: arguments, at: at, call_id: msg.tool_call_id)
+            # Replay the stored body through the SAME live seam the live turn uses
+            # (ToolExecutor#tool_body), so multi-line tool outputs (shell tables,
+            # diffs, listings) re-render with their line breaks intact rather than
+            # being crushed into a " — "-joined one-liner by the compact close row's
+            # #truncate_inline (#699, F5). `msg.content` is the model-facing
+            # `result.output` (not the human `body` preview) — for COMPRESSED
+            # outputs it shows the compressed/pointer text, which is the closest
+            # faithful reconstruction. `:plain` is used because `body_kind` is not
+            # persisted in metadata; diff coloring is a nice-to-have future addition.
+            content = msg.content.to_s
+            ui.tool_body(content, kind: :plain) unless content.empty?
             ui.tool_finished(name, result: replay_tool_result(msg, name))
           end
         end

@@ -33,7 +33,7 @@ module Rubino
     #
     # Scoped nesting (S1): a subagent CAN now spawn its own subagents (the
     # delegation tools are no longer stripped from a subagent's tool list). The
-    # tree is bounded in ONE place — BackgroundTasks#reserve — by three caps:
+    # tree is bounded in ONE place — Tools::BackgroundTasks#reserve — by three caps:
     # max nesting depth (tasks.max_depth), per-owner live children
     # (tasks.max_children_per_node), and a global live ceiling
     # (tasks.max_concurrent_total). When a cap is hit reserve returns nil and this
@@ -193,7 +193,7 @@ module Rubino
       # parent's InputQueue) so the parent folds the result in at its next
       # iteration boundary — the Claude Code "auto-notify on completion" contract.
       def run_background(definition, prompt)
-        registry_bg = BackgroundTasks.instance
+        registry_bg = Tools::BackgroundTasks.instance
         # Ownership link (S1): when THIS run is itself a subagent, the thread-local
         # current-subagent id is the spawner — the new child's owner. nil ⇒ the
         # human / top-level agent is spawning (depth 0). The owner's depth is what
@@ -209,7 +209,7 @@ module Rubino
 
         # Open the per-subagent JSONL log NOW (on the parent thread) so the
         # path is known before the child starts — survives process death.
-        log = SubagentLog.new(sa_id: entry.id, session_id: entry.id)
+        log = Tools::SubagentLog.new(sa_id: entry.id, session_id: entry.id)
         entry.log_path = log.path
 
         # Captured on the PARENT thread, before we spawn — the child thread has
@@ -241,7 +241,7 @@ module Rubino
                                   budget: budget_handler_for(entry))
         # Wrap the message store so every persisted message is also
         # written to the JSONL log (post-mortem forensics).
-        wrapped_store = SubagentLog::TeeStore.new(Session::Store.new, log)
+        wrapped_store = Tools::SubagentLog::TeeStore.new(Session::Store.new, log)
         runner = build_subagent_runner(
           definition, ui: child_ui, event_bus: Interaction::EventBus.new,
                       message_store: wrapped_store
@@ -283,7 +283,7 @@ module Rubino
         # `steer` channel) and bind the current-subagent id so a tool the child
         # invokes can find its own registry entry. The steer queue
         # is the SAME InputQueue the human uses to steer the parent: the parent
-        # pushes a note via BackgroundTasks#steer, the child folds it in at its
+        # pushes a note via Tools::BackgroundTasks#steer, the child folds it in at its
         # next iteration boundary (Loop#inject_steered_input).
 
         # Log the start event so the JSONL file records the prompt even if the
@@ -324,9 +324,9 @@ module Rubino
                          status: "failed",
                          error: e.message)
 
-        BackgroundTasks.instance.complete(entry, status: :failed, error: e.message)
+        Tools::BackgroundTasks.instance.complete(entry, status: :failed, error: e.message)
         # A failure landing on a stop-requested entry was recorded as :stopped
-        # (BackgroundTasks#complete): a deliberate /agents --stop / task_stop
+        # (Tools::BackgroundTasks#complete): a deliberate /agents --stop / task_stop
         # must not surface as a ✗ "failed" notice (#108/#13).
         if entry.status == :stopped
           notify(sink, stopped_notice(entry))
@@ -362,14 +362,14 @@ module Rubino
       # reported undelivered) or rejected by #steer (and reported not-delivered
       # to its caller) — never silently lost.
       def record_completion(entry, text, sink, parent_ui, stop_reason: nil)
-        drained = BackgroundTasks.instance.complete(entry, status: :completed, result: text,
-                                                           stop_reason: stop_reason)
+        drained = Tools::BackgroundTasks.instance.complete(entry, status: :completed, result: text,
+                                                                  stop_reason: stop_reason)
         # A drained DENY-note (#Y1B) is ADVISORY — the approval was already
         # denied, so a "couldn't deliver it" alarm is misleading: the denial
         # applied and the explanation is simply moot. Only GENUINE
         # `/agents <id> steer` notes (no prefix) are a real deliver-or-report
         # case that warrants the scary warning.
-        denied, undelivered = drained.partition { |n| n.to_s.start_with?(BackgroundTasks::DENY_NOTE_PREFIX) }
+        denied, undelivered = drained.partition { |n| n.to_s.start_with?(Tools::BackgroundTasks::DENY_NOTE_PREFIX) }
         notify(sink, completion_notice(entry, text, stop_reason: stop_reason, undelivered: undelivered))
         unless undelivered.empty?
           surface_completion(parent_ui,
@@ -527,17 +527,17 @@ module Rubino
       def capacity_message(registry_bg)
         case registry_bg.last_refusal_reason
         when :depth
-          "Max nesting depth reached: subagents can only nest #{BackgroundTasks::MAX_DEPTH} " \
+          "Max nesting depth reached: subagents can only nest #{Tools::BackgroundTasks::MAX_DEPTH} " \
           "levels deep. This subagent is too deep to delegate further — do the work " \
           "directly, or report back so a shallower agent can split it up."
         when :per_owner
-          "At capacity: this agent already has #{BackgroundTasks::MAX_CHILDREN_PER_NODE} " \
+          "At capacity: this agent already has #{Tools::BackgroundTasks::MAX_CHILDREN_PER_NODE} " \
           "subagents running. Wait for one to finish (you'll get a " \
           "`[background-task]` message), check it with task_result, or do the work " \
           "directly."
         else # :global (or any future ceiling)
           "At capacity: the maximum number of subagents " \
-          "(#{BackgroundTasks::MAX_CONCURRENT_TOTAL}) are already running across all " \
+          "(#{Tools::BackgroundTasks::MAX_CONCURRENT_TOTAL}) are already running across all " \
           "agents. Wait for one to finish (you'll get a `[background-task]` message), " \
           "check it with task_result, or do the work directly."
         end
@@ -598,7 +598,7 @@ module Rubino
       # user is attached to this sub (live tool rows + streaming prose, identical
       # to main), and drops it otherwise. The per-sub CLI ALSO keeps the registry
       # counters (tool_count / last_activity / activity_log / output_tail) current
-      # — its tool_started/finished/chunk record to BackgroundTasks inline (gated
+      # — its tool_started/finished/chunk record to Tools::BackgroundTasks inline (gated
       # on agent_id != :main) before rendering — so the OFF-screen surfaces —
       # probe_tool, /agents drill-in, the ambient cards — still update even when
       # this sub isn't focused. Off the CLI it's Null (headless/API stays silent
@@ -644,7 +644,7 @@ module Rubino
           approval_id = entry.id
           gate.register(approval_id)
           cmd = command && !command.to_s.empty? ? command.to_s : scope.to_s
-          BackgroundTasks.instance.begin_approval(
+          Tools::BackgroundTasks.instance.begin_approval(
             entry.id, gate: gate, approval_id: approval_id,
                       question: question, command: cmd
           )
@@ -665,7 +665,7 @@ module Rubino
           rescue Rubino::Interrupted
             approved = false # a stop/cancel while parked → deny and unwind
           ensure
-            BackgroundTasks.instance.end_approval(entry.id)
+            Tools::BackgroundTasks.instance.end_approval(entry.id)
             repaint_parent_cards(entry_parent_ui)
           end
           approved
@@ -688,7 +688,7 @@ module Rubino
           gate        = Run::ApprovalGate.new
           approval_id = entry.id
           gate.register(approval_id)
-          BackgroundTasks.instance.begin_approval(
+          Tools::BackgroundTasks.instance.begin_approval(
             entry.id, gate: gate, approval_id: approval_id,
                       question: question.to_s, command: nil, budget: true
           )
@@ -704,7 +704,7 @@ module Rubino
           rescue Rubino::Interrupted
             granted = false # a stop/cancel while parked → summarize and unwind
           ensure
-            BackgroundTasks.instance.end_approval(entry.id)
+            Tools::BackgroundTasks.instance.end_approval(entry.id)
             repaint_parent_cards(entry_parent_ui)
           end
           granted ? :continue : :summarize
@@ -756,14 +756,14 @@ module Rubino
       # the parent recorder sees just this tool's start/complete boundary.
       #
       # GOVERNED LIKE THE BACKGROUND PATH (#196): a sync child goes through the
-      # SAME single enforcement point — BackgroundTasks#reserve — so all three
+      # SAME single enforcement point — Tools::BackgroundTasks#reserve — so all three
       # nesting caps apply and it counts toward the live totals for the whole
       # inline run; and it runs under with_current_subagent_id(entry.id) so
       # anything IT spawns is stamped with the right owner/depth. Without this,
       # `background: false` was an uncapped escape hatch that also corrupted
       # ownership/depth stamping for its entire subtree.
       def run_subagent(definition, prompt)
-        registry_bg = BackgroundTasks.instance
+        registry_bg = Tools::BackgroundTasks.instance
         entry = registry_bg.reserve(
           subagent: definition.name, prompt: prompt,
           owner_subagent_id: Rubino.current_subagent_id, depth: 0
@@ -781,9 +781,9 @@ module Rubino
 
         # Open a per-subagent JSONL log for post-mortem forensics (same as the
         # background path — crash-safe, sync-flushed).
-        log = SubagentLog.new(sa_id: entry.id, session_id: entry.id)
+        log = Tools::SubagentLog.new(sa_id: entry.id, session_id: entry.id)
         entry.log_path = log.path
-        wrapped_store = SubagentLog::TeeStore.new(Session::Store.new, log)
+        wrapped_store = Tools::SubagentLog::TeeStore.new(Session::Store.new, log)
         runner = build_subagent_runner(definition, ui: nested_ui_for(entry, root_cli),
                                                    message_store: wrapped_store)
         registry_bg.attach(entry, thread: Thread.current, runner: runner)

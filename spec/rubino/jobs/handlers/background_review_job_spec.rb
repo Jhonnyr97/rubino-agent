@@ -15,8 +15,7 @@ RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
   let(:config) { test_configuration }
 
   before do
-    allow(Rubino).to receive(:database).and_return(db)
-    allow(Rubino).to receive(:configuration).and_return(config)
+    allow(Rubino).to receive_messages(database: db, configuration: config)
   end
 
   def parent_with_answer

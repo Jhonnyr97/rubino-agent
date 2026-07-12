@@ -33,14 +33,14 @@ Layout/LineLength:
     - 'lib/rubino/security/dangerous_patterns.rb'
     - 'lib/rubino/security/hardline_guard.rb'
     - 'lib/rubino/tools/ask_parent_tool.rb'
-    - 'lib/rubino/tools/probe_tool.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
-    - 'lib/rubino/tools/steer_tool.rb'
+    - 'lib/rubino/tools/task/probe_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
+    - 'lib/rubino/tools/task/steer_tool.rb'
     - 'lib/rubino/tools/subagent_probe.rb'
     - 'lib/rubino/tools/summarize_file_tool.rb'
-    - 'lib/rubino/tools/task_tool.rb'
-    - 'lib/rubino/tools/webfetch_tool.rb'
-    - 'lib/rubino/tools/websearch_tool.rb'
+    - 'lib/rubino/tools/task/task_tool.rb'
+    - 'lib/rubino/tools/web/webfetch_tool.rb'
+    - 'lib/rubino/tools/web/websearch_tool.rb'
     - 'rubino-agent.gemspec'
     - 'spec/rubino/agent/iteration_budget_spec.rb'
     - 'spec/rubino/api/contract/files_spec.rb'
@@ -68,6 +68,8 @@ Lint/ConstantDefinitionInBlock:
     - 'spec/rubino/ui/bottom_composer_spec.rb'
     - 'spec/rubino/ui/cli_spec.rb'
     - 'spec/rubino/ui/confirm_parity_spec.rb'
+    - 'spec/rubino/agent/tool_executor_spec.rb'
+
 
 # Offense count: 12
 # Configuration parameters: IgnoreLiteralBranches, IgnoreConstantBranches, IgnoreDuplicateElseBranch.
@@ -116,9 +118,9 @@ Lint/MissingSuper:
   Exclude:
     - 'lib/rubino/mcp/mcp_tool_wrapper.rb'
     - 'lib/rubino/skills/skill_tool.rb'
-    - 'lib/rubino/tools/memory_tool.rb'
-    - 'lib/rubino/tools/probe_tool.rb'
-    - 'lib/rubino/tools/task_tool.rb'
+    - 'lib/rubino/tools/memory/memory_tool.rb'
+    - 'lib/rubino/tools/task/probe_tool.rb'
+    - 'lib/rubino/tools/task/task_tool.rb'
     - 'lib/rubino/ui/api.rb'
     - 'lib/rubino/ui/null.rb'
     - 'lib/rubino/ui/printer_base.rb'
@@ -130,14 +132,14 @@ Lint/MissingSuper:
 Lint/NoReturnInBeginEndBlocks:
   Exclude:
     - 'lib/rubino/attachments/classify.rb'
-    - 'lib/rubino/tools/shell_input_tool.rb'
+    - 'lib/rubino/tools/shell/shell_input_tool.rb'
 
 # Offense count: 16
 # This cop supports unsafe autocorrection (--autocorrect-all).
 Lint/NonAtomicFileOperation:
   Exclude:
     - 'lib/rubino/run/attachment_downloader.rb'
-    - 'lib/rubino/tools/patch_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
     - 'lib/rubino/update_check.rb'
     - 'spec/rubino/run/attachment_downloader_spec.rb'
     - 'spec/rubino/tools/write_tool_spec.rb'
@@ -164,7 +166,7 @@ Lint/ShadowedException:
     - 'lib/rubino/run/executor.rb'
     - 'lib/rubino/tools/ask_parent_tool.rb'
     - 'lib/rubino/tools/background_tasks.rb'
-    - 'lib/rubino/tools/probe_tool.rb'
+    - 'lib/rubino/tools/task/probe_tool.rb'
 
 # Offense count: 1
 Lint/StructNewOverride:
@@ -210,11 +212,13 @@ Lint/UselessConstantScoping:
   Exclude:
     - 'lib/rubino/agent/tool_executor.rb'
     - 'lib/rubino/skills/skill.rb'
-    - 'lib/rubino/tools/edit_tool.rb'
-    - 'lib/rubino/tools/read_tool.rb'
-    - 'lib/rubino/tools/ruby_tool.rb'
-    - 'lib/rubino/tools/webfetch_tool.rb'
+    - 'lib/rubino/tools/files/edit_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
+    - 'lib/rubino/tools/misc/ruby_tool.rb'
+    - 'lib/rubino/tools/web/webfetch_tool.rb'
     - 'lib/rubino/ui/markdown_renderer.rb'
+    - 'lib/rubino/llm/ruby_llm_adapter.rb'
+
 
 # Offense count: 1
 # This cop supports safe autocorrection (--autocorrect).
@@ -233,10 +237,10 @@ Metrics/AbcSize:
     - 'lib/rubino/cli/server_command.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/run/executor.rb'
-    - 'lib/rubino/tools/grep_tool.rb'
-    - 'lib/rubino/tools/multi_edit_tool.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
     - 'lib/rubino/tools/registry.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
 
 # Offense count: 9
 # Configuration parameters: CountComments, Max, CountAsOne, AllowedMethods, AllowedPatterns, inherit_mode.
@@ -249,7 +253,7 @@ Metrics/BlockLength:
     - 'lib/rubino/database/migrations/007_create_messages_fts.rb'
     - 'lib/rubino/database/migrations/008_create_memory_facts.rb'
     - 'lib/rubino/run/executor.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
 
 # Offense count: 3
 # Configuration parameters: CountComments, Max, CountAsOne.
@@ -270,13 +274,13 @@ Metrics/CyclomaticComplexity:
     - 'lib/rubino/commands/executor.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/tools/github_tool.rb'
-    - 'lib/rubino/tools/grep_tool.rb'
-    - 'lib/rubino/tools/multi_edit_tool.rb'
-    - 'lib/rubino/tools/question_tool.rb'
-    - 'lib/rubino/tools/read_tool.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
+    - 'lib/rubino/tools/memory/question_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
     - 'lib/rubino/tools/summarize_file_tool.rb'
-    - 'lib/rubino/tools/todo_tool.rb'
+    - 'lib/rubino/tools/memory/todo_tool.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
 
 # Offense count: 18
@@ -294,13 +298,15 @@ Metrics/MethodLength:
     - 'lib/rubino/llm/tool_bridge.rb'
     - 'lib/rubino/run/attachment_downloader.rb'
     - 'lib/rubino/run/executor.rb'
-    - 'lib/rubino/tools/grep_tool.rb'
-    - 'lib/rubino/tools/multi_edit_tool.rb'
-    - 'lib/rubino/tools/patch_tool.rb'
-    - 'lib/rubino/tools/read_tool.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
     - 'lib/rubino/tools/test_tool.rb'
     - 'spec/rubino/ui/bottom_composer_approval_handoff_pty_spec.rb'
+    - 'lib/rubino/skills/skill.rb'
+
 
 # Offense count: 23
 # Configuration parameters: Max, CountKeywordArgs, MaxOptionalParameters.
@@ -326,9 +332,11 @@ Metrics/ParameterLists:
     - 'lib/rubino/oauth/connection_repository.rb'
     - 'lib/rubino/run/repository.rb'
     - 'lib/rubino/tools/result.rb'
-    - 'lib/rubino/tools/task_tool.rb'
+    - 'lib/rubino/tools/task/task_tool.rb'
     - 'lib/rubino/ui/api.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+
 
 # Offense count: 16
 # Configuration parameters: AllowedMethods, AllowedPatterns, Max.
@@ -338,15 +346,17 @@ Metrics/PerceivedComplexity:
     - 'lib/rubino/cli/chat_command.rb'
     - 'lib/rubino/context/prompt_assembler.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
-    - 'lib/rubino/tools/edit_tool.rb'
+    - 'lib/rubino/tools/files/edit_tool.rb'
     - 'lib/rubino/tools/github_tool.rb'
-    - 'lib/rubino/tools/grep_tool.rb'
-    - 'lib/rubino/tools/multi_edit_tool.rb'
-    - 'lib/rubino/tools/question_tool.rb'
-    - 'lib/rubino/tools/read_tool.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
+    - 'lib/rubino/tools/memory/question_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
     - 'lib/rubino/tools/summarize_file_tool.rb'
-    - 'lib/rubino/tools/todo_tool.rb'
+    - 'lib/rubino/tools/memory/todo_tool.rb'
+    - 'lib/rubino/skills/skill.rb'
+
 
 # Offense count: 3
 Naming/AccessorMethodName:
@@ -369,7 +379,7 @@ Naming/FileName:
 # SupportedStylesForLeadingUnderscores: disallowed, required, optional
 Naming/MemoizedInstanceVariableName:
   Exclude:
-    - 'lib/rubino/tools/probe_tool.rb'
+    - 'lib/rubino/tools/task/probe_tool.rb'
     - 'lib/rubino/tools/subagent_probe.rb'
 
 # Offense count: 85
@@ -383,9 +393,9 @@ Naming/MethodParameterName:
     - 'lib/rubino/attachments/preamble.rb'
     - 'lib/rubino/llm/ruby_llm_adapter.rb'
     - 'lib/rubino/memory/backends/sqlite.rb'
-    - 'lib/rubino/tools/patch_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
     - 'lib/rubino/tools/shell_registry.rb'
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
     - 'lib/rubino/tools/test_tool.rb'
     - 'lib/rubino/ui/bottom_composer.rb'
     - 'lib/rubino/ui/markdown_renderer.rb'
@@ -399,6 +409,8 @@ Naming/MethodParameterName:
     - 'spec/rubino/ui/bottom_composer_scroll_pty_spec.rb'
     - 'spec/rubino/ui/bottom_composer_spec.rb'
     - 'spec/rubino/ui/cli_spec.rb'
+    - 'spec/rubino/agent/tool_executor_spec.rb'
+
 
 # Offense count: 26
 # Configuration parameters: Mode, AllowedMethods, AllowedPatterns, AllowBangMethods, WaywardPredicates.
@@ -417,14 +429,23 @@ Naming/PredicateMethod:
     - 'lib/rubino/security/doom_loop_detector.rb'
     - 'lib/rubino/tools/ask_parent_tool.rb'
     - 'lib/rubino/tools/background_tasks.rb'
-    - 'lib/rubino/tools/probe_tool.rb'
-    - 'lib/rubino/tools/task_tool.rb'
+    - 'lib/rubino/tools/task/probe_tool.rb'
+    - 'lib/rubino/tools/task/task_tool.rb'
     - 'lib/rubino/ui/cli.rb'
     - 'lib/rubino/ui/null.rb'
     - 'lib/rubino/ui/stdout_proxy.rb'
     - 'lib/rubino/util/hyperlink.rb'
     - 'spec/rubino/agent/model_call_runner_spec.rb'
     - 'spec/rubino/api/operations/oauth/operations_spec.rb'
+    - 'lib/rubino/tools/files/edit_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
+    - 'lib/rubino/tools/files/write_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
+    - 'lib/rubino/tools/tool_security.rb'
+    - 'lib/rubino/agent/loop.rb'
+
+
 
 # Offense count: 4
 # Configuration parameters: NamePrefix, ForbiddenPrefixes, AllowedMethods, MethodDefinitionMacros, UseSorbetSigs.
@@ -638,6 +659,8 @@ RSpec/InstanceVariable:
     - 'spec/rubino/ui/bottom_composer_scroll_pty_spec.rb'
     - 'spec/rubino/ui/completion_source_spec.rb'
     - 'spec/rubino/update_check_spec.rb'
+    - 'spec/rubino/skills/skill_tool_update_spec.rb'
+
 
 # Offense count: 25
 RSpec/LeakyConstantDeclaration:
@@ -657,6 +680,8 @@ RSpec/LeakyConstantDeclaration:
     - 'spec/rubino/ui/bottom_composer_spec.rb'
     - 'spec/rubino/ui/cli_spec.rb'
     - 'spec/rubino/ui/confirm_parity_spec.rb'
+    - 'spec/rubino/agent/tool_executor_spec.rb'
+
 
 # Offense count: 1
 RSpec/LeakyLocalVariable:
@@ -750,7 +775,7 @@ Style/CollectionQuerying:
 # This cop supports unsafe autocorrection (--autocorrect-all).
 Style/CombinableLoops:
   Exclude:
-    - 'lib/rubino/tools/read_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
 
 # Offense count: 1
 # This cop supports unsafe autocorrection (--autocorrect-all).
@@ -768,7 +793,7 @@ Style/ComparableBetween:
 # This cop supports safe autocorrection (--autocorrect).
 Style/ComparableClamp:
   Exclude:
-    - 'lib/rubino/tools/shell_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
     - 'lib/rubino/tools/test_tool.rb'
     - 'lib/rubino/ui/cli.rb'
 
@@ -780,6 +805,15 @@ Style/Documentation:
     - 'test/**/*'
     - 'lib/rubino.rb'
     - 'lib/rubino/files/workspace.rb'
+    - 'lib/rubino/tools/files/edit_tool.rb'
+    - 'lib/rubino/tools/files/multi_edit_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
+    - 'lib/rubino/tools/files/write_tool.rb'
+    - 'lib/rubino/tools/misc/ruby_tool.rb'
+    - 'lib/rubino/tools/shell/shell_input_tool.rb'
+    - 'lib/rubino/tools/shell/shell_kill_tool.rb'
+    - 'lib/rubino/tools/shell/shell_tool.rb'
+    - 'lib/rubino/tools/task/task_stop_tool.rb'
 
 # Offense count: 2
 # This cop supports safe autocorrection (--autocorrect).
@@ -859,8 +893,8 @@ Style/NumericPredicate:
     - 'lib/rubino/jobs/queue.rb'
     - 'lib/rubino/memory/store.rb'
     - 'lib/rubino/session/repository.rb'
-    - 'lib/rubino/tools/grep_tool.rb'
-    - 'lib/rubino/tools/todo_tool.rb'
+    - 'lib/rubino/tools/files/grep_tool.rb'
+    - 'lib/rubino/tools/memory/todo_tool.rb'
 
 # Offense count: 2
 # Configuration parameters: AllowedClasses.
@@ -955,9 +989,9 @@ Style/StringConcatenation:
     - 'lib/rubino/files/workspace.rb'
     - 'lib/rubino/metrics.rb'
     - 'lib/rubino/tools/ask_parent_tool.rb'
-    - 'lib/rubino/tools/patch_tool.rb'
-    - 'lib/rubino/tools/read_tool.rb'
-    - 'lib/rubino/tools/shell_kill_tool.rb'
+    - 'lib/rubino/tools/files/patch_tool.rb'
+    - 'lib/rubino/tools/files/read_tool.rb'
+    - 'lib/rubino/tools/shell/shell_kill_tool.rb'
     - 'lib/rubino/tools/subagent_probe.rb'
     - 'spec/rubino/memory/extractor_spec.rb'
     - 'spec/rubino/no_direct_output_spec.rb'

@@ -2,7 +2,7 @@
 
 require "spec_helper"
 require "net/http"
-require "rubino/tools/webfetch_tool"
+require "rubino/tools/web/webfetch_tool"
 
 RSpec.describe Rubino::Tools::WebFetchTool do
   subject(:tool) { described_class.new }
