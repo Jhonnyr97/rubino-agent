@@ -37,25 +37,27 @@ RSpec.describe Rubino::Tools::Registry do
     # ("web_fetch"/"web_search"), so `tools.web: false` (the shipped gate) was
     # never queried and web tools stayed enabled on a sandboxed VM. Now both
     # tools declare config_key "web" and the registry consults it.
-    context "tools.web gate (web_fetch + web_search share it)" do
+    context "tools.web gate (web_fetch + web_search + web_screenshot share it)" do
       before do
         described_class.register(Rubino::Tools::WebFetchTool.new)
         described_class.register(Rubino::Tools::WebSearchTool.new)
+        described_class.register(Rubino::Tools::WebScreenshotTool.new)
       end
 
-      it "enables both web tools when tools.web is true" do
+      it "enables all web tools when tools.web is true" do
         Rubino.configuration.set("tools", "web", true)
         names = described_class.enabled_tools.map(&:name)
-        expect(names).to include("web_fetch", "web_search")
+        expect(names).to include("web_fetch", "web_search", "web_screenshot")
       ensure
         Rubino.configuration.set("tools", "web", false)
       end
 
-      it "disables BOTH web_fetch and web_search when tools.web is false" do
+      it "disables ALL web tools when tools.web is false" do
         Rubino.configuration.set("tools", "web", false)
         names = described_class.enabled_tools.map(&:name)
         expect(names).not_to include("web_fetch")
         expect(names).not_to include("web_search")
+        expect(names).not_to include("web_screenshot")
       end
     end
   end
@@ -69,9 +71,10 @@ RSpec.describe "Tools config_key resolution" do
     expect(Rubino::Tools::GlobTool.new.config_key).to eq("glob")
   end
 
-  it "maps web_fetch and web_search to the shared 'web' key" do
+  it "maps web_fetch, web_search, and web_screenshot to the shared 'web' key" do
     expect(Rubino::Tools::WebFetchTool.new.config_key).to eq("web")
     expect(Rubino::Tools::WebSearchTool.new.config_key).to eq("web")
+    expect(Rubino::Tools::WebScreenshotTool.new.config_key).to eq("web")
   end
 end
 

@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **27 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **28 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `web_screenshot`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **22 rows** (config groups), not 27: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **22 rows** (config groups), not 28: `web_fetch` + `web_search` + `web_screenshot` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -222,6 +222,15 @@ Search the web. Supports Tavily (best), SearXNG, or DuckDuckGo fallback.
 Risk: low
 Parameters: query, max_results
 Env: TAVILY_API_KEY or SEARXNG_URL (optional)
+```
+
+### web_screenshot
+
+Capture a PNG screenshot of a web page (JS-rendered via ferrum + headless Chrome) and attach it as a downloadable artifact for the user. The image is a user-facing artifact, not fed to the model, so it works regardless of model vision support. Requires the optional `ferrum` gem and a Chrome/Chromium binary (run `rubino setup` to install the JS extra).
+
+```
+Risk: low
+Parameters: url, full_page
 ```
 
 ### question

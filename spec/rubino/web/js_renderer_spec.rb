@@ -88,4 +88,60 @@ RSpec.describe Rubino::Web::JsRenderer do
       expect(browser).to have_received(:quit)
     end
   end
+
+  describe ".screenshot" do
+    let(:png_path) { "/tmp/screenshot-test.png" }
+
+    it "returns nil without touching a browser when ferrum is unavailable" do
+      allow(described_class).to receive(:available?).and_return(false)
+      expect(described_class).not_to receive(:new_browser)
+      expect(described_class.screenshot("https://example.com", png_path)).to be_nil
+    end
+
+    it "returns nil (never raises) when the browser cannot launch" do
+      allow(described_class).to receive(:new_browser).and_raise(StandardError, "no chrome")
+      expect(described_class.screenshot("https://example.com", png_path)).to be_nil
+    end
+
+    it "runs the canonical go_to -> wait_for_idle -> screenshot -> quit sequence and returns path" do
+      network = instance_double(Ferrum::Network)
+      browser = instance_double(Ferrum::Browser)
+      allow(browser).to receive(:go_to).with("https://example.com")
+      allow(network).to receive(:wait_for_idle)
+      allow(browser).to receive_messages(network: network)
+      allow(browser).to receive(:screenshot).with(path: png_path, full: false)
+      allow(browser).to receive(:quit)
+      allow(described_class).to receive(:new_browser).and_return(browser)
+
+      result = described_class.screenshot("https://example.com", png_path)
+      expect(result).to eq(png_path)
+      expect(browser).to have_received(:screenshot).with(path: png_path, full: false)
+      expect(browser).to have_received(:quit)
+    end
+
+    it "passes full_page: true to browser.screenshot" do
+      network = instance_double(Ferrum::Network)
+      browser = instance_double(Ferrum::Browser)
+      allow(browser).to receive(:go_to)
+      allow(network).to receive(:wait_for_idle)
+      allow(browser).to receive_messages(network: network)
+      allow(browser).to receive(:screenshot).with(path: png_path, full: true)
+      allow(browser).to receive(:quit)
+      allow(described_class).to receive(:new_browser).and_return(browser)
+
+      described_class.screenshot("https://example.com", png_path, full_page: true)
+      expect(browser).to have_received(:screenshot).with(path: png_path, full: true)
+    end
+
+    it "still quits the browser when screenshot raises" do
+      browser = instance_double(Ferrum::Browser)
+      allow(browser).to receive(:go_to)
+      allow(browser).to receive(:network).and_raise(StandardError, "boom")
+      allow(browser).to receive(:quit)
+      allow(described_class).to receive(:new_browser).and_return(browser)
+
+      expect(described_class.screenshot("https://example.com", png_path)).to be_nil
+      expect(browser).to have_received(:quit)
+    end
+  end
 end

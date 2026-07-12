@@ -77,6 +77,12 @@ INSTALL_SCOPE="${RUBINO_INSTALL_SCOPE:-}"
 # get one.
 INSTALL_JS="${RUBINO_INSTALL_JS:-}"
 
+# Optional document-conversion extra. 1/yes installs the `pdf-reader` gem so
+# web_fetch/read_attachment can convert PDFs in-process. (DOCX/XLSX/PPTX each
+# have their own optional gems the user can add later: docx / roo /
+# ruby_powerpoint.) Same env/override → prompt → install pattern as INSTALL_JS.
+INSTALL_DOCS="${RUBINO_INSTALL_DOCS:-}"
+
 # --- output helpers ---------------------------------------------------------
 
 if [ -t 1 ]; then
@@ -1001,6 +1007,40 @@ maybe_install_js() {
 }
 
 maybe_install_js
+
+# --- optional: document-conversion extra (pdf-reader) -------------------------
+# The read_attachment / web_fetch tools convert PDFs in-process via pdf-reader.
+# This OPTIONAL extra installs that gem. Fully skippable and re-runnable.
+maybe_install_docs() {
+  local want="$INSTALL_DOCS"
+  if [ -z "$want" ]; then
+    tty_usable || return 0   # non-interactive + no override → skip silently
+    {
+      printf '\n%sInstall pdf-reader for in-process PDF reading?%s %s(optional)%s\n' \
+        "$BOLD" "$RESET" "$DIM" "$RESET"
+      printf '  Installs the %spdf-reader%s gem so web_fetch/read_attachment\n' "$BOLD" "$RESET"
+      printf '  can convert PDFs to text in-process.\n'
+      printf 'Install it? %s[y/N]%s: ' "$BOLD" "$RESET"
+    } >/dev/tty
+    local ans=""
+    read -r ans </dev/tty || ans=""
+    case "$ans" in y|Y|yes|1) want=1 ;; *) want=0 ;; esac
+  fi
+  case "$want" in
+    1|y|Y|yes|true) : ;;
+    *) return 0 ;;
+  esac
+
+  info "Installing the pdf-reader gem (document conversion)…"
+  if rubyx gem install pdf-reader >/dev/null 2>&1; then
+    ok "pdf-reader installed."
+  else
+    warn "Could not install pdf-reader. PDF conversion stays off; run 'gem install pdf-reader' later to enable it."
+    return 0
+  fi
+}
+
+maybe_install_docs
 
 printf '%sNext step:%s\n\n' "$BOLD" "$RESET"
 printf '  %s%s setup%s   %s# guided first-run: pick a provider, paste a key%s\n\n' "$GREEN" "${BIN_NAME}" "$RESET" "$DIM" "$RESET"

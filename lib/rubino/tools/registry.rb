@@ -105,6 +105,7 @@ module Rubino
           register(Rubino::Tools::PatchTool.new)
           register(Rubino::Tools::WebFetchTool.new)
           register(Rubino::Tools::WebSearchTool.new)
+          register(Rubino::Tools::WebScreenshotTool.new)
           register(Rubino::Tools::QuestionTool.new)
           register(Rubino::Tools::TodoTool.new)
           register(Rubino::Tools::MemoryTool.new)
