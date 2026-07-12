@@ -889,4 +889,43 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(adapter.live?).to be(false)
     end
   end
+
+  describe "source_session_id attribution" do
+    it "sets memory_source_session_id thread-local during tool execution" do
+      executor = described_class.new(
+        registry: registry, approval_policy: policy, ui: ui,
+        config: config, session_id: "sess-42"
+      )
+
+      allow(policy).to receive(:decide).and_return(:allow)
+      allow(policy).to receive(:last_deny_reason).and_return(nil)
+      allow(policy).to receive(:last_ask_reason).and_return(nil)
+      allow(policy).to receive(:workspace_widen_dirs).and_return([])
+
+      captured_before = Rubino.memory_source_session_id
+
+      tool_class = Class.new(Rubino::Tools::Base) do
+        redaction_profile :none
+
+        def name = "spy_tool"
+        def description = "spy"
+        def risk_level = :low
+
+        def call(_args)
+          Rubino.memory_source_session_id
+        end
+      end
+
+      spy_tool = tool_class.new
+      allow(registry).to receive(:find).with("spy_tool").and_return(spy_tool)
+
+      result = executor.execute(name: "spy_tool", arguments: {}, call_id: "c_spy")
+
+      expect(captured_before).to be_nil
+      # The tool sees the session_id during its call
+      expect(result.output).to eq("sess-42")
+      # Thread-local is restored after execution
+      expect(Rubino.memory_source_session_id).to be_nil
+    end
+  end
 end

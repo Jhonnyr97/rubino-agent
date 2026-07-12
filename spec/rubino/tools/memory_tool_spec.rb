@@ -125,4 +125,25 @@ RSpec.describe Rubino::Tools::MemoryTool do
       expect(result).to start_with("Error:")
     end
   end
+
+  describe "source_session_id attribution" do
+    it "persists source_session_id when the thread-local is set" do
+      Rubino.with_memory_source_session_id("sess-integration-99") do
+        tool.call("action" => "add", "target" => "memory",
+                  "content" => "mem-test: prefers tabs over spaces")
+      end
+
+      facts = backend.list(kind: "fact")
+      expect(facts.size).to eq(1)
+      expect(facts.first[:source_session_id]).to eq("sess-integration-99")
+    end
+
+    it "persists NULL source_session_id when thread-local is NOT set" do
+      tool.call("action" => "add", "target" => "memory",
+                "content" => "mem-test: uses Vim")
+
+      facts = backend.list(kind: "fact")
+      expect(facts.first[:source_session_id]).to be_nil
+    end
+  end
 end

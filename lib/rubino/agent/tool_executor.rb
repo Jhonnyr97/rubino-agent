@@ -276,7 +276,9 @@ module Rubino
             end
           end
         end
-        raw = tool.call(arguments)
+        raw = Rubino.with_memory_source_session_id(@session_id) do
+          tool.call(arguments)
+        end
         if raw.is_a?(Tools::Result)
           raw = Tools::Result.new(
             name: name,
