@@ -55,4 +55,8 @@ eval/results/*.json
 
 # Kept local, never tracked/pushed/shipped (user directive)
 AGENTS.md
-docs/agents.md
+agents.md
+agent.md
+task.md
+/dev-prompts/
+/examples/demo_export_tool.rb
