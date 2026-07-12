@@ -62,7 +62,7 @@ RSpec.describe Rubino::Context::Compressor do
     let(:repo) { Rubino::Session::Repository.new(db: db) }
     let(:parent) { repo.create(source: "test", model: "m", provider: "p") }
 
-    it "no-ops with reason :below_threshold — no summary call, no child fork" do
+    it "no-ops (auto path) with reason :below_threshold — no summary call, no child fork" do
       # 40 messages clears the minimum-messages floor (28), but the transcript is
       # nowhere near the 64K compaction threshold (default window 128K).
       40.times { |i| store.create(session_id: parent[:id], role: "user", content: "short #{i}") }
@@ -79,6 +79,46 @@ RSpec.describe Rubino::Context::Compressor do
       expect(result[:saved_tokens]).to eq(0)
       expect(builder).not_to have_received(:build) # no paid summary call
       expect(db[:sessions].count).to eq(sessions_before) # no child session row
+      expect(repo.find(parent[:id])[:status]).not_to eq("compacted")
+    end
+
+    # FIX B: force: true skips the up-front token threshold gate. A manual
+    # /compact on a small session that meets minimum_messages AND would shrink
+    # context should succeed — the post-hoc growth guard catches the
+    # would-inflate case further down.
+    it "force: true skips the threshold gate and compacts when it would shrink" do
+      40.times { |i| store.create(session_id: parent[:id], role: "user", content: "short #{i}") }
+
+      allow(Rubino::Context::SummaryBuilder).to receive(:new)
+        .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "the summary"))
+      sessions_before = db[:sessions].count
+
+      result = described_class.new(session_id: parent[:id], config: config, db: db).compact!(force: true)
+
+      # Should NOT skip — force bypasses the threshold gate.
+      expect(result[:skipped]).to be_nil
+      expect(result[:target_session_id]).not_to be_nil
+      expect(result[:saved_tokens]).to be > 0
+      expect(db[:sessions].count).to eq(sessions_before + 1) # child forked
+      expect(repo.find(parent[:id])[:status]).to eq("compacted")
+    end
+
+    # FIX B post-hoc growth guard: even a forced compaction must no-op when the
+    # summary is larger than the middle it replaces, preventing context inflation.
+    it "force: true no-ops with :would_grow when the summary outweighs the middle" do
+      40.times { |i| store.create(session_id: parent[:id], role: "user", content: "short #{i}") }
+
+      allow(Rubino::Context::SummaryBuilder).to receive(:new)
+        .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "X" * 80_000))
+      sessions_before = db[:sessions].count
+
+      result = described_class.new(session_id: parent[:id], config: config, db: db).compact!(force: true)
+
+      expect(result[:skipped]).to be true
+      expect(result[:reason]).to eq(:would_grow)
+      expect(result[:target_session_id]).to be_nil
+      expect(result[:saved_tokens]).to eq(0)
+      expect(db[:sessions].count).to eq(sessions_before) # no child forked
       expect(repo.find(parent[:id])[:status]).not_to eq("compacted")
     end
   end

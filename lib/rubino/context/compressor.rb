@@ -35,7 +35,7 @@ module Rubino
       end
 
       # Performs full compaction and returns metadata
-      def compact!
+      def compact!(force: false)
         session = @session_repo.find(@session_id)
         raise CompactionError, "Session not found: #{@session_id}" unless session
 
@@ -54,12 +54,12 @@ module Rubino
         # Below the token threshold a summary call COSTS more than it saves: the
         # generated summary (budgeted up to compression.max_summary_tokens) is
         # routinely larger than the handful of middle messages it replaces, so a
-        # forced compaction on a small session GROWS context instead of shrinking
-        # it (the QA "/compact on a 872-tok session → 2736 tok" bug). Both paths
-        # must clear the SAME gate the auto path uses (TokenBudget#needs_compaction?)
-        # — without it the manual path silently summarized, inflated, AND forked.
-        # Industry norm (Claude Code / Codex): /compact below threshold is a no-op.
-        return no_op_result(:below_threshold) unless needs_compaction?(messages)
+        # compaction on a small session GROWS context instead of shrinking it
+        # (the QA "/compact on a 872-tok session → 2736 tok" bug). The auto path
+        # must clear the TokenBudget#needs_compaction? gate here. The manual path
+        # (force: true) skips this upfront gate but catches growth via a post-hoc
+        # guard below — the user can force /compact as long as it actually shrinks.
+        return no_op_result(:below_threshold) unless force || needs_compaction?(messages)
 
         # No memory pre-flush here: the inter-turn review fork already mines
         # durable facts (and the compaction summary preserves the tail), so
@@ -102,6 +102,20 @@ module Rubino
           messages: middle,
           previous_summary: previous_summary
         )
+
+        # Post-hoc growth guard for the forced (manual /compact) path: after the
+        # summary is generated, compare the would-be child size against the
+        # original. If the result wouldn't shrink context, no-op instead of
+        # silently forking a worse session. The auto path never reaches here
+        # unless needs_compaction? was already true, so the guard is force-only.
+        if force
+          result_tokens = estimate_tokens(head) +
+                          (new_summary.length / 4.0).ceil +
+                          estimate_tokens(tail)
+          if result_tokens >= estimate_tokens(messages)
+            return no_op_result(:would_grow)
+          end
+        end
 
         # Steps 6-8 are the irreversible state mutation; commit them atomically.
         summary_id, child_session = commit_compaction!(

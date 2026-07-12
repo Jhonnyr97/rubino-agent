@@ -614,11 +614,11 @@ module Rubino
         store  = Session::Store.new
         before = estimate_session_tokens(store, session[:id], model_id: session[:model])
 
-        # Don't print compression_started before the gate. The compressor now
-        # clears the same token-budget gate the auto path uses, so a small
-        # session no-ops (no summary, NO child fork) instead of inflating
-        # context + silently swapping the session id (#425).
-        result = Context::Compressor.new(session_id: session[:id]).compact!
+        # Don't print compression_started before the gate. Manual /compact uses
+        # force: true to skip the automatic token threshold; the Compressor still
+        # enforces minimum_messages + non-empty-middle, and a post-hoc growth guard
+        # prevents forking a child that would be larger than the parent.
+        result = Context::Compressor.new(session_id: session[:id]).compact!(force: true)
 
         if result[:skipped]
           @ui.info(compact_skip_message(result))
@@ -647,6 +647,11 @@ module Rubino
         if result[:reason] == :below_threshold
           return "Nothing to compact — the session is under the compaction threshold; " \
                  "compacting now would grow context, not shrink it."
+        end
+
+        if result[:reason] == :would_grow
+          return "Nothing to compact — the compacted summary would be larger than the " \
+                 "context it replaces; compacting now would grow the session, not shrink it."
         end
 
         bar = result[:minimum_messages] ? " (needs >= #{result[:minimum_messages]} messages)" : ""

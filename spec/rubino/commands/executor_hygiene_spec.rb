@@ -101,46 +101,47 @@ RSpec.describe Rubino::Commands::Executor do
       expect(err[:message]).to include("compaction failed: boom")
     end
 
-    # Symptom 1 + 3 at the command boundary: a small session (enough messages,
-    # but well under the token threshold) must NO-OP — no compression UI, no
-    # paid summary, and crucially NO {compact_into:} signal so the REPL does NOT
-    # silently fork the session id out from under the user.
-    it "no-ops a below-threshold session: clear message, no UI events, no session fork" do
+    # FIX B: manual /compact now uses force: true, so a small session with
+    # enough messages compacts — the threshold gate is skipped, and the
+    # post-hoc growth guard only blocks when the summary would inflate.
+    it "compacts a below-threshold session: forks, reports tokens, marks parent" do
       # 40 short messages clears the minimum-messages floor but is far below the
       # default 64K token threshold.
       40.times { |i| store.create(session_id: session[:id], role: "user", content: "short #{i}") }
+      allow(Rubino::Context::SummaryBuilder).to receive(:new)
+        .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "the summary"))
 
       result = exec.try_execute("/compact")
 
-      expect(result).to eq(:handled) # NOT a {compact_into:} fork
+      expect(result).to be_a(Hash)
+      expect(result[:compact_into]).not_to be_nil
       levels = ui.messages.map { |m| m[:level] }
-      expect(levels).not_to include(:compression_started, :compression_finished)
-      out = ui.messages.map { |m| m[:message].to_s }.join("\n")
-      expect(out).to include("under the compaction threshold")
-      expect(repo.find(session[:id])[:status]).not_to eq("compacted")
+      expect(levels).to include(:compression_started, :compression_finished)
+      report = ui.messages.find { |m| m[:message].to_s.start_with?("Context: ~") }
+      expect(report[:message]).to match(/saved ~\d+ tok/) # summary is small, so it shrank
+      expect(repo.find(session[:id])[:status]).to eq("compacted")
     end
 
-    # Symptom 2: the reported delta must be TRUTHFUL. The old path reported the
-    # compressor's "removed middle" estimate, which ignored the inserted summary
-    # and so printed "saved N" even when context grew. Here we force a large
-    # summary on a just-over-threshold session and assert the report reflects the
-    # real before→after — never a false "saved" when the result is not smaller.
-    it "reports the real before→after delta, never a false saving when context grows" do
-      force_compaction_gate
+    # FIX B post-hoc growth guard: even a forced compaction must no-op when the
+    # summary is larger than the middle it replaces. No fork, no paid summary
+    # committed, clear message instead of the old "under threshold" wording.
+    it "no-ops with would-grow message when compaction would inflate context" do
       30.times do |i|
         role = i.even? ? "user" : "assistant"
         store.create(session_id: session[:id], role: role, content: "turn #{i} #{"x" * 200}")
       end
-      # A summary far LARGER than the middle it replaces → the child is bigger.
+      # A summary far LARGER than the middle it replaces → growth guard fires.
       allow(Rubino::Context::SummaryBuilder).to receive(:new)
         .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "S" * 40_000))
 
-      exec.try_execute("/compact")
+      result = exec.try_execute("/compact")
 
-      report = ui.messages.find { |m| m[:message].to_s.start_with?("Context: ~") }[:message].to_s
-      # The report states the honest direction (grew), and never lies "saved".
-      expect(report).to match(/grew ~\d+ tok/)
-      expect(report).not_to include("saved")
+      expect(result).to eq(:handled)
+      levels = ui.messages.map { |m| m[:level] }
+      expect(levels).not_to include(:compression_started, :compression_finished)
+      out = ui.messages.map { |m| m[:message].to_s }.join("\n")
+      expect(out).to include("would grow")
+      expect(repo.find(session[:id])[:status]).not_to eq("compacted")
     end
   end
 
