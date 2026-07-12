@@ -84,6 +84,12 @@ module Rubino
 
         # Registers all default tools
         def register_defaults!
+          # Eager-load all tool files first so constants are defined regardless
+          # of Zeitwerk's autoloading scope (tools live in flat Rubino::Tools::
+          # but files are organised into subdirectories that Zeitwerk ignores).
+          register_rubino_tools!
+
+          # ── Legacy Tools::Base subclasses (explicit registration) ──
           register(Rubino::Tools::ReadTool.new)
           register(Rubino::Tools::WriteTool.new)
           register(Rubino::Tools::EditTool.new)
@@ -108,7 +114,10 @@ module Rubino
           # Markdown IN-PROCESS (Rubino::Documents) and frames it as untrusted
           # data, so attachment bytes enter context only when the model asks.
           register(Rubino::Tools::ReadAttachmentTool.new)
-          register(Rubino::Tools::VisionTool.new)
+
+          # ── Rubino::Tool subclasses (auto-registered via inherited hook) ──
+          # Already loaded by register_rubino_tools! above — their inherited
+          # hook fired automatically. Still need explicit registration for:
           # Skills tool: loads a skill body (Level 2) and bundled files
           # (Level 3) on demand. Gated like any tool via `tools.skill`.
           register(Rubino::Skills::SkillTool.new)
@@ -170,6 +179,27 @@ module Rubino
 
         private
 
+        # Eager-loads every tool file under lib/rubino/tools/ so Rubino::Tool
+        # subclasses get their `inherited` hook fired → auto-registration.
+        # Legacy Tools::Base subclasses are loaded too but won't auto-register
+        # (they're registered explicitly above in register_defaults!).
+        # Safe to call after Zeitwerk is set up — requires the files directly.
+        def register_rubino_tools!
+          tools_dir = ::File.join(__dir__)
+          Dir[::File.join(tools_dir, "**/*.rb")].each do |file|
+            require file
+          end
+        rescue StandardError => e
+          # A single broken tool file must not crash the whole boot.
+          Rubino.logger&.warn(event: "registry.register_rubino_tools_failed",
+                              error: e.message, error_class: e.class.name)
+        ensure
+          # Deferred registration: inherited fires BEFORE the class body,
+          # so we collect subclasses and register them now — after all
+          # requires are done and every body is fully defined.
+          Rubino::Tool.finalize_registrations!
+        end
+
         def tool_enabled_in_config?(tool, config)
           # Single source of truth: the tool declares its own `tools.<key>`
           # gate via #config_key (defaults to its name; webfetch/websearch
@@ -199,13 +229,23 @@ module Rubino
         #   removes them. On any uncertainty we KEEP the tools exposed (the tool
         #   itself already returns an error string rather than crashing a turn).
         def aux_dependency_satisfied?(tool, config)
-          case tool.config_key
-          when "vision"
-            aux_model = config.auxiliary_vision_config["model"].to_s
-            !aux_model.empty? || config.model_supports_vision?
-          when "web"
-            web_backend_available?
+          # Rubino::Tool subclasses declare their aux dependency via uses_aux.
+          # Check that aux bucket is configured — if not, hide the tool so the
+          # model doesn't call a tool that can only error at runtime.
+          if tool.class.respond_to?(:aux_task) && (task = tool.class.aux_task)
+            case task.to_s
+            when "vision"
+              aux_model = config.auxiliary_config("vision")["model"].to_s
+              !aux_model.empty? || config.model_supports_vision?
+            when "web"
+              web_backend_available?
+            else
+              # Generic aux: check if the auxiliary.<task> block has a model
+              aux_model = config.auxiliary_config(task.to_s)["model"].to_s
+              !aux_model.empty?
+            end
           else
+            # Legacy Tools::Base subclass or no aux — always satisfied
             true
           end
         end

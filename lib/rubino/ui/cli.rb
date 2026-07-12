@@ -893,23 +893,28 @@ module Rubino
       def turn_footer(text)
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
+        # Exclude ids already surfaced LIVE via #subagent_finished so the
+        # footer rail never double-draws the same completion marker.
+        live_ids = @live_surfaced_ids
+        pending.reject! { |p| live_ids&.include?(p[:id]) } if live_ids
         line = ([text] + pending.map { |p| p[:fold] }).join(" · ")
         emit("┄ #{line} ┄", style: :dim)
         @last_block = :other
       end
 
-      # A background subagent reached a terminal state. Mid-turn the one-line
-      # summary is STASHED and folded into the turn footer (P4) so two `┄ ┄`
-      # rails never stack at turn end (the report still reaches the model via
-      # the InputQueue notice, rendered by #input_injected); between turns the
-      # full lifecycle block renders immediately.
+      # A background subagent reached a terminal state. The completion marker
+      # surfaces LIVE via #subagent_lifecycle (through commit_async_above —
+      # mutex-safe, parks under approval modals) so the user sees the "✓ done"
+      # signal in real time instead of only at loop end. The InputQueue notice
+      # path (task_tool.rb:474-489, shell_registry.rb:611-614) is COMPLETELY
+      # untouched — model ordering must be preserved.
+      #
+      # A live-surfaced id is tracked so #turn_footer and #turn_ended never
+      # double-draw the same marker. The result/report detail still reaches the
+      # model via the InputQueue notice (#input_injected), unchanged.
       def subagent_finished(line, id: nil, status: "done", report: nil)
-        if @turn_active && id
-          (@pending_subagent_footers ||= []) << { fold: "#{id} #{status}",
-                                                  line: line, status: status, report: report, id: id }
-        else
-          subagent_lifecycle(line, status: status, report: report, id: id)
-        end
+        subagent_lifecycle(line, status: status, report: report, id: id)
+        (@live_surfaced_ids ||= Set.new) << id if id
       end
 
       # MINIMAL main-timeline lifecycle marker (agent-multiplexer Slice 1): just
@@ -1032,12 +1037,44 @@ module Rubino
 
       # Tick-driven card refresh (called ~1 Hz from the turn status thread) so a
       # live child's elapsed keeps advancing mid-turn even when it fires no tool
-      # events. Skipped when no child is live, so a plain turn pays nothing;
-      # #set_subagent_cards coalesces, so an unchanged snapshot never repaints.
+      # events. Repaints unconditionally while the agent-menu picker is OPEN so
+      # the transition to an EMPTY running set paints (the last child finishing
+      # must remove its stale card from the dropdown). When the menu is closed
+      # and the running set is empty the guard skips the repaint — a plain turn
+      # pays nothing, and #set_subagent_cards coalesces unchanged snapshots away.
       def refresh_live_cards
-        set_subagent_cards if Tools::BackgroundTasks.instance.running.any?
+        bt = Tools::BackgroundTasks.instance
+        # Repaint the cards while a child is live OR the picker is open, AND for
+        # exactly ONE tick after the running set drains to empty — that →empty
+        # paint is what removes a finished child's card in real time instead of
+        # deferring it to turn end (Bug B). The earlier `if running.any?` guard
+        # skipped exactly that →empty repaint, so a compact card lingered until
+        # the turn finished. #set_cards still coalesces an unchanged snapshot, so
+        # a plain turn that never had a child pays nothing.
+        active = bt.running.any? || BottomComposer.current&.agent_menu_open?
+        set_subagent_cards if active || @had_live_cards
+        @had_live_cards = bt.running.any?
+        tail_attached_shell
       rescue StandardError
         nil
+      end
+
+      # Live-tail a focused shell's output during a turn, at the same cadence as
+      # refresh_live_cards (~1 Hz / ~10 Hz with picker open). Delegates to the
+      # shared ShellTailer on the composer — the same instance the idle-loop
+      # ticker (ChatCommand) uses, so the byte cursor stays synchronised across
+      # the idle/mid-turn boundary.
+      def tail_attached_shell
+        composer = BottomComposer.current
+        return unless composer&.respond_to?(:shell_tailer)
+
+        focused = composer.focused_agent_id
+        return if focused == :main
+
+        entry = Tools::BackgroundTasks.instance.find(focused)
+        return unless entry&.shell?
+
+        composer.shell_tailer.paint_delta(entry, origin: focused)
       end
 
       # Repaints the persistent status bar with the live in-flight token estimate
@@ -1390,6 +1427,9 @@ module Rubino
         @turn_started_at = monotonic_now
         @turn_tool_count = 0
         @turn_tok_chars  = 0
+        # Fresh turn: reset the live-surfaced subagent completion set so a
+        # completion from a prior turn is never erroneously deduped here.
+        @live_surfaced_ids = nil
         # Streaming-params card state (#608): no tool call is mid-stream yet.
         @tool_params_open   = nil
         @tool_params_stream = nil
@@ -1425,6 +1465,9 @@ module Rubino
         # turn that never got one) must not vanish — flush the full block.
         pending = Array(@pending_subagent_footers)
         @pending_subagent_footers = nil
+        # Exclude ids already surfaced LIVE via #subagent_finished.
+        live_ids = @live_surfaced_ids
+        pending.reject! { |p| live_ids&.include?(p[:id]) } if live_ids
         pending.each do |p|
           subagent_lifecycle(p[:line], status: p[:status] || "done", report: p[:report], id: p[:id])
         end
@@ -2908,13 +2951,18 @@ module Rubino
               end
             end
             # Advance the live subagent cards too (~1 Hz, the idle ticker's
-            # cadence). The IdleCardHost ticker only runs BETWEEN turns, so during
-            # a turn a background child's card elapsed would freeze whenever the
-            # child went a while without firing a tool event (a long LLM call) —
-            # a still-running child then looked hung at a stale "N tools · Ms".
+            # cadence) — BUT push EVERY tick (~0.1 s) while the agent-menu
+            # picker is OPEN so a background subagent/shell changing state is
+            # reflected live in the dropdown (#DROPDOWN_LIVE). The IdleCardHost
+            # ticker only runs BETWEEN turns, so during a turn a background
+            # child's card elapsed would freeze whenever the child went a while
+            # without firing a tool event (a long LLM call) — a still-running
+            # child then looked hung at a stale "N tools · Ms".
             # Outside @status_mutex (set_subagent_cards takes the composer's own
             # render mutex; keeping the locks un-nested avoids any ordering risk).
-            refresh_live_cards if (i % 10).zero?
+            # refresh_live_cards also live-tails an attached shell (~1 Hz), which is
+            # what un-freezes the drilled-in view so a long run's output scrolls.
+            refresh_live_cards if (i % 10).zero? || BottomComposer.current&.agent_menu_open?
             # Repaint the persistent `ctx ~Xk/…` bar ~1/s with the live in-flight
             # token estimate so it climbs during the turn (#608e) instead of
             # sitting frozen until the turn ends. ~1 Hz (not per delta) keeps the

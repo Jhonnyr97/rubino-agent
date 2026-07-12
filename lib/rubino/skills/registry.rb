@@ -90,6 +90,20 @@ module Rubino
         true
       end
 
+      # Process-level shadow-log dedup: a genuine cross-dir override (project >
+      # user > built-in) is expected agentskills.io behaviour, not an error. Log
+      # it at debug at most ONCE per (name, winner_path) so every re-discover
+      # doesn't spam the log with the same benign override notice.
+      def self.shadow_logged?(key)
+        @shadow_logged ||= Set.new
+        @shadow_logged.include?(key)
+      end
+
+      def self.mark_shadow_logged(key)
+        @shadow_logged ||= Set.new
+        @shadow_logged.add(key)
+      end
+
       # Discovers all available skills from configured paths. Both the flat
       # layout (<name>.md) and the directory layout (<name>/SKILL.md) are
       # supported. When a name collides, the directory skill wins (it is the
@@ -98,10 +112,15 @@ module Rubino
         previously_discovered = @discovered
         known_before = @skills.keys
         @skills.clear
+        visited = Set.new
         skill_paths.each do |dir|
           expanded = resolve_path(dir)
           next unless File.directory?(expanded)
 
+          canonical = canonical_dir(expanded)
+          next if visited.include?(canonical)
+
+          visited.add(canonical)
           add_skills(Dir.glob(File.join(expanded, FLAT_GLOB)))
           add_skills(Dir.glob(File.join(expanded, DIR_GLOB)))
         end
@@ -235,13 +254,25 @@ module Rubino
 
       # Builds a Skill per path and indexes it by name. Called with flat paths
       # first, then directory paths, so directory skills override flat ones on
-      # a name collision (see #discover!).
+      # a name collision (see #discover!). After Fix-1 directory dedup, the only
+      # collisions left are genuine cross-priority overrides (project > user >
+      # built-in) — which is expected agentskills.io behaviour — so they're
+      # logged at debug at most once per (name, winner) per process.
       def add_skills(paths)
         paths.each do |path|
           skill = Skill.new(path: path)
           old = @skills[skill.name]
           if old
-            warn "rubino: skill '#{skill.name}' at #{path} shadows #{old.path}"
+            key = "#{skill.name}::#{skill.path}"
+            unless self.class.shadow_logged?(key)
+              self.class.mark_shadow_logged(key)
+              Rubino.logger.debug(
+                event: "skills.shadowed",
+                name: skill.name,
+                winner: skill.path,
+                shadowed: old.path
+              )
+            end
           end
           @skills[skill.name] = skill
         rescue StandardError => e
@@ -250,7 +281,12 @@ module Rubino
           # rest — skip it with a warning and keep going (SKILL-2). Without
           # this, a single bad SKILL.md stack-traced the CLI and silently
           # stripped EVERY skill from the agent's prompt.
-          warn "rubino: skipping skill at #{path} (#{e.class}: #{e.message})"
+          Rubino.logger.warn(
+            event: "skills.skipped",
+            path: path,
+            error: e.class.name,
+            message: e.message
+          )
         end
       end
 

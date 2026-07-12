@@ -1367,7 +1367,7 @@ RSpec.describe Rubino::Agent::Loop do
       end
     end
 
-    it "persists the injected text as a user message and feeds it to the next call_model" do
+    it "persists the injected text as a user message and piggybacks it on the tool result" do
       queue = Rubino::Interaction::InputQueue.new
       queue_with_push_on_tool(queue, "actually, also check the README")
 
@@ -1381,15 +1381,19 @@ RSpec.describe Rubino::Agent::Loop do
       user_rows = stored.select { |m| m.role == "user" }
       expect(user_rows.map(&:content)).to include("actually, also check the README")
 
-      # Present in the messages the SECOND (iter-2) model call saw.
+      # Piggybacked on the last tool-result message — not a separate user turn.
       second_call_messages = fake_llm.calls.last[:messages]
-      injected = second_call_messages.find do |m|
-        m[:role] == "user" && m[:content] == "actually, also check the README"
-      end
-      expect(injected).not_to be_nil
+      tool_msg = second_call_messages.find { |m| m[:role] == "tool" }
+      expect(tool_msg[:content]).to include("[background notices] actually, also check the README")
+
+      # No extra user message for the injection.
+      user_msgs_after_tool = second_call_messages
+                             .drop(second_call_messages.index(tool_msg) + 1)
+                             .select { |m| m[:role] == "user" }
+      expect(user_msgs_after_tool).to be_empty
     end
 
-    it "injects at the boundary AFTER the tool result, never splitting a tool_use/result pair" do
+    it "piggybacks on the tool result, never splitting a tool_use/result pair" do
       queue = Rubino::Interaction::InputQueue.new
       queue_with_push_on_tool(queue, "steered line")
 
@@ -1399,21 +1403,21 @@ RSpec.describe Rubino::Agent::Loop do
       build_loop(input_queue: queue).run(messages: user_messages, tools: [])
 
       msgs = fake_llm.calls.last[:messages]
-      injected_idx  = msgs.index { |m| m[:role] == "user" && m[:content] == "steered line" }
       tool_use_idx  = msgs.index { |m| m[:role] == "assistant" && m[:tool_calls]&.any? }
       tool_res_idx  = msgs.index { |m| m[:role] == "tool" }
 
-      # Ordering: assistant(tool_use) → tool(result) → injected user. The user
-      # message must come AFTER the tool result, so the pair is intact.
+      # Ordering: assistant(tool_use) → tool(result). The pair is intact.
       expect(tool_use_idx).to be < tool_res_idx
-      expect(tool_res_idx).to be < injected_idx
 
-      # And no orphan: every tool message is immediately preceded (eventually)
-      # by an assistant tool_use, and the injected user never sits between them.
-      expect(msgs[injected_idx - 1][:role]).to eq("tool")
+      # The steered text is piggybacked ON the tool result, not a separate message.
+      expect(msgs[tool_res_idx][:content]).to include("[background notices] steered line")
+
+      # No orphan: the tool result carries the notice, no extra user message.
+      injected_user = msgs[(tool_res_idx + 1)..].find { |m| m[:role] == "user" && m[:content].include?("steered") }
+      expect(injected_user).to be_nil
     end
 
-    it "coalesces multiple queued lines into ONE injected user message" do
+    it "coalesces multiple queued lines and piggybacks them on the tool result" do
       queue = Rubino::Interaction::InputQueue.new
       allow(echo_tool).to receive(:call).and_wrap_original do |orig, *args|
         queue.push("first thought")
@@ -1426,10 +1430,16 @@ RSpec.describe Rubino::Agent::Loop do
 
       build_loop(input_queue: queue).run(messages: user_messages, tools: [])
 
+      # Persisted as one coalesced user message.
       stored = message_store.for_session(session[:id])
       injected = stored.select { |m| m.role == "user" && m.content.include?("thought") }
       expect(injected.size).to eq(1)
       expect(injected.first.content).to eq("first thought\nsecond thought")
+
+      # Piggybacked on the tool result (no separate user message).
+      msgs = fake_llm.calls.last[:messages]
+      tool_msg = msgs.find { |m| m[:role] == "tool" }
+      expect(tool_msg[:content]).to include("[background notices] first thought")
     end
 
     it "emits INPUT_INJECTED on the bus and echoes through @ui.input_injected" do
@@ -1469,6 +1479,34 @@ RSpec.describe Rubino::Agent::Loop do
       expect(queue.pending?).to be(false)
     end
 
+    # #561 mid-turn delivery: a background task that finishes WHILE the model is
+    # composing its final answer must be delivered to the model on THIS turn (one
+    # more iteration) — not deferred to the idle auto-wake after the loop ends.
+    it "delivers a background notice mid-turn when it arrives during the final answer (#561)" do
+      queue = Rubino::Interaction::InputQueue.new
+      fake_llm.enqueue_text("I've started the tests in the background.")
+      fake_llm.enqueue_text("The tests passed.")
+
+      # The notice lands DURING the FIRST model call — as if the run finished
+      # right as the model was wrapping up its answer.
+      calls = 0
+      allow(fake_llm).to receive(:call).and_wrap_original do |orig, *args, &blk|
+        calls += 1
+        queue.push_notice("[background-task] bg_1 (shell) completed. All green.") if calls == 1
+        orig.call(*args, &blk)
+      end
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      # The loop did NOT end after the first text answer: it looped again and the
+      # SECOND model call saw the notice, delivered as a user message THIS turn.
+      expect(fake_llm.calls.size).to eq(2)
+      seen = fake_llm.calls.last[:messages]
+      expect(seen.any? { |m| m[:role] == "user" && m[:content].include?("[background-task]") }).to be(true)
+      # Consumed — nothing left for the idle auto-wake to re-deliver.
+      expect(queue.pending?).to be(false)
+    end
+
     # #148: screens of completion reports folded in AFTER the user's just-sent
     # prompt drowned it — the model answered the notices and ignored the
     # request. At turn start the notices must be FRAMED as context and inserted
@@ -1494,7 +1532,7 @@ RSpec.describe Rubino::Agent::Loop do
         .to include("the user's message AFTER these notices is the instruction to act on")
     end
 
-    it "still APPENDS mid-turn injections at later iterations, unframed (#148)" do
+    it "piggybacks mid-turn injections on the last tool result with framing" do
       queue = Rubino::Interaction::InputQueue.new
       queue_with_push_on_tool(queue, "change of plan")
 
@@ -1504,10 +1542,61 @@ RSpec.describe Rubino::Agent::Loop do
       build_loop(input_queue: queue).run(messages: user_messages, tools: [])
 
       seen = fake_llm.calls.last[:messages]
-      injected = seen.find { |m| m[:content].to_s.include?("change of plan") }
-      expect(injected[:content]).not_to include("background notices")
-      # Appended after the tool result, the normal steering position.
-      expect(seen.index(injected)).to be > seen.index { |m| m[:role] == "tool" }
+      tool_msg = seen.find { |m| m[:role] == "tool" }
+      # The tool result carries the notice with framing.
+      expect(tool_msg[:content]).to include("[background notices] change of plan")
+      # No separate user message for the injection.
+      injected_user = seen.find { |m| m[:role] == "user" && m[:content].to_s.include?("change of plan") }
+      expect(injected_user).to be_nil
+    end
+
+    # Piggyback: when the last message is a tool result, the notice is folded INTO
+    # that message's content — no new user turn, avoiding role-alternation churn.
+    it "piggybacks a notice on the last tool-result message (no extra user turn)" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue_with_push_on_tool(queue, "background task finished")
+
+      fake_llm.enqueue_tool_call("echo", { "text" => "ping" })
+      fake_llm.enqueue_text("done")
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      msgs = fake_llm.calls.last[:messages]
+      tool_msg = msgs.find { |m| m[:role] == "tool" }
+      expect(tool_msg[:content]).to include("[background notices] background task finished")
+
+      # No standalone user message for the notice.
+      user_after_tool = msgs[(msgs.index(tool_msg) + 1)..]&.select { |m| m[:role] == "user" }
+      expect(user_after_tool).to be_empty
+    end
+
+    # Fallback: when there's no tool message to piggyback on (no tools ran this
+    # turn), the notice is delivered as a new user message — the current path.
+    it "falls back to a new user message when there is no tool message to piggyback on" do
+      queue = Rubino::Interaction::InputQueue.new
+      # Push the notice DURING the first model call so it arrives mid-turn
+      # but there are no tool calls — just a text answer.
+      calls = 0
+      allow(fake_llm).to receive(:call).and_wrap_original do |orig, *args, &blk|
+        calls += 1
+        queue.push_notice("[background-task] bg_2 (shell) completed.") if calls == 1
+        orig.call(*args, &blk)
+      end
+
+      fake_llm.enqueue_text("I'll start that now.")
+      fake_llm.enqueue_text("The task is done.")
+
+      build_loop(input_queue: queue).run(messages: user_messages, tools: [])
+
+      # The notice was delivered as a user message (gated on text_only? loop).
+      expect(fake_llm.calls.size).to eq(2)
+      seen = fake_llm.calls.last[:messages]
+      user_notice = seen.find { |m| m[:role] == "user" && m[:content].to_s.include?("[background-task]") }
+      expect(user_notice).not_to be_nil
+      # No tool messages → fallback to user message (the notice is NOT on a tool result).
+      tool_msgs = seen.select { |m| m[:role] == "tool" }
+      tool_with_notice = tool_msgs.find { |m| m[:content].to_s.include?("[background-task]") }
+      expect(tool_with_notice).to be_nil
     end
 
     it "does NOT inject on the first iteration (initial user input is already the turn)" do

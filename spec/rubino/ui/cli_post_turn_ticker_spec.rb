@@ -191,9 +191,11 @@ RSpec.describe Rubino::UI::CLI do
       end
     end
 
-    # P4: a subagent completion stashed mid-turn folds into the footer grammar
-    # instead of stacking a second `┄ ┄` rail right at turn end.
-    it "folds a mid-turn subagent completion into the footer grammar" do
+    # BUG C: a subagent completion now surfaces LIVE (immediately) even mid-turn,
+    # instead of being stashed and folded into the turn footer at turn end — so
+    # the user sees the "✓ … done" signal in real time. turn_footer must then NOT
+    # re-draw it (no double-draw), and the id is tracked in @live_surfaced_ids.
+    it "surfaces a mid-turn subagent completion live and does not fold it into the footer" do
       ui = described_class.new
       ui.instance_variable_set(:@pastel, Pastel.new(enabled: false))
       old = $stdout
@@ -201,10 +203,14 @@ RSpec.describe Rubino::UI::CLI do
       begin
         ui.instance_variable_set(:@turn_active, true)
         ui.subagent_finished("✓ sa_e488 · explore · done · 1 tool — report", id: "sa_e488", status: "done")
+        # Surfaced LIVE the moment it finished, not deferred to the footer:
+        expect($stdout.string).to include("✓ sa_e488 · explore · done · 1 tool — report")
         ui.turn_footer("turn · 16.6s · 3 tools · 105 tok")
         out = $stdout.string
-        expect(out).to include("┄ turn · 16.6s · 3 tools · 105 tok · sa_e488 done ┄")
-        expect(out.scan("┄ ").size).to eq(1) # one rail, not two stacked
+        # The footer carries the turn line ALONE — the completion already surfaced
+        # live, so it is excluded from the fold (no stacked rail, no double-draw).
+        expect(out).to include("┄ turn · 16.6s · 3 tools · 105 tok ┄")
+        expect(out).not_to include("· sa_e488 done ┄")
       ensure
         ui.instance_variable_set(:@turn_active, false)
         $stdout = old

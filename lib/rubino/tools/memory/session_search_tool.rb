@@ -11,8 +11,6 @@ module Rubino
     # Returns a JSON array of match hits with a highlighted snippet so the
     # model can decide whether to follow up with /v1/sessions/:id.
     class SessionSearchTool < Base
-
-
       DEFAULT_LIMIT = 20
       MAX_LIMIT     = 100
 
@@ -25,7 +23,7 @@ module Rubino
         string :since, description: "ISO8601 lower bound on message created_at."
         string :before, description: "ISO8601 upper bound on message created_at."
         string :role, enum: %w[user assistant tool],
-               description: "Restrict to a single message role."
+                      description: "Restrict to a single message role."
         string :tool, description: "Restrict to a specific tool_name (when role=tool)."
         integer :limit, description: "Max results to return (default 20, max 100)."
       end

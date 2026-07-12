@@ -470,23 +470,47 @@ module Rubino
 
       # ── Inline tool adapters (live_card) ────────────────────────────
 
+      # Max retained FINISHED inline adapters — prevents unbounded buffer
+      # growth when many inline live_card tools run in a session. Finished
+      # adapters stay retrievable (replay via drill-in) up to this cap;
+      # the oldest finished ones are evicted when a new adapter is registered.
+      MAX_RETAINED_INLINE = 64
+
       # Registers an InlineToolAdapter so it appears in the dropdown/cards
       # while a live_card tool runs. Called by ToolExecutor just before the
-      # tool's #call; unregistered by #unregister_inline when it finishes.
+      # tool's #call. Evicts the oldest finished adapters if the retained
+      # count exceeds MAX_RETAINED_INLINE (finished adapters are kept for
+      # replay; #running already excludes them via live?).
       def register_inline(adapter)
-        @mutex.synchronize { @inline_adapters[adapter.id] = adapter }
+        @mutex.synchronize do
+          @inline_adapters[adapter.id] = adapter
+          reap_retained_inlines!
+        end
       end
 
-      # Removes an inline adapter from the registry (the tool finished or
-      # failed). The adapter's #finish! should already have been called so
-      # its status is terminal — this just cleans up the lookup map.
+      # Removes an inline adapter from the registry explicitly (e.g. session
+      # end cleanup). Normal finish no longer calls this — finished adapters
+      # are retained for replay and evicted by the bounded reap.
       def unregister_inline(id)
         @mutex.synchronize { @inline_adapters.delete(id) }
       end
 
-      # Live inline adapters — only the ones whose tool is still running.
+      # Evicts the oldest finished (non-live) inline adapters when the total
+      # exceeds MAX_RETAINED_INLINE. Called under @mutex from #register_inline.
+      def reap_retained_inlines!
+        finished = @inline_adapters.values.reject(&:live?)
+                                   .sort_by(&:started_at)
+        return unless finished.size > MAX_RETAINED_INLINE
+
+        excess = finished.size - MAX_RETAINED_INLINE
+        finished.first(excess).each { |a| @inline_adapters.delete(a.id) }
+      end
+
+      # Live inline adapters visible in the picker — only running tools whose
+      # defer threshold (if any) has passed. Deferred adapters are buffering
+      # silently and excluded until their deadline.
       def inline_adapters
-        @mutex.synchronize { @inline_adapters.values.select(&:live?) }
+        @mutex.synchronize { @inline_adapters.values.select { |a| a.live? && a.visible? } }
       end
 
       # Look up an inline adapter by id (for the attach path).

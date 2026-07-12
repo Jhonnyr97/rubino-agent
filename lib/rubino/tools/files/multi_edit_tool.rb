@@ -25,10 +25,10 @@ module Rubino
         # Per-edit diff preview for the approval prompt: each edit rendered
         # as "- old" / "+ new" blocks, blank-line separated.
         def preview_arguments(label, arguments)
-          edits = arguments["edits"] || arguments[:edits]
+          edits = arguments[:edits]
           return nil unless edits.is_a?(Array) && !edits.empty?
 
-          path = arguments["file_path"] || arguments[:file_path]
+          path = arguments[:file_path]
           header = "#{label} wants to run: #{path} (#{edits.size} edit#{"s" if edits.size != 1})"
 
           body = []

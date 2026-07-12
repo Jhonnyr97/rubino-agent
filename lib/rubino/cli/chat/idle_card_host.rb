@@ -16,6 +16,11 @@ module Rubino
         # covers the quiet gaps.
         IDLE_CARD_TICK = 1.0
 
+        # When the agent-menu picker is OPEN the idle ticker runs at the same
+        # 0.1 s cadence as the status-bar thread so the dropdown reflects live
+        # registry changes at idle too (#DROPDOWN_LIVE).
+        MENU_REFRESH_TICK = 0.1
+
         # True when at least one background subagent (the `task` tool's default)
         # is still live — running or parked on a human approval. Drives whether the
         # idle prompt hosts the collapsed live cards (F1).
@@ -41,22 +46,28 @@ module Rubino
 
         # A low-frequency ticker that repaints the idle card region so the elapsed
         # time advances and a finished last-child is noticed even in a quiet gap
-        # between child events. Repaints go through the composer's render mutex, so
-        # they never race the keystroke handler. Exits as soon as no child is live
-        # (it clears the region one last time) or when killed on teardown.
+        # between child events. When the agent-menu picker is OPEN the cadence
+        # bumps to MENU_REFRESH_TICK (0.1 s) so the dropdown reflects live registry
+        # changes at idle too (#DROPDOWN_LIVE) — the same parity as the mid-turn
+        # status thread. Repaints go through the composer's render mutex, so they
+        # never race the keystroke handler. Exits when no child is live AND the
+        # picker is closed (or when killed on teardown). While the picker is open
+        # the ticker stays alive so the open menu keeps repainting until it closes
+        # itself (via refresh! when items go empty).
         # +on_tick+ (optional) runs once per tick after the card repaint — used by
         # the attach view to live-tail a focused shell's new output on the SAME
-        # 1 Hz cadence and through the same render mutex (composer#print_above) the
+        # cadence and through the same render mutex (composer#print_above) the
         # cards use, so it never races the keystroke handler.
         def start_ticker(composer, &on_tick)
           Thread.new do
             loop do
-              sleep(IDLE_CARD_TICK)
+              tick = composer.agent_menu_open? ? MENU_REFRESH_TICK : IDLE_CARD_TICK
+              sleep(tick)
               break unless composer.equal?(UI::BottomComposer.current)
 
               paint
               on_tick&.call
-              break unless children_live?
+              break unless children_live? || composer.agent_menu_open?
             end
           rescue StandardError => e
             # The ticker exits on any error so a hiccup never crashes the REPL,

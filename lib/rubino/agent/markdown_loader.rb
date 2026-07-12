@@ -158,20 +158,32 @@ module Rubino
         body = parts[2].strip
         build_definition(metadata, body, path)
       rescue StandardError => e
-        warn "rubino: error loading agent file #{path}: #{e.message}"
+        Rubino.logger.warn(
+          event: "agent.md.load_error",
+          path: path,
+          error: e.class.name,
+          message: e.message
+        )
         nil
       end
 
       def parse_metadata(yaml_str, path)
         parsed = YAML.safe_load(yaml_str, permitted_classes: [Symbol]) || {}
         unless parsed.is_a?(Hash)
-          warn "rubino: ignoring non-Hash frontmatter in #{path}"
+          Rubino.logger.warn(
+            event: "agent.md.nonhash_frontmatter",
+            path: path
+          )
           return nil
         end
         parsed
       rescue Psych::SyntaxError => e
-        warn "rubino: skipping malformed frontmatter in #{path} " \
-             "(line #{e.line}: #{e.problem})"
+        Rubino.logger.warn(
+          event: "agent.md.malformed_frontmatter",
+          path: path,
+          line: e.line,
+          problem: e.problem
+        )
         nil
       end
 
@@ -247,8 +259,12 @@ module Rubino
         translated = claude_names.filter_map do |cn|
           mapped = TOOL_NAME_MAP[cn]
           if mapped.nil? && !TOOL_NAME_MAP.key?(cn)
-            warn "rubino: agent '#{agent_name}' (#{path}): unknown Claude " \
-                 "tool '#{cn}' — dropped"
+            Rubino.logger.warn(
+              event: "agent.md.unknown_tool",
+              agent: agent_name,
+              path: path,
+              tool: cn
+            )
             next nil
           end
           mapped
@@ -274,9 +290,11 @@ module Rubino
         perm_mode = meta["permissionMode"].to_s.strip.downcase
         case perm_mode
         when "bypasspermissions"
-          warn "rubino: agent '#{agent_name}' (#{path}): " \
-               "permissionMode 'bypassPermissions' has no rubino " \
-               "equivalent — ignoring (subagent will use normal approval policy)"
+          Rubino.logger.warn(
+            event: "agent.md.bypass_permissions",
+            agent: agent_name,
+            path: path
+          )
         end
 
         # disallowedTools → deny entries in the permissions hash.
@@ -287,9 +305,12 @@ module Rubino
           if rn
             rules["#{rn} *"] = "deny"
           else
-            warn "rubino: agent '#{agent_name}' (#{path}): " \
-                 "disallowedTools entry '#{cn}' could not be mapped to a " \
-                 "rubino tool — skipped"
+            Rubino.logger.warn(
+              event: "agent.md.unknown_deny_tool",
+              agent: agent_name,
+              path: path,
+              tool: cn
+            )
           end
         end
 
@@ -321,10 +342,14 @@ module Rubino
 
       def note_ignored(meta, agent_name, path)
         IGNORED_FIELDS.each do |field|
-          if meta.key?(field) && !meta[field].nil?
-            warn "rubino: agent '#{agent_name}' (#{path}): " \
-                 "field '#{field}' is not supported by rubino — ignored"
-          end
+          next unless meta.key?(field) && !meta[field].nil?
+
+          Rubino.logger.debug(
+            event: "agent.md.ignored_field",
+            agent: agent_name,
+            path: path,
+            field: field
+          )
         end
 
         # `skills` in Claude Code agents refers to attaching skill files

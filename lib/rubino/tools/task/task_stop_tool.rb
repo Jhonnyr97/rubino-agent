@@ -11,16 +11,14 @@ module Rubino
         def risk = :medium
       end
 
-
-      security     ToolSecurity
-
+      security ToolSecurity
 
       def config_key
         "task"
       end
 
       # The live statuses a stop applies to. A child parked on a human approval
-      # still holds its thread + concurrency slot (BackgroundTasks#live_status?),
+      # still holds its thread + concurrency slot (Tools::BackgroundTasks#live_status?),
       # so it MUST be stoppable — refusing left a blocked child as a zombie
       # holding its slot until the approval gate timeout (#197). :stopping is
       # excluded: a second stop is honestly "already stopping — nothing to stop".
@@ -35,7 +33,7 @@ module Rubino
       def execute(task_id:)
         task_id = task_id.to_s.strip
 
-        registry = BackgroundTasks.instance
+        registry = Tools::BackgroundTasks.instance
         entry    = registry.find(task_id)
         return "Error: no background subagent with task_id=#{task_id}" unless entry
 

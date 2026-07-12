@@ -42,12 +42,12 @@ module Rubino
       # is the exact path:line anchors a follow-up read/edit consumes, so it must
       # pass through verbatim. (Sampled, majority-rules, so a stray prose line in
       # a grep dump doesn't flip the verdict.)
-      GREP_LINE_RE = /\A[^\s:]+:\d+:/
+      GREP_LINE_RE = /\A[^\s:]+:\d+:/n
 
       # A unified-diff body: `diff --git`, `@@ -a,b +c,d @@`, or the `--- ` /
       # `+++ ` file headers. Compressing a diff would drop the +/- context the
       # human and the apply path both need.
-      DIFF_RE = /^(?:diff --git |@@ [-+]|\+\+\+ |--- )/
+      DIFF_RE = /^(?:diff --git |@@ [-+]|\+\+\+ |--- )/n
 
       # Tools whose default output is command/log text — the LogCompressor
       # channel. Anything not listed (and not matching a more specific shape)

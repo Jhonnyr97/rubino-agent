@@ -32,7 +32,11 @@ module Rubino
         end
 
         def tool_security
-          @tool_security || ToolSecurity.new
+          if @rubino_risk_level && !static_low_risk?
+            @tool_security ||= synthesize_security
+          else
+            @tool_security || ToolSecurity.new
+          end
         end
 
         def tool_presentation
@@ -60,14 +64,20 @@ module Rubino
         #
         #   live_card ->(args) { "🔨 build #{args[:target]}" }
         #
+        #   after: 1.second  — defer the card until the tool has run for at
+        #     least this long. Output is buffered silently; if the tool finishes
+        #     before the threshold the card is never shown and output is delivered
+        #     atomically. If the tool exceeds the threshold the card appears in
+        #     the picker — enter it with ⏎ to see the live output.
+        #
         # An inline tool BLOCKS the agent thread (it is synchronous), so the
         # card is the live window on that blocking operation — the user can
-        # watch its streaming output in the timeline via ⏎ (← returns),
-        # exactly like a background shell or subagent. The adapter is torn
-        # down when the tool completes or fails.
-        def live_card(header_lambda = nil)
+        # watch its streaming output via ⏎ (enter the card),
+        # exactly like a background shell or subagent.
+        def live_card(header_lambda = nil, after: nil)
           if header_lambda
             @live_card_header = header_lambda
+            @live_card_after  = after
           else
             @live_card_header
           end
@@ -83,6 +93,76 @@ module Rubino
         # The header lambda declared via +live_card+, or nil. The executor
         # calls it with the tool's arguments to build the dropdown label.
         attr_reader :live_card_header
+
+        # Defer threshold (in seconds, Float) declared via +live_card after: …+,
+        # or nil when the card appears immediately. Read by InlineToolAdapter to
+        # gate card visibility and streaming output.
+        attr_reader :live_card_after
+
+        # ── Risk macro ──
+        #
+        #   risk :high                                     # static
+        #   risk :high, allow_widening: true
+        #   risk do |tool|                                 # dynamic per-call
+        #     tool.read_tracker&.accessed?("secrets.yml") ? :high : :medium
+        #   end
+        #
+        # The full `security SomeClass` escape hatch still works for tools
+        # that need custom sandbox/read-gate behaviour beyond what risk() covers.
+        def risk(level = nil, sandbox: nil, require_read: nil, allow_widening: nil, &block)
+          @rubino_risk_level     = block || level
+          @rubino_sandbox        = sandbox if sandbox
+          @rubino_require_read   = require_read unless require_read.nil?
+          @rubino_allow_widening = allow_widening unless allow_widening.nil?
+        end
+
+        # ── Live card macro ──
+        #
+        #   live "💻 %s", :command                       # simple template
+        #   live "📤 exporting %s", :format, after: 1
+        #   live do |args|                                 # complex header
+        #     "#{args[:command].truncate(40)} (#{args[:cwd]})"
+        #   end
+        #
+        # Sugar over +live_card+: builds a sprintf-style header lambda
+        # from a template and param names, or uses the given block directly.
+        def live(template = nil, *param_names, after: nil, &block)
+          header = if block
+                     block
+                   elsif template
+                     ->(args) { template % param_names.map { |n| args[n] } }
+                   else
+                     raise ArgumentError, "live requires a template string or a block"
+                   end
+          live_card(header, after: after)
+        end
+
+        private
+
+        def static_low_risk?
+          @rubino_risk_level == :low
+        end
+
+        def synthesize_security
+          level_or_lambda = @rubino_risk_level
+          sandbox_override     = @rubino_sandbox
+          require_read_val     = @rubino_require_read
+          allow_widening_val   = @rubino_allow_widening
+
+          Class.new(ToolSecurity) do
+            if level_or_lambda.respond_to?(:call)
+              # Dynamic: lambda receives the tool instance at call time
+              define_method(:dynamic_risk?) { true }
+              define_method(:risk_for) { |tool| level_or_lambda.call(tool) }
+            else
+              define_method(:risk) { level_or_lambda }
+            end
+            define_method(:risky?) { %i[medium high].include?(risk) } unless level_or_lambda.respond_to?(:call)
+            define_method(:sandbox) { sandbox_override } if sandbox_override
+            define_method(:require_read) { require_read_val } unless require_read_val.nil?
+            define_method(:allow_widening) { allow_widening_val } unless allow_widening_val.nil?
+          end.new
+        end
       end
 
       # ── Rubino runtime: injected by ToolExecutor before each call ──
@@ -140,9 +220,20 @@ module Rubino
       def security     = self.class.tool_security
       def presentation = self.class.tool_presentation
 
-      # Delegated to Security
-      def risk_level = security.risk
-      def risky?     = security.risky?
+      # Delegated to Security. Supports dynamic (lambda) risk via risk_for(tool).
+      def risk_level
+        sec = security
+        sec.respond_to?(:risk_for) ? sec.risk_for(self) : sec.risk
+      end
+
+      def risky?
+        sec = security
+        if sec.respond_to?(:risk_for)
+          %i[medium high].include?(sec.risk_for(self))
+        else
+          sec.risky?
+        end
+      end
 
       # MCPToolWrapper overrides this. Built-ins are never MCP.
       def mcp?
@@ -170,7 +261,7 @@ module Rubino
       # normalize → validate → execute flow, then wraps the result into
       # rubino's expected format.
       def call(arguments)
-        result = super(arguments)
+        result = super
         return if result.nil?
 
         # ruby_llm returns { error: "…" } on validation failure — return
@@ -182,9 +273,7 @@ module Rubino
 
         # Presentation: inject body_kind from the tool's Presentation class
         # when the tool returned a Hash without an explicit body_kind.
-        if result.is_a?(Hash) && result[:output] && !result.key?(:body_kind)
-          result[:body_kind] = presentation.body_kind
-        end
+        result[:body_kind] = presentation.body_kind if result.is_a?(Hash) && result[:output] && !result.key?(:body_kind)
 
         result
       end

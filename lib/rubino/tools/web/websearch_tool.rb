@@ -26,13 +26,10 @@ module Rubino
     # EXPLICIT "search unavailable" message pointing at TAVILY_API_KEY /
     # SEARXNG_URL — never a silent zero-results-that-looks-like-a-real-answer.
     class WebSearchTool < Base
-
-
       # A realistic browser User-Agent — html.duckduckgo.com serves an empty
       # page to a non-browser UA, so the search-bot default is not usable there.
       BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-
 
       # Gated by `tools.web` (shared with webfetch), not `tools.websearch`.
       def config_key

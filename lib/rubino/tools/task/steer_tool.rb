@@ -17,11 +17,10 @@ module Rubino
     # touch the human CLI path (executor.rb's steer_agent stays unscoped) and is
     # NOT on any strip list.
     #
-    # Mechanism reuse: it wraps BackgroundTasks#steer verbatim (the SAME wire the
+    # Mechanism reuse: it wraps Tools::BackgroundTasks#steer verbatim (the SAME wire the
     # human CLI uses) — no new transport, no new state.
     class SteerTool < Base
       redaction_profile :none
-
 
       # Gated by the same `tools.task` delegation key — steering a child is
       # meaningless without the delegation substrate. Disabling delegation
@@ -46,7 +45,7 @@ module Rubino
         note    = note.to_s.strip
 
         caller_id = Rubino.current_subagent_id
-        registry  = BackgroundTasks.instance
+        registry  = Tools::BackgroundTasks.instance
         entry     = task_id.empty? ? nil : registry.find(task_id)
 
         # No such id at all → it is not a steerable running subagent.

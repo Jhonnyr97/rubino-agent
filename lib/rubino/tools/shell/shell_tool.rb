@@ -10,7 +10,7 @@ module Rubino
     #   - foreground (default): blocks until exit or `timeout` seconds, then
     #     SIGTERMs the process group and returns whatever was captured.
     #   - background (`run_in_background: true`): registers the process with
-    #     ShellRegistry, returns a run_id immediately. Read its output later
+    #     Tools::ShellRegistry, returns a run_id immediately. Read its output later
     #     with `shell_output`, terminate it with `shell_kill`.
     #
     # Gatekeeping (allowlist, deny rules, approval prompts) lives in
@@ -24,22 +24,14 @@ module Rubino
     # filesystem if it confuses paths" — so catastrophic, unrecoverable
     # commands are refused here even if the policy was somehow bypassed.
     class ShellTool < Base # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :high
-        def allow_widening = true
-      end
-
-      class ToolPresentation < Tools::ToolPresentation
-        def stream_output? = true
-      end
-
-      security     ToolSecurity
-      presentation ToolPresentation
+      risk :high, allow_widening: true
 
       # Show the shell command in the multiplexer dropdown while it runs
       # (foreground path). The user can ⏎ to watch the live output in the
       # timeline — the same attach as background shells and subagents.
-      live_card ->(args) { "💻 #{args[:command] || args["command"] || "shell"}" }
+      # Deferred by 1s: fast commands appear atomically; commands >1s show
+      # the live card with streaming output.
+      live "💻 %s", :command, after: 1
 
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600
@@ -90,7 +82,7 @@ module Rubino
       end
 
       # SINGLE source of truth for how a shell script is spawned under the OS
-      # write-jail (slice 2: foreground here AND background in ShellRegistry
+      # write-jail (slice 2: foreground here AND background in Tools::ShellRegistry
       # share this, so a backgrounded command can't bypass the jail the
       # foreground enforces — #290/#544). Returns the `[env, *argv]` array to
       # splat into Process.spawn: the platform sandbox launcher (sandbox-exec
@@ -422,7 +414,7 @@ module Rubino
       end
 
       def spawn_background(command, cwd)
-        entry = ShellRegistry.instance.spawn(command: command, cwd: cwd)
+        entry = Tools::ShellRegistry.instance.spawn(command: command, cwd: cwd)
         log_line = entry.log_path ? "  Log:     #{entry.log_path}\n" : ""
         "Started background shell #{entry.id} (pid #{entry.pid})\n" \
           "#{log_line}  " \
@@ -480,7 +472,7 @@ module Rubino
         # apply unchanged. Empty prefix ([]) when sandbox is off/unavailable ⇒
         # byte-identical to before. Writable roots go to the helper via env
         # (never argv), merged on top of GIT_HARDENED_ENV. Built by the SHARED
-        # helper so the background path (ShellRegistry) jails identically.
+        # helper so the background path (Tools::ShellRegistry) jails identically.
         pid = Process.spawn(*self.class.sandboxed_bash_argv(wrapped, cwd: cwd, escalate: escalate), **spawn_opts)
         pgid = pid
         wr.close
@@ -490,7 +482,7 @@ module Rubino
         # stack frame, so cancel_all's cooperative cancel can't reach it before
         # the process exits and the shell reparents to init as an orphan. The
         # `ensure` below drops it once THIS thread has reaped it normally.
-        ShellRegistry.instance.register_pgid(pgid)
+        Tools::ShellRegistry.instance.register_pgid(pgid)
 
         # Drain the merged stdout+stderr pipe in FIXED-SIZE chunks (#539). The
         # old `each_line` only yields on \n or EOF, so an unbounded producer
@@ -702,7 +694,7 @@ module Rubino
             nil
           end
         end
-        ShellRegistry.instance.unregister_pgid(pgid) if pgid
+        Tools::ShellRegistry.instance.unregister_pgid(pgid) if pgid
         rd.close if rd && !rd.closed?
         # fd 3 ends: cwd_wr is closed right after spawn; cwd_rd is drained+closed
         # by its own reader thread on EOF (the write end goes away when the

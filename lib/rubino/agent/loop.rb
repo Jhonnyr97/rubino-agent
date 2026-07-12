@@ -330,6 +330,26 @@ module Rubino
           end
 
           if response.text_only?
+            # BACKGROUND-COMPLETION mid-turn delivery (#561): a background task
+            # (a delegated subagent OR a background shell/process — e.g. a long
+            # test or build run) finished while the model was composing THIS final
+            # answer, parking a `[background-task]` notice. Deliver it to the model
+            # NOW, in this same turn, instead of ending the loop and deferring the
+            # result to the idle auto-wake — that made the completion land only
+            # after the turn fully finished. Close the answer the model just gave
+            # as an intermediate block and loop: inject_steered_input drains the
+            # parked notice at the next iteration's top (a valid user-message
+            # ordering boundary) and the model folds the result in without waiting.
+            # Guarded on #notices_pending? (a typed line always wins via #shift and
+            # carries the notice on its own turn); the iteration budget still bounds
+            # the turn, and once drained the notice can't re-trigger this.
+            if @input_queue&.notices_pending?
+              persist_assistant_message(response)
+              close_intermediate_stream(response)
+              messages << { role: "assistant", content: response.content.to_s }
+              next
+            end
+
             # Fabricated-"done" gate: the structured tool-call channel is the
             # ONLY thing that advances state. If this toolless turn's prose
             # asserts an action against a tool we expose (or claims a `cd` we
@@ -410,16 +430,21 @@ module Rubino
       private
 
       # Mid-turn steering (Phase 2): drains anything the user typed while the
-      # agent was working and folds it into the live turn as a single USER
-      # message. Called at the top of each iteration (after the cancel check,
-      # before the model call) where appending a user message is always valid
-      # ordering — never between an assistant tool_use and its tool results.
+      # agent was working and delivers it to the model. Called at the top of
+      # each iteration (after the cancel check, before the model call) at a
+      # safe ordering boundary — never between an assistant tool_use and its
+      # tool results.
+      #
+      # Hermes / Claude Code parity: instead of adding a NEW user message
+      # mid-turn (which forces role alternation churn), the injection
+      # PIGGYBACKS on the LAST tool-result message's content when one exists,
+      # avoiding an extra turn boundary. Falls back to a new user message only
+      # when no tool message is available (first iteration / no tools ran).
       #
       # No-op when no queue is wired (API/server, subagents) or when nothing
       # was typed. Multiple drained lines are coalesced (newline-joined) into
-      # ONE user message so a burst of keystrokes reads as one interjection.
-      # The drain is atomic, so the between-turns #next_input fallback in the
-      # CLI never double-consumes the same text.
+      # ONE injection. The drain is atomic, so the between-turns #next_input
+      # fallback in the CLI never double-consumes the same text.
       def inject_steered_input(messages, iteration)
         return unless @input_queue&.pending?
 
@@ -442,12 +467,31 @@ module Rubino
           insert_before_trailing_user(messages, text)
         else
           persist_user_message(text)
-          messages << { role: "user", content: text }
+          if append_to_tool_result(messages, text)
+            # Notice folded into the last tool-result message — no extra turn.
+          else
+            # Fallback: no tool message to piggyback on → new user message.
+            messages << { role: "user", content: text }
+          end
         end
 
         @event_bus.emit(Interaction::Events::INPUT_INJECTED,
                         text: text, iteration: iteration)
         @ui.input_injected(text)
+      end
+
+      # Hermes / Claude Code parity: appends a mid-turn notice/steer to the LAST
+      # tool-result message's content instead of creating a new user message,
+      # avoiding role-alternation churn. Returns true when the notice was
+      # piggybacked; false when there is no tool message to piggyback on
+      # (caller falls back to a new user message).
+      def append_to_tool_result(messages, text)
+        last_msg = messages.last
+        return false unless last_msg && last_msg[:role] == "tool"
+
+        framed = "\n\n[background notices] #{text}"
+        last_msg[:content] = last_msg[:content].to_s + framed
+        true
       end
 
       # Reinforces the no-confabulation rule when a tool was blocked this turn

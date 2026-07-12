@@ -23,8 +23,7 @@ module Rubino
         def risk = :medium
       end
 
-
-      security     ToolSecurity
+      security ToolSecurity
 
       description "Send input to a background shell started via `shell` with " \
                   "run_in_background: true — answer an interactive prompt (Y/N, menu " \
@@ -39,8 +38,7 @@ module Rubino
       param :eof,    type: :boolean, desc: "Close stdin / send EOF after writing (default false)", required: false
 
       def execute(run_id:, text: "", enter: true, eof: false)
-
-        registry = ShellRegistry.instance
+        registry = Tools::ShellRegistry.instance
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 
