@@ -267,12 +267,7 @@ module Rubino
             args: validate_stdio_args!(name, server_config["args"]),
             env: server_config["env"] || {}
           }
-        when "sse"
-          opts[:config] = {
-            url: server_config["url"],
-            headers: server_config["headers"] || {}
-          }
-        when "streamable"
+        when "sse", "streamable"
           opts[:config] = {
             url: server_config["url"],
             headers: server_config["headers"] || {}
