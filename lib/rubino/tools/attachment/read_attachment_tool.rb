@@ -25,12 +25,10 @@ module Rubino
     #   5. Inline-sized Markdown is wrapped in Preamble's nonce-framed untrusted
     #      envelope (converted document = untrusted user data).
     class ReadAttachmentTool < Base
-
       # Refuse to spill a CONVERTED document larger than this (≈20MB, matching
       # Gemini's cap). Attachments::Classify already caps the SOURCE size; this
       # guards the post-conversion Markdown, which a converter can balloon.
       MAX_SPILL_BYTES = 20_000_000
-
 
       def config_key
         "read_attachment"
@@ -48,7 +46,6 @@ module Rubino
       param :file_path, desc: "Path to the attachment to read (absolute or workspace-relative)."
 
       def execute(file_path:)
-
         # Classify runs the fail-closed safety pipeline (lstat rejects symlink/
         # FIFO/device, size cap, magic-bytes-wins MIME). We then confine to the
         # workspace via Base#within_workspace?, which checks ALL allowed roots
@@ -73,7 +70,6 @@ module Rubino
         # NEVER raise -- a missing gem must not break the turn.
         return Attachments::Preamble.document_shell_hint(cls) if markdown.nil?
 
-        markdown
         if oversized?(markdown)
           spill_oversized(cls, markdown)
         else

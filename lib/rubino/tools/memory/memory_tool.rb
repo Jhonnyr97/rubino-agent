@@ -12,8 +12,6 @@ module Rubino
     # the action/target mapping and translates Store exceptions into
     # tool-protocol error strings.
     class MemoryTool < Base
-
-
       VALID_ACTIONS = %w[add replace remove].freeze
       VALID_TARGETS = %w[memory user project].freeze
 
@@ -41,7 +39,8 @@ module Rubino
 
       params do
         string :action, enum: VALID_ACTIONS, description: "add, replace, or remove"
-        string :target, enum: VALID_TARGETS, description: "memory (general), user (user profile), or project (durable project/codebase fact)"
+        string :target, enum: VALID_TARGETS,
+                        description: "memory (general), user (user profile), or project (durable project/codebase fact)"
         string :content, description: "New content (required for add and replace)"
         string :old_text, description: "Substring of existing memory to match (required for replace and remove)"
       end
@@ -64,7 +63,7 @@ module Rubino
       private
 
       def backend
-        @backend ||= Memory::Backends.build
+        @backend ||= ::Rubino::Memory::Backends.build
       end
 
       def do_add(kind, content)
@@ -72,9 +71,9 @@ module Rubino
 
         memory = backend.store(kind: kind, content: content)
         "Memory added (id=#{memory[:id][0, 8]}, kind=#{kind})."
-      rescue Memory::Store::ThreatDetectedError => e
+      rescue ::Rubino::Memory::Store::ThreatDetectedError => e
         threat_error(e)
-      rescue Memory::Store::BudgetExceededError => e
+      rescue ::Rubino::Memory::Store::BudgetExceededError => e
         budget_error(e)
       end
 
@@ -86,9 +85,9 @@ module Rubino
         return error("no #{kind} memory matched substring '#{truncate(old_text)}'") unless target
 
         "Memory replaced (id=#{target[:id][0, 8]}, kind=#{kind})."
-      rescue Memory::Store::ThreatDetectedError => e
+      rescue ::Rubino::Memory::Store::ThreatDetectedError => e
         threat_error(e)
-      rescue Memory::Store::BudgetExceededError => e
+      rescue ::Rubino::Memory::Store::BudgetExceededError => e
         budget_error(e)
       end
 
@@ -130,7 +129,6 @@ module Rubino
         s = text.to_s
         s.length > max ? "#{s[0, max]}..." : s
       end
-
     end
   end
 end

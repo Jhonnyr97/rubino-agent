@@ -20,8 +20,7 @@ module Rubino
         def risk = :medium
       end
 
-
-      security     ToolSecurity
+      security ToolSecurity
 
       description "Evaluate Ruby code and return the result. " \
                   "Useful for calculations, data transformations, and scripting tasks. " \

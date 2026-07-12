@@ -211,6 +211,76 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver, "#print_session_history" do
     end
   end
 
+  # #699 / F5: after `/clear` (or attach/detach), replayed tool cards whose live
+  # output was multi-line (shell tables, listings) were reconstructed FLATTENED
+  # onto one line joined by " — ", with a stray separator underneath. Root cause:
+  # the replay path rendered only tool_started + tool_finished, omitting the BODY
+  # — so the compact close row's #truncate_inline (which collapses \n to " — ")
+  # was the ONLY visible rendering of the tool's output. The fix inserts
+  # ui.tool_body between them, the SAME live seam the live turn uses.
+  describe "tool body replay (multi-line preservation, #699)" do
+    it "replays a multi-line tool output with intact line breaks, not ' — ' joined" do
+      out = replay([
+                     msg(role: "tool",
+                         content: "┌─────────────┬─────────┐\n│ Tool        │ Status  │\n└─────────────┴─────────┘",
+                         tool_name: "shell", tool_call_id: "t1",
+                         metadata: { arguments: { command: "echo table" }, status: "success" },
+                         created_at: Time.now)
+                   ])
+      txt = plain(out)
+      # The full multi-line table must appear with its box-drawing glyphs and
+      # line breaks preserved — NOT collapsed into a " — "-joined one-liner.
+      expect(txt).to include("┌─────────────┬─────────┐")
+      expect(txt).to include("│ Tool        │ Status  │")
+      expect(txt).to include("└─────────────┴─────────┘")
+      # The " — " joining is #truncate_inline's signature — must NOT appear in
+      # the body area (only the compact close row may use it, and only for the
+      # single-line metric, not the full body).
+      body_area = txt.split(/└ [✓✗]/).first
+      expect(body_area).not_to include(" — ")
+    end
+
+    it "still renders the compact close row ✓ with its truncated metric" do
+      out = replay([
+                     msg(role: "tool", content: "line one\nline two",
+                         tool_name: "read", tool_call_id: "t2",
+                         metadata: { status: "success" },
+                         created_at: Time.now)
+                   ])
+      txt = plain(out)
+      # The compact close row still shows (it's the ✓ line after the body)
+      expect(txt).to include("└ ✓")
+      # The body shows multi-line
+      expect(txt).to include("line one")
+      expect(txt).to include("line two")
+    end
+
+    it "does not crash or render body for an empty-content tool row" do
+      out = replay([
+                     msg(role: "tool", content: "",
+                         tool_name: "shell", tool_call_id: "t3",
+                         metadata: { status: "success" },
+                         created_at: Time.now)
+                   ])
+      txt = plain(out)
+      expect(txt).to include("└ ✓")
+    end
+
+    it "replays a denied/failed multi-line tool with its body intact and ✗ glyph" do
+      out = replay([
+                     msg(role: "tool",
+                         content: "Error:\nbranch not found\ncheck your spelling",
+                         tool_name: "shell", tool_call_id: "t4",
+                         metadata: { status: "error", error_code: "exit_1" },
+                         created_at: Time.now)
+                   ])
+      txt = plain(out)
+      expect(txt).to include("✗ failed")
+      expect(txt).to include("branch not found")
+      expect(txt).to include("check your spelling")
+    end
+  end
+
   # The reusable public entry the agent-attach view switch replays through (it
   # clears the screen and replays the SELECTED agent's own session).
   # #print_session_history now delegates to it, so the parity specs above already

@@ -138,4 +138,117 @@ RSpec.describe Rubino::Tools::InlineToolAdapter do
       expect(adapter.peek_hint).to be_nil
     end
   end
+
+  describe "deferred visibility (after:)" do
+    context "without defer (after: nil, default)" do
+      it "is visible immediately and buffers chunks for attach view" do
+        expect(adapter.visible?).to be(true)
+        result = adapter.emit("chunk1\n")
+        expect(result).to be_nil # never streams to main timeline
+        expect(adapter.output_all).to eq("chunk1\n")
+      end
+
+      it "successive emits always return nil (buffer-only, no main timeline)" do
+        adapter.emit("a")
+        result = adapter.emit("b")
+        expect(result).to be_nil
+        expect(adapter.output_all).to eq("ab")
+      end
+    end
+
+    context "with defer (after: 0.1)" do
+      subject(:deferred) do
+        described_class.new(
+          id: "il_deferred",
+          tool_name: "shell",
+          command_hint: "💻 slow command",
+          after: 0.1
+        )
+      end
+
+      it "is NOT visible before the threshold" do
+        expect(deferred.visible?).to be(false)
+      end
+
+      it "emit returns nil during defer (chunks buffered silently)" do
+        result = deferred.emit("line1\n")
+        expect(result).to be_nil
+        expect(deferred.output_all).to eq("line1\n")
+      end
+
+      it "buffers all chunks during defer without emitting" do
+        deferred.emit("a")
+        result = deferred.emit("b")
+        expect(result).to be_nil
+        expect(deferred.output_all).to eq("ab")
+      end
+
+      it "becomes visible after the threshold; buffer accumulates silently" do
+        deferred.emit("line1\n")
+        deferred.emit("line2\n")
+
+        # Wait past the 0.1s threshold
+        sleep 0.15
+        expect(deferred.visible?).to be(true)
+
+        # emit ALWAYS returns nil — output is for attach view only
+        result = deferred.emit("line3\n")
+        expect(result).to be_nil
+        expect(deferred.output_all).to eq("line1\nline2\nline3\n")
+      end
+
+      it "emit always returns nil even after threshold (no main timeline streaming)" do
+        deferred.emit("a")
+        sleep 0.15
+        deferred.emit("b")
+        result = deferred.emit("c")
+        expect(result).to be_nil
+        expect(deferred.output_all).to eq("abc")
+      end
+
+      it "output_all retains the full buffer" do
+        deferred.emit("before\n")
+        sleep 0.15
+        deferred.emit("after\n")
+        expect(deferred.output_all).to eq("before\nafter\n")
+      end
+
+      it "finish! during defer leaves adapter NOT visible, excluded from live set" do
+        deferred.emit("work\n")
+        deferred.finish!
+        # live? is false, so even if threshold passes, not in inline_adapters
+        expect(deferred.live?).to be(false)
+        sleep 0.15
+        expect(deferred.visible?).to be(true) # threshold passed
+        # But background_tasks filters on live? && visible?, so it's excluded
+      end
+
+      it "finish! after threshold passes keeps visibility, stops liveness" do
+        deferred.emit("a")
+        sleep 0.15
+        deferred.emit("b")
+        deferred.finish!
+        expect(deferred.visible?).to be(true)
+        expect(deferred.live?).to be(false)
+      end
+    end
+
+    context "with after: 0 (explicit no defer)" do
+      subject(:zero_defer) do
+        described_class.new(
+          id: "il_zero",
+          tool_name: "shell",
+          command_hint: "cmd",
+          after: 0
+        )
+      end
+
+      it "is visible immediately (0 is not positive)" do
+        expect(zero_defer.visible?).to be(true)
+        result = zero_defer.emit("chunk\n")
+        expect(result).to be_nil # buffer-only, never streams to main timeline
+        expect(zero_defer.output_all).to eq("chunk\n")
+      end
+    end
+  end
 end

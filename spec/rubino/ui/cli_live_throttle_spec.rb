@@ -53,8 +53,8 @@ RSpec.describe Rubino::UI::CLI do
       with_harness do |clock, emits|
         clock[:t] = 1.0
         ui.send(:paint_live, "live tail") # first emit
-        clock[:t] += 0.001               # well within the interval
-        ui.send(:paint_live, "")          # clearing must emit immediately
+        clock[:t] += 0.001 # well within the interval
+        ui.send(:paint_live, "") # clearing must emit immediately
         expect(emits.last).to eq("")
       end
     end

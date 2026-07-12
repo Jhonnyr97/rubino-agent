@@ -99,6 +99,15 @@ module Rubino
         # stream_tool_call_recovery.rb prepends RubyLLM::StreamAccumulator at load
         # time (a side effect, not a Rubino constant) — loaded manually below.
         loader.ignore(File.expand_path("rubino/llm/stream_tool_call_recovery.rb", __dir__))
+        # tools/ subdirectories are purely organisational — the files inside define
+        # flat Rubino::Tools::XxxTool constants, NOT Rubino::Tools::Subdir::XxxTool.
+        # Eager-loading is handled by Tools::Registry#register_rubino_tools!.
+        tools_root = File.expand_path("rubino/tools", __dir__)
+        Dir.children(tools_root).each do |child|
+          next unless File.directory?(File.join(tools_root, child))
+
+          loader.ignore(File.expand_path("rubino/tools/#{child}", __dir__))
+        end
         loader
       end
     end

@@ -30,7 +30,6 @@ module Rubino
       param :content,   desc: "Full file content to write"
 
       def execute(file_path:, content: "")
-
         expanded = expand_workspace_path(file_path)
         # SECRET/credential writes (#446) are no longer HARD-refused here — they
         # are gated UPSTREAM by Security::ApprovalPolicy#decide (→ :ask): an

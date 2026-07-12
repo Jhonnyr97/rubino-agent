@@ -485,7 +485,7 @@ RSpec.describe Rubino::Agent::Loop do
     # ApprovalPolicy#decide gated the mid-stream tool, and the executor wrote a
     # completed audit row keyed on the real provider call_id — approval + audit
     # fire on the streaming path, not the unguarded direct-call fallback.
-    expect(approval_policy).to have_received(:decide).with(agent_tool, arguments: hash_including("v" => "a"))
+    expect(approval_policy).to have_received(:decide).with(agent_tool, arguments: hash_including(v: "a"))
     expect(audit_repo).to have_received(:record).with(hash_including(status: "completed", call_id: "c1"))
   end
 

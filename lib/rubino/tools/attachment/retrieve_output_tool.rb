@@ -16,14 +16,12 @@ module Rubino
     # tool-results dir, sanitizing the id the SAME way ToolExecutor#spill_full_output
     # sanitizes the call_id, so a `../` in the id can't traverse out.
     class RetrieveOutputTool < Base
-
-
       description "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
                   "use ONLY when a specific hidden line is needed; the compressed view already " \
                   "keeps the important content (errors/failures, summary, changes)."
 
       param :id, required: true,
-            desc: "The id printed in a compression pointer (retrieve_output id=…)."
+                 desc: "The id printed in a compression pointer (retrieve_output id=…)."
 
       # Gate on the SAME key the compression feature uses, so it disappears from
       # the registry whenever compression is off (the default).
@@ -32,7 +30,6 @@ module Rubino
       end
 
       def execute(id:)
-
         # Sanitize identically to ToolExecutor#spill_full_output so the id maps
         # to the same file, and a traversal attempt collapses to underscores.
         safe_id = id.to_s.gsub(/[^a-zA-Z0-9_.-]/, "_")

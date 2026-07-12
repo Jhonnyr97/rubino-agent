@@ -28,6 +28,10 @@ end
 
 require "tmpdir"
 require "rubino"
+# Eager-load all tools so spec files can reference tool constants directly
+# without depending on Zeitwerk autoloading (tools live in subdirectories
+# that Zeitwerk ignores).
+Rubino::Tools::Registry.register_defaults!
 require "ruby_llm"
 require "fileutils"
 require "securerandom"

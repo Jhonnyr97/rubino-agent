@@ -13,7 +13,6 @@ module Rubino
     # later; for v1, 100ms polling under the agent's tool-call latency is
     # invisible.
     class ShellTailTool < Base
-
       DEFAULT_TIMEOUT = 30
       MAX_TIMEOUT     = 300
       POLL_INTERVAL   = 0.1
@@ -25,13 +24,13 @@ module Rubino
                   "following; use shell_output for a one-shot read."
 
       param :run_id,  desc: "run_id from shell run_in_background:true"
-      param :timeout, type: :integer, desc: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})", required: false
+      param :timeout, type: :integer, desc: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})",
+                      required: false
 
       def execute(run_id:, timeout: DEFAULT_TIMEOUT)
         timeout = timeout.to_i.clamp(1, MAX_TIMEOUT)
 
-
-        registry = ShellRegistry.instance
+        registry = Tools::ShellRegistry.instance
         entry    = registry.find(run_id)
         return "Error: no background shell with run_id=#{run_id}" unless entry
 

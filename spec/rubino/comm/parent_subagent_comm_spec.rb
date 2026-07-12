@@ -68,8 +68,11 @@ RSpec.describe "parent <-> subagent communication" do
         tools: Rubino::Tools::Registry.all
       )
 
-      turn2_user = fake.calls[1][:messages].select { |m| m[:role] == "user" }.map { |m| m[:content] }
-      expect(turn2_user).to include(note)
+      # The steer is piggybacked on the last tool-result message — it reaches
+      # the model at the next turn boundary alongside the tool output.
+      turn2_msgs = fake.calls[1][:messages]
+      tool_msg = turn2_msgs.find { |m| m[:role] == "tool" }
+      expect(tool_msg[:content]).to include("[background notices] #{note}")
     end
 
     it "BackgroundTasks#steer pushes onto the entry's steer_queue" do
@@ -298,8 +301,11 @@ RSpec.describe "parent <-> subagent communication" do
       ).run(messages: [{ role: "user", content: "do the task" }],
             tools: Rubino::Tools::Registry.all)
 
-      turn2_user = fake.calls[1][:messages].select { |m| m[:role] == "user" }.map { |m| m[:content] }
-      expect(turn2_user).to include(note)
+      # The steer is piggybacked on the last tool-result message — it reaches
+      # the model at the next turn boundary alongside the tool output.
+      turn2_msgs = fake.calls[1][:messages]
+      tool_msg = turn2_msgs.find { |m| m[:role] == "tool" }
+      expect(tool_msg[:content]).to include("[background notices] #{note}")
     end
   end
 
