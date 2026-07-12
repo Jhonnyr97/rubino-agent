@@ -19,8 +19,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # scripting (the fork's behaviour itself is covered in background_review_job_spec).
   describe "draining post-turn jobs before a headless exit (#358)" do
     let(:config) do
-      mem    = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => true, "auto_extract_interval" => 1)
-      skills = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => false)
+      mem    = Rubino::Config::Defaults.to_hash["memory"].merge("auto_extract" => false)
+      skills = Rubino::Config::Defaults.to_hash["skills"].merge("auto_distill" => true, "auto_distill_interval" => 1)
       jobs   = { "mode" => "inline", "max_attempts" => 3, "poll_interval" => 1, "retry_backoff_seconds" => 0 }
       test_configuration("memory" => mem, "skills" => skills, "jobs" => jobs)
     end

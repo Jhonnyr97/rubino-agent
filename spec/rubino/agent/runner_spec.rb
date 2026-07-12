@@ -343,13 +343,13 @@ RSpec.describe Rubino::Agent::Runner do
       runner = described_class.new(session_id: parent[:id], model_override: "gpt-4o", ui: null_ui)
 
       cfg = runner.instance_variable_get(:@config)
-      allow(cfg).to receive_messages(memory_auto_extract?: true, skills_auto_distill?: false)
+      allow(cfg).to receive_messages(memory_auto_extract?: false, skills_auto_distill?: true)
 
       # Headless/one-shot exits after this, so a detached job would never drain:
-      # the warm-prefix review fork (memory + skills) runs INLINE & synchronously.
+      # the warm-prefix review fork (skills only) runs INLINE & synchronously.
       review = instance_double(Rubino::Jobs::Handlers::BackgroundReviewJob)
       allow(Rubino::Jobs::Handlers::BackgroundReviewJob).to receive(:new).and_return(review)
-      expect(review).to receive(:perform).with(session_id: parent[:id])
+      expect(review).to receive(:perform).with(hash_including(session_id: parent[:id], surfaces: ["skill"]))
 
       runner.end_session!
     end
@@ -360,7 +360,7 @@ RSpec.describe Rubino::Agent::Runner do
                                    ui: null_ui, interactive: true)
 
       cfg = runner.instance_variable_get(:@config)
-      allow(cfg).to receive_messages(memory_auto_extract?: true, skills_auto_distill?: false)
+      allow(cfg).to receive_messages(memory_auto_extract?: false, skills_auto_distill?: true)
 
       # Interactive: the process stays alive, so the fork must NOT run inline —
       # it is enqueued detached (drain_inline: false) for the next runner's
@@ -369,7 +369,7 @@ RSpec.describe Rubino::Agent::Runner do
       queue = instance_double(Rubino::Jobs::Queue)
       allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
       expect(queue).to receive(:enqueue)
-        .with("BackgroundReviewJob", { session_id: parent[:id] }, drain_inline: false)
+        .with("BackgroundReviewJob", { session_id: parent[:id], surfaces: ["skill"] }, drain_inline: false)
 
       runner.end_session!(handoff: true)
     end

@@ -277,6 +277,24 @@ module Rubino
       Thread.current[:rubino_aux_cancel_token] = prev
     end
 
+    # The source session id that MemoryTool reads to attribute created facts to
+    # the session whose turn triggered the extraction. Bound by the post-turn
+    # memory sync daemon thread (Memory::Sync) around the review turn; nil on
+    # every normal run (facts from a direct user prompt are unattributed).
+    def memory_source_session_id
+      Thread.current[:rubino_memory_source_session_id]
+    end
+
+    # Binds +session_id+ as the memory source session for the duration of the
+    # block. Thread-local so MemoryTool reaches it with zero signature churn.
+    def with_memory_source_session_id(session_id)
+      prev = Thread.current[:rubino_memory_source_session_id]
+      Thread.current[:rubino_memory_source_session_id] = session_id
+      yield
+    ensure
+      Thread.current[:rubino_memory_source_session_id] = prev
+    end
+
     # True while a HEADLESS one-shot run (`rubino prompt`/-q) is executing on
     # THIS thread. Bound by ChatCommand#run_oneshot via #with_headless so tools
     # that behave differently with no live REPL can tell — today only TaskTool,
