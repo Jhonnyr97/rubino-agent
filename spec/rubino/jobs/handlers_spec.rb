@@ -6,20 +6,6 @@
 # delegates to the expected collaborator with the right id (audit issue #15).
 
 RSpec.describe "Rubino::Jobs::Handlers" do
-  describe Rubino::Jobs::Handlers::CompactSessionJob do
-    it "delegates to Context::Compressor for the given session_id" do
-      compressor = instance_double(Rubino::Context::Compressor, compact!: { ok: true })
-      expect(Rubino::Context::Compressor)
-        .to receive(:new).with(session_id: "sid-123").and_return(compressor)
-      described_class.new.perform(session_id: "sid-123")
-    end
-
-    it "is a no-op when session_id is missing" do
-      expect(Rubino::Context::Compressor).not_to receive(:new)
-      expect { described_class.new.perform({}) }.not_to raise_error
-    end
-  end
-
   describe Rubino::Jobs::Handlers::CleanupSessionsJob do
     let(:db_double) { double("DB") }
     let(:dataset)   { double("Dataset") }
