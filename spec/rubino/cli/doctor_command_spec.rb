@@ -507,12 +507,14 @@ RSpec.describe Rubino::CLI::DoctorCommand do
       expect(successes).to include(a_string_including("html supported"))
     end
 
-    it "warns (never fails) for a format whose optional gem is absent" do
+    it "warns (never fails) for a format whose optional gem is absent, naming the install command" do
       allow(Rubino::Documents::Registry).to receive(:capabilities)
         .and_return("pdf" => false)
       doctor.send(:check_document_converters)
       warning = ui.messages.find { |m| m[:level] == :warning }
       expect(warning[:message]).to include("pdf not available")
+      expect(warning[:message]).to include("`gem install pdf-reader`")
+      expect(warning[:message]).to include("`rubino setup`")
       expect(ui.messages.none? { |m| m[:level] == :error }).to be(true)
     end
   end

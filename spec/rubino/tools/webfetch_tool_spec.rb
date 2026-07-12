@@ -43,7 +43,7 @@ RSpec.describe Rubino::Tools::WebFetchTool do
   end
 
   describe "binary content-type refusal" do
-    %w[application/pdf image/png image/jpeg audio/mpeg video/mp4 application/zip application/octet-stream
+    %w[image/png image/jpeg audio/mpeg video/mp4 application/zip application/octet-stream
        font/woff2].each do |ct|
       it "refuses #{ct}" do
         stub_http(fake_success(body: "binary\xFFstuff", content_type: ct))
@@ -321,14 +321,128 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       expect(result).to start_with("Refused for safety:")
       expect(result).to match(/scheme/i)
     end
+  end
 
-    it "re-validates each redirect hop and blocks one that lands on a private IP (strict mode)" do
-      # With private access OFF, a redirect to a private IP must still be refused.
+  describe "document conversion (PDF/DOCX/XLSX/PPTX)" do
+    let(:fixtures) { documents_fixtures_dir }
+
+    def stub_http_for_doc(body:, content_type:, host: "example.com")
+      stub_http(fake_success(body: body, content_type: content_type), host: host)
+      # Stub document spill so it writes to a temp dir we control.
+      allow(Rubino).to receive(:home_path).and_return(Dir.tmpdir)
+    end
+
+    it "converts a PDF and returns extracted Markdown text" do
+      pdf_path = File.join(fixtures, "sample.pdf")
+      pdf_bytes = File.binread(pdf_path)
+      stub_http_for_doc(body: pdf_bytes, content_type: "application/pdf")
+      result = tool.call("url" => "https://example.com/report.pdf")
+      expect(result).to include("Quarterly Report")
+      expect(result).to include("Revenue grew this quarter")
+      expect(result).to include("--BEGIN ")
+      expect(result).to include("--END ")
+      expect(result).not_to start_with("Error:")
+    end
+
+    it "returns an actionable hint when the PDF converter is absent" do
+      pdf_path = File.join(fixtures, "sample.pdf")
+      pdf_bytes = File.binread(pdf_path)
+      stub_http_for_doc(body: pdf_bytes, content_type: "application/pdf")
+      # Simulate pdf-reader not installed by stubbing Registry.for for pdf mime.
+      allow(Rubino::Documents::Registry).to receive(:for)
+        .with(mime: "application/pdf", path: anything).and_return(nil)
+      result = tool.call("url" => "https://example.com/report.pdf")
+      expect(result).to include("no in-process PDF converter")
+      expect(result).to include("gem install pdf-reader")
+      expect(result).to include("pdftotext")
+    end
+
+    it "still refuses image/png (opaque binary unchanged)" do
+      stub_http(fake_success(body: "\x89PNG\r\n\x1a\n", content_type: "image/png"))
+      result = tool.call("url" => "https://example.com/photo.png")
+      expect(result).to start_with("Error: refusing to fetch binary content as text")
+      expect(result).to include("image/png")
+    end
+
+    it "refuses a document over the size cap with a clean message" do
+      max = Rubino::Attachments::Policy.max_file_bytes
+      big = "x" * (max + 1)
+      stub_http(fake_success(body: big, content_type: "application/pdf"))
+      result = tool.call("url" => "https://example.com/huge.pdf")
+      expect(result).to start_with("Error: fetched")
+      expect(result).to include("exceeds the #{max} bytes")
+      expect(result).to include("read_attachment")
+    end
+  end
+
+  describe "HEAD method (method:'head')" do
+    let(:head_response) do
+      Class.new do
+        def initialize(code, message, headers)
+          @code = code
+          @message = message
+          @headers = headers
+        end
+        attr_reader :code, :message
+
+        def [](key) = @headers[key.downcase]
+        def kind_of?(klass) = klass == Net::HTTPRedirection ? false : true
+        def is_a?(klass) = kind_of?(klass)
+      end
+    end
+
+    it "returns status + content-type + content-length for a 200 PDF" do
+      resp = head_response.new("200", "OK",
+                               { "content-type" => "application/pdf", "content-length" => "12345" })
+      stub_http(resp)
+      result = tool.call("url" => "https://example.com/doc.pdf", "method" => "head")
+      expect(result).to include("HEAD https://example.com/doc.pdf -> 200 OK")
+      expect(result).to include("Content-Type: application/pdf")
+      expect(result).to include("Content-Length: 12345")
+    end
+
+    it "returns status for a 404" do
+      resp = head_response.new("404", "Not Found",
+                               { "content-type" => "text/html" })
+      stub_http(resp)
+      result = tool.call("url" => "https://example.com/missing", "method" => "head")
+      expect(result).to include("HEAD https://example.com/missing -> 404 Not Found")
+    end
+
+    it "follows a redirect chain and reports the final URL" do
+      redirect = Class.new(Net::HTTPRedirection) do
+        def initialize = super("1.1", "301", "Moved Permanently")
+        def [](key) = (key.downcase == "location") ? "https://cdn.example/real.pdf" : nil
+      end.new
+
+      final = head_response.new("200", "OK",
+                                { "content-type" => "application/pdf", "content-length" => "9999" })
+
+      # First call: redirect; second call: 200
+      http = instance_double(Net::HTTP)
+      %i[use_ssl= ipaddr= open_timeout= read_timeout= instance_variable_set].each do |m|
+        allow(http).to receive(m)
+      end
+      allow(http).to receive(:use_ssl?).and_return(true)
+      allow(http).to receive(:request).and_return(redirect, final)
+      allow(Net::HTTP).to receive(:new).and_return(http)
+
+      allow(Rubino::Security::UrlSafety).to receive(:validate!) do |url|
+        { uri: URI.parse(url), host: "example.com", port: 443, addresses: ["93.184.216.34"] }
+      end
+
+      result = tool.call("url" => "https://example.com/redirect", "method" => "head")
+      expect(result).to include("HEAD https://cdn.example/real.pdf -> 200 OK")
+      expect(result).to include("Content-Length: 9999")
+    end
+  end
+
+  describe "SSRF redirect guard (GET, strict mode)" do
+    it "re-validates each redirect hop and blocks one that lands on a private IP" do
       allow(Rubino.configuration).to receive(:dig).and_call_original
       allow(Rubino.configuration).to receive(:dig)
         .with("tools", "webfetch", "allow_private_network").and_return(false)
 
-      # First hop: a public host that 302-redirects to a private address.
       redirect = Class.new(Net::HTTPRedirection) do
         def initialize = super("1.1", "302", "Found")
         def [](key) = (key.downcase == "location" ? "http://192.168.1.1/" : nil)

@@ -76,6 +76,10 @@ module Rubino
         # (interactive only, idempotent, recommended). See maybe_offer_compression.
         maybe_offer_compression(ui)
 
+        # Offer to install pdf-reader for in-process PDF/DOCX/XLSX/PPTX conversion
+        # (interactive only, idempotent). See maybe_offer_document_converters.
+        maybe_offer_document_converters(ui)
+
         ui.blank_line
         # Tell the truth about the end state (#31). A green "Setup complete!" is
         # only honest when a usable credential is actually configured — printing
@@ -124,6 +128,32 @@ module Rubino
       def maybe_offer_compression(ui)
         maybe_offer_log_compression(ui)
         maybe_offer_code_languages(ui)
+      end
+
+      # Interactive offer to install pdf-reader for in-process document conversion.
+      # TTY-only, nag-guard skips when already available, ask before installing.
+      def maybe_offer_document_converters(ui)
+        return unless interactive?
+        return if Rubino::Documents::Registry.for(mime: "application/pdf", path: "_.pdf")
+
+        ui.blank_line
+        ui.info("In-process document conversion")
+        ui.status("  Read PDFs & Office docs inline (web_fetch and read_attachment")
+        ui.status("  convert them to Markdown without shelling out).")
+        unless prompt_enable?("Install pdf-reader to enable?")
+          ui.status("Skipped — PDF conversion stays inert until `gem install pdf-reader`.")
+          return
+        end
+
+        if system("gem", "install", "pdf-reader")
+          ui.success("pdf-reader installed.")
+        else
+          ui.status("Install failed — PDF conversion stays inert until `gem install pdf-reader`.")
+        end
+      rescue StandardError => e
+        Rubino.logger.warn(event: "setup.document_converters_offer_failed",
+                           error: e.class.name, message: e.message)
+        nil
       end
 
       def maybe_run_onboarding(ui)

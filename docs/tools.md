@@ -161,11 +161,11 @@ Parameters: patch, base_path
 
 ### web_fetch
 
-Fetch web page content and return as text.
+Fetch content from a URL and return it as text. Useful for reading documentation, API references, and web pages. Convertible documents (PDF, DOCX, XLSX, PPTX) are fetched, spilled to disk, and converted to Markdown in-process via `Rubino::Documents` (the same engine as `read_attachment`); opaque binaries (images, audio, video, archives) are still refused.
 
 ```
 Risk: low
-Parameters: url, format (text|html)
+Parameters: url, format (text|html), method (get|head)
 ```
 
 `format: "text"` (default) runs a readability-style **main-content extraction**
@@ -188,6 +188,31 @@ Two guarantees so capability is never lost:
   raw escape hatch.
 - **Raw escape hatch** — `format: "html"` returns the full raw HTML **verbatim**,
   completely unprocessed, for when the model wants the original page.
+
+#### Document conversion
+
+When the response Content-Type is a convertible office format, `web_fetch` spills the raw bytes to disk and converts them to Markdown in-process:
+
+| Format | Content-Type | Optional gem |
+|---|---|---|
+| PDF | `application/pdf` | `pdf-reader` |
+| DOCX | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `docx` |
+| XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `roo` |
+| PPTX | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `ruby_powerpoint` |
+
+The converted Markdown is framed as untrusted user data (same nonce-delimited preamble as `read_attachment`). When a format's optional gem isn't installed, the tool returns an actionable hint telling the user to run `rubino setup` (which interactively offers to install `pdf-reader`) or `gem install <name>`. `rubino doctor` reports which document formats are available in-process and names the exact gem for each missing one.
+
+Large converted documents (over the inline text budget, ~100 KB) are written to a temp file with a pointer to read/search them with `read`/`grep`. Documents that exceed the 20 MB conversion cap are refused with a hint to narrow them first.
+
+#### HEAD requests
+
+`method: "head"` runs a HEAD request through the same SSRF-safe path as GET: the URL is validated against the SSRF guard, the connection is IP-pinned, and redirects are followed (up to 5 hops). No body is fetched. Returns a compact status line:
+
+```
+HEAD https://example.com -> 200 OK | Content-Type: text/html | Content-Length: 1234
+```
+
+Use HEAD for lightweight link-checking or to inspect Content-Type / Content-Length without downloading the resource.
 
 ### web_search
 

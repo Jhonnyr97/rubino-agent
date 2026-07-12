@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`web_fetch` converts documents to Markdown instead of refusing them.** PDF,
+  DOCX, XLSX, and PPTX fetched via `web_fetch` are now spilled to disk and
+  converted to Markdown in-process via `Rubino::Documents` (the same engine as
+  `read_attachment`). Opaque binaries (images, audio, video, archives) are still
+  refused. Each format needs an optional gem (`pdf-reader`, `docx`, `roo`,
+  `ruby_powerpoint`); when a gem is missing, `web_fetch` returns an actionable
+  hint instead of failing silently.
+- **`web_fetch` gains a `method` parameter.** `method: "get"` (default) fetches
+  the body; `method: "head"` does a SSRF-safe link-check returning status,
+  Content-Type, and Content-Length — no body fetch.
+- **`rubino setup` offers to install `pdf-reader`.** The interactive setup now
+  asks before installing the optional gem for PDF/DOCX/XLSX/PPTX in-process
+  conversion.
+- **`rubino doctor` names the exact gem for missing document formats.** When a
+  document converter's optional gem isn't installed, doctor reports the format
+  as unavailable and tells you which gem to install (e.g. "run `gem install roo`
+  (or `rubino setup`) to enable").
 - **Delete skills without leaving the tool.** The `skill` tool gains
   `action: "delete"`, the in-process counterpart to create/edit/patch/write_file:
   it removes a home-authored skill (dropping its provenance-ledger entry when it

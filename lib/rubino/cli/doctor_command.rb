@@ -476,6 +476,13 @@ module Rubino
       # always green; a gem-backed format whose optional gem isn't installed is
       # a warning (never a fail), so a healthy default install never shows red
       # for a capability it can extend by installing an optional gem.
+      DOCTOR_DOC_GEMS = {
+        "pdf" => "pdf-reader",
+        "docx" => "docx",
+        "xlsx" => "roo",
+        "pptx" => "ruby_powerpoint"
+      }.freeze
+
       def check_document_converters
         ui = Rubino.ui
         ui.blank_line
@@ -485,7 +492,13 @@ module Rubino
           if available
             ui.success("#{format} supported")
           else
-            ui.warning("#{format} not available (install its optional gem to enable)")
+            gem_name = DOCTOR_DOC_GEMS[format]
+            hint = if gem_name
+                     "run `gem install #{gem_name}` (or `rubino setup`) to enable"
+                   else
+                     "install its optional gem to enable"
+                   end
+            ui.warning("#{format} not available — #{hint}")
           end
         end
       rescue StandardError => e

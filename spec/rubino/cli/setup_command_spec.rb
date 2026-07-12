@@ -372,4 +372,97 @@ RSpec.describe Rubino::CLI::SetupCommand do
       expect(languages).to eq(%w[ruby])
     end
   end
+
+  # Slice 1b: interactive `setup` offers to install pdf-reader for in-process
+  # document conversion. TTY-only, nag-guard, ask before install.
+  describe "document converter offer (pdf-reader)" do
+    before do
+      allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(true)
+    end
+
+    def pdf_converter_available?
+      Rubino::Documents::Registry.for(mime: "application/pdf", path: "_.pdf")
+    end
+
+    it "offers to install when pdf-reader is absent (TTY)" do
+      # Pre-enable compression + customize languages so neither prompts.
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      allow($stdin).to receive(:gets).and_return("\n") # bare Enter = yes
+      cmd = described_class.new
+      # pdf-reader not available → offer fires
+      allow(Rubino::Documents::Registry).to receive(:for)
+        .with(mime: "application/pdf", path: "_.pdf").and_return(nil)
+      allow(cmd).to receive(:system).with("gem", "install", "pdf-reader").and_return(true)
+      cmd.execute
+      expect(cmd).to have_received(:system).with("gem", "install", "pdf-reader")
+      expect(ui.messages).to include([:success, /pdf-reader installed/i])
+    end
+
+    it "skips when pdf-reader is already available (nag-guard)" do
+      # Pre-enable compression so the log-offer step doesn't prompt, and
+      # customize code languages so the languages picker skips too.
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      cmd = described_class.new
+      allow(Rubino::Documents::Registry).to receive(:for)
+        .with(mime: "application/pdf", path: "_.pdf").and_return(double("converter"))
+      expect(cmd).not_to receive(:system).with("gem", "install", anything)
+      # Log-offer skipped (compression on); languages skipped (customized);
+      # doc-offer skipped (pdf available); no prompt needed.
+      expect($stdin).not_to receive(:gets)
+      cmd.execute
+    end
+
+    it "skips on non-interactive (headless) path" do
+      allow_any_instance_of(described_class).to receive(:interactive?).and_return(false)
+      expect($stdin).not_to receive(:gets)
+      cmd = described_class.new
+      expect(cmd).not_to receive(:system).with("gem", "install", anything)
+      cmd.execute
+    end
+
+    it "degrades calmly on explicit decline" do
+      # Pre-enable compression + customize languages so neither prompts.
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      allow($stdin).to receive(:gets).and_return("n\n")
+      cmd = described_class.new
+      allow(Rubino::Documents::Registry).to receive(:for)
+        .with(mime: "application/pdf", path: "_.pdf").and_return(nil)
+      expect(cmd).not_to receive(:system).with("gem", "install", anything)
+      cmd.execute
+      expect(ui.messages).to include([:status, /stays inert/i])
+    end
+
+    it "degrades calmly when gem install fails" do
+      # Pre-enable compression + customize languages so neither prompts.
+      Rubino::Config::Loader.new.create_default_config!
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.enabled", true)
+      Rubino::Config::Writer.new(config_path: Rubino::Config::Loader.new.config_path)
+                            .set("tool_output_compression.code.languages", %w[ruby python])
+      Rubino.reload_configuration!
+      allow($stdin).to receive(:gets).and_return("\n")
+      cmd = described_class.new
+      allow(Rubino::Documents::Registry).to receive(:for)
+        .with(mime: "application/pdf", path: "_.pdf").and_return(nil)
+      allow(cmd).to receive(:system).with("gem", "install", "pdf-reader").and_return(false)
+      expect { cmd.execute }.not_to raise_error
+      expect(ui.messages).to include([:status, /stays inert/i])
+    end
+  end
 end
