@@ -43,6 +43,17 @@ module Rubino
         return present?(ENV.fetch("OPENAI_API_KEY", nil))    if prov_cfg["openai_compatible"] == true
         return present?(ENV.fetch("ANTHROPIC_API_KEY", nil)) if prov_cfg["anthropic_compatible"] == true
 
+        # OAuth env vars always count as usable — they outrank any static
+        # ANTHROPIC_API_KEY at call time (hermes precedence).
+        return true if present?(ENV["ANTHROPIC_TOKEN"]) || present?(ENV["CLAUDE_CODE_OAUTH_TOKEN"])
+
+        # Borrowed OAuth credentials — only count when no static API key is
+        # set (the seed gate: setting ANTHROPIC_API_KEY opts out of the
+        # borrowed Claude Code store).
+        unless present?(ENV["ANTHROPIC_API_KEY"])
+          return true if present?(CredentialSources.resolve(provider)&.dig(:api_key))
+        end
+
         # The native ENV var only counts as "usable" when the adapter can
         # actually reach the provider: a natively-wired provider (openai /
         # anthropic / google / bedrock) or one ruby_llm supports out of the box

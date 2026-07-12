@@ -8,8 +8,9 @@ RSpec.describe Rubino::LLM::CredentialCheck do
   end
 
   def touched_env
-    %w[OPENAI_API_KEY ANTHROPIC_API_KEY MINIMAX_API_KEY GEMINI_API_KEY
-       GOOGLE_API_KEY DEEPSEEK_API_KEY MISTRAL_API_KEY QWEN_API_KEY]
+    %w[OPENAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_TOKEN CLAUDE_CODE_OAUTH_TOKEN
+       MINIMAX_API_KEY GEMINI_API_KEY GOOGLE_API_KEY DEEPSEEK_API_KEY
+       MISTRAL_API_KEY QWEN_API_KEY]
   end
 
   around do |ex|
@@ -187,6 +188,46 @@ RSpec.describe Rubino::LLM::CredentialCheck do
       msg = described_class.missing_key_message(c)
       expect(msg).to include("to create them")
       expect(msg).not_to include("to create it")
+    end
+  end
+
+  # ── Anthropic credential precedence (hermes parity, FIX F) ───────────
+  describe "Anthropic credential precedence" do
+    let(:anthropic_cfg) do
+      config("model" => { "default" => "claude-sonnet-4-5", "provider" => "anthropic" })
+    end
+
+    it "reports usable via static key when ANTHROPIC_API_KEY is set and no OAuth env" do
+      ENV["ANTHROPIC_API_KEY"] = "sk-ant-api-key"
+      expect(described_class.usable?(anthropic_cfg)).to be true
+    end
+
+    it "reports usable via OAuth when ANTHROPIC_TOKEN is set (outranks static key)" do
+      ENV["ANTHROPIC_TOKEN"] = "sk-ant-oat-env"
+      expect(described_class.usable?(anthropic_cfg)).to be true
+    end
+
+    it "reports usable via OAuth when CLAUDE_CODE_OAUTH_TOKEN is set" do
+      ENV["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-env"
+      expect(described_class.usable?(anthropic_cfg)).to be true
+    end
+
+    it "reports NOT usable when no credential is available" do
+      allow(Rubino::LLM::CredentialSources).to receive(:resolve).with("anthropic").and_return(nil)
+      expect(described_class.usable?(anthropic_cfg)).to be false
+    end
+
+    it "reports usable via borrowed OAuth when no static key and no OAuth env are set" do
+      allow(Rubino::LLM::CredentialSources).to receive(:resolve).with("anthropic")
+        .and_return(api_key: "sk-ant-oat-borrowed", source: "anthropic_oauth")
+      expect(described_class.usable?(anthropic_cfg)).to be true
+    end
+
+    it "reports usable via static key (NOT OAuth) when both ANTHROPIC_API_KEY and borrowed OAuth exist" do
+      ENV["ANTHROPIC_API_KEY"] = "sk-ant-api-key"
+      allow(Rubino::LLM::CredentialSources).to receive(:resolve).with("anthropic")
+        .and_return(api_key: "sk-ant-oat-borrowed", source: "anthropic_oauth")
+      expect(described_class.usable?(anthropic_cfg)).to be true
     end
   end
 end

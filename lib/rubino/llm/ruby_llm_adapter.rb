@@ -608,7 +608,27 @@ module Rubino
         end
 
         c.openai_api_key    = ENV["OPENAI_API_KEY"]    if ENV["OPENAI_API_KEY"]
-        c.anthropic_api_key = ENV["ANTHROPIC_API_KEY"] if ENV["ANTHROPIC_API_KEY"]
+
+        # Anthropic credential resolution — replicate hermes precedence:
+        #   1. ANTHROPIC_TOKEN              → OAuth (bearer)
+        #   2. CLAUDE_CODE_OAUTH_TOKEN      → OAuth (bearer)
+        #   3. Neither OAuth env set + ANTHROPIC_API_KEY set → static key wins
+        #      (x-api-key); do NOT consult the borrowed store (seed gate).
+        #   4. Else → borrowed store CredentialSources.resolve("anthropic")
+        oauth_env_token = ENV["ANTHROPIC_TOKEN"] || ENV["CLAUDE_CODE_OAUTH_TOKEN"]
+        if oauth_env_token && !oauth_env_token.strip.empty?
+          @oauth_token = { api_key: oauth_env_token.strip, source: "env_oauth", _env_oauth: true }
+          c.anthropic_api_key = oauth_env_token.strip
+        elsif ENV["ANTHROPIC_API_KEY"] && !ENV["ANTHROPIC_API_KEY"].strip.empty?
+          # Static key wins — do not consult the borrowed store.
+          c.anthropic_api_key = ENV["ANTHROPIC_API_KEY"]
+          @oauth_token = nil
+        else
+          # No static key, try the borrowed Claude Code OAuth store.
+          @oauth_token = CredentialSources.resolve("anthropic")
+          c.anthropic_api_key = @oauth_token[:api_key] if @oauth_token
+        end
+
         c.gemini_api_key    = ENV["GEMINI_API_KEY"]    if ENV["GEMINI_API_KEY"]
 
         # Bedrock IAM credentials (Mode 2 / 3)
@@ -805,7 +825,35 @@ module Rubino
                                         error_marker: anthropic_generation_path?,
                                         production: true)
         install_cache_middleware(chat)
+        install_oauth_middleware(chat)
         chat
+      end
+
+      # Insert the OAuth bearer middleware on this chat's Anthropic Faraday
+      # connection when an OAuth token was resolved. Installed ONLY when the
+      # chosen transport is OAuth AND the token is OAuth-shaped (NOT
+      # sk-ant-api*). A sk-ant-api* value travels via plain x-api-key.
+      # Idempotent — guarded like the cache middleware below so
+      # double-insertion is never a concern.
+      def install_oauth_middleware(chat)
+        return unless @oauth_token
+
+        token = @oauth_token[:api_key].to_s
+        return if token.start_with?("sk-ant-api")
+
+        faraday = chat_faraday(chat)
+        return unless faraday
+
+        builder = faraday.builder
+        return if builder.handlers.any? { |h| h.klass == OAuthBearerMiddleware }
+
+        builder.insert_before(::Faraday::Request::Json, OAuthBearerMiddleware, token)
+      rescue StandardError
+        # OAuth header correction is a correctness requirement for borrowed
+        # tokens, but a Faraday internals shift must never break the request path
+        # entirely — the request will still go out (with x-api-key, which will
+        # 401), but it won't crash rubino.
+        nil
       end
 
       # Insert the conversation-tail prompt-cache breakpoint middleware on this
