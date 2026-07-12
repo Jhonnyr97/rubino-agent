@@ -13,7 +13,8 @@ module Rubino
     module Registry
       BUILTINS = {
         github: "Rubino::OAuth::Provider::Github",
-        google: "Rubino::OAuth::Provider::Google"
+        google: "Rubino::OAuth::Provider::Google",
+        minimax: "Rubino::OAuth::Provider::Minimax"
       }.freeze
 
       class << self
