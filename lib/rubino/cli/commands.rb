@@ -558,6 +558,9 @@ module Rubino
       desc "skills SUBCOMMAND", "Manage skills (list, enable, install, update)"
       subcommand "skills", SkillsCommand
 
+      desc "auth SUBCOMMAND", "Manage OAuth connections (login, logout, status)"
+      subcommand "auth", AuthCommand
+
       desc "tools", "List available tools"
       def tools
         ToolsCommand.new.execute

@@ -93,11 +93,13 @@ module Rubino
         router.get    "/v1/tasks",                   to: API::Operations::Tasks::IndexOperation
         router.get    "/v1/tasks/:id",               to: API::Operations::Tasks::ShowOperation
         router.post   "/v1/tasks/:id/stop",          to: API::Operations::Tasks::StopOperation
-        router.get    "/v1/oauth/providers",                  to: API::Operations::OAuth::Providers::ListOperation
-        router.post   "/v1/oauth/providers/:id/connect",      to: API::Operations::OAuth::Providers::ConnectOperation
-        router.post   "/v1/oauth/providers/:id/callback",     to: API::Operations::OAuth::Providers::CallbackOperation
-        router.get    "/v1/oauth/connections",                to: API::Operations::OAuth::Connections::ListOperation
-        router.delete "/v1/oauth/connections/:id",            to: API::Operations::OAuth::Connections::DisconnectOperation
+        router.get    "/v1/oauth/providers",                         to: API::Operations::OAuth::Providers::ListOperation
+        router.post   "/v1/oauth/providers/:id/connect",             to: API::Operations::OAuth::Providers::ConnectOperation
+        router.post   "/v1/oauth/providers/:id/callback",            to: API::Operations::OAuth::Providers::CallbackOperation
+        router.post   "/v1/oauth/providers/:id/device/connect",      to: API::Operations::OAuth::Providers::DeviceConnectOperation
+        router.post   "/v1/oauth/providers/:id/device/callback",     to: API::Operations::OAuth::Providers::DeviceCallbackOperation
+        router.get    "/v1/oauth/connections",                       to: API::Operations::OAuth::Connections::ListOperation
+        router.delete "/v1/oauth/connections/:id",                   to: API::Operations::OAuth::Connections::DisconnectOperation
 
         ::Rubino::OAuth::Registry.load_from_config!
         Jobs::Scheduler.instance.load_all!

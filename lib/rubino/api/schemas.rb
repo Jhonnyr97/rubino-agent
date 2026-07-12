@@ -98,6 +98,16 @@ module Rubino
         required(:code_verifier).filled(:string)
         required(:redirect_uri).filled(:string)
       end
+
+      # POST /v1/oauth/providers/:id/device/connect
+      DeviceConnectProvider = Dry::Schema.JSON do
+        optional(:scopes).array(:string)
+      end
+
+      # POST /v1/oauth/providers/:id/device/callback
+      DeviceCallbackProvider = Dry::Schema.JSON do
+        required(:device_code).filled(:string)
+      end
     end
   end
 end

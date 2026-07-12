@@ -42,6 +42,13 @@ module Rubino
         []
       end
 
+      # True when the provider supports the browser-based authorization code
+      # + PKCE flow.  Providers that are device-code-only (e.g. MiniMax)
+      # override this to false.
+      def self.browser_flow?
+        true
+      end
+
       def initialize(client_id:, client_secret:, scopes: nil, metadata: {})
         @client_id = client_id
         @client_secret = client_secret

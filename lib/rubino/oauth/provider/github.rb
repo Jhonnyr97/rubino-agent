@@ -8,17 +8,36 @@ module Rubino
     class Provider
       # GitHub OAuth 2.0 provider.
       #
-      # Scopes are sent space-separated (GitHub's expected delimiter, inherited
-      # from {Provider#scope_separator}). When the authenticated user has set
-      # their primary email private, +/user+ returns +email: nil+; in that case
-      # we fall back to +/user/emails+ and pick the primary entry.
+      # Supports both Authorization Code + PKCE (default) and Device
+      # Authorization Grant (RFC 8628).  Scopes are sent space-separated
+      # (GitHub's expected delimiter, inherited from
+      # {Provider#scope_separator}). When the authenticated user has set
+      # their primary email private, +/user+ returns +email: nil+; in that
+      # case we fall back to +/user/emails+ and pick the primary entry.
       class Github < Provider
+        include DeviceCodeFlow
         def self.id            = :github
         def self.display_name  = "GitHub"
         def self.site          = "https://github.com"
         def self.authorize_path = "/login/oauth/authorize"
         def self.token_path = "/login/oauth/access_token"
         def self.default_scopes = %w[repo user:email]
+
+        # Device Authorization Grant (RFC 8628) endpoints.
+        # Token exchange uses the same endpoint as the auth code flow.
+        # https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow
+        def self.device_authorization_endpoint
+          "https://github.com/login/device/code"
+        end
+
+        # The device token exchange POSTs to the same access_token endpoint
+        # as the authorization code flow, but with a device_code grant_type.
+        # Override because the base class token_path is relative (the
+        # DeviceCodeFlow makes direct Faraday calls, not through the oauth2
+        # client, so it needs a full URL).
+        def self.device_token_endpoint
+          "#{site}#{token_path}"
+        end
 
         API_BASE = "https://api.github.com"
 
