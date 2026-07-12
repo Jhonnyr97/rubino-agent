@@ -151,7 +151,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
     it "passes the arguments to the approval policy so patterns can match (#17)" do
       allow(policy).to receive(:decide).and_return(:allow)
-      expect(policy).to receive(:decide).with(tool, arguments: { "x" => 1 })
+      expect(policy).to receive(:decide).with(tool, arguments: { x: 1 })
       executor.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "c4")
     end
 
@@ -786,7 +786,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
 
     it "registers an inline adapter when the tool class declares live_card" do
-      live_card_tool_class.live_card(->(args) { "🔨 #{args[:target]}" })
+      live_card_tool_class.live_card(->(_t) { "🔨 building" })
       allow(registry).to receive(:find).with("build_tool").and_return(live_tool)
 
       registry_instance = Rubino::Tools::BackgroundTasks.instance
@@ -800,7 +800,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
 
     it "registers an inline adapter with the header from the lambda" do
-      live_card_tool_class.live_card(->(args) { "🔨 #{args[:target]}" })
+      live_card_tool_class.live_card(->(_t) { "🔨 building" })
       allow(registry).to receive(:find).with("build_tool").and_return(live_tool)
 
       registry_instance = Rubino::Tools::BackgroundTasks.instance
@@ -822,20 +822,24 @@ RSpec.describe Rubino::Agent::ToolExecutor do
     end
 
     it "tees streamed output into the adapter buffer" do
-      live_card_tool_class.live_card(->(_args) { "building" })
+      live_card_tool_class.live_card(->(_t) { "building" })
       allow(registry).to receive(:find).with("build_tool").and_return(live_tool)
 
       registry_instance = Rubino::Tools::BackgroundTasks.instance
       expect(registry_instance).to receive(:register_inline).and_call_original
-      expect(registry_instance).to receive(:unregister_inline).and_call_original
 
       executor.execute(name: "build_tool", arguments: {}, call_id: "c3")
 
-      # The adapter was cleaned up — verify by checking the registration/
-      # unregistration expectations passed (the streaming happened inside).
+      # Bug A retain-for-replay: finished adapter stays retrievable, output
+      # buffer is preserved — no unregister on finish.
+      adapter = registry_instance.list.find { |e| e.tool_name == "build_tool" }
+      expect(adapter).not_to be_nil
+      expect(adapter.output_all).to include("building")
+      expect(adapter.live?).to be(false)
+      expect(registry_instance.running.map(&:id)).not_to include(adapter.id)
     end
 
-    it "finishes and unregisters the adapter even when the tool raises" do
+    it "finishes the adapter even when the tool raises (retained, not unregistered)" do
       failing_tool_class = Class.new(Rubino::Tools::Base) do
         def name = "crash_tool"
         def description = "crashes"
@@ -858,9 +862,15 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       registry_instance = Rubino::Tools::BackgroundTasks.instance
       executor.execute(name: "crash_tool", arguments: {}, call_id: "c4")
 
-      # After the error, the adapter should be gone
+      # After the error, the adapter is NOT running (live?=false) but is
+      # retained for replay (Bug A).
       live_inlines = registry_instance.running.select { |e| e.id.start_with?("il_") }
       expect(live_inlines).to be_empty
+
+      # It's still retrievable via list/find, with the partial output.
+      adapter = registry_instance.list.find { |e| e.tool_name == "crash_tool" }
+      expect(adapter).not_to be_nil
+      expect(adapter.output_all).to include("starting")
     end
 
     it "falls back to the tool name when the header lambda raises" do
@@ -869,13 +879,14 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
       registry_instance = Rubino::Tools::BackgroundTasks.instance
       expect(registry_instance).to receive(:register_inline).and_call_original
-      expect(registry_instance).to receive(:unregister_inline).and_call_original
 
       executor.execute(name: "build_tool", arguments: {}, call_id: "c5")
 
-      # The header fallback is logged (verified by the warn log line above);
-      # the adapter is created and cleaned up — verify the registration/
-      # unregistration expectations passed.
+      # The header fallback is logged; the adapter is retained (Bug A),
+      # not unregistered.
+      adapter = registry_instance.list.find { |e| e.tool_name == "build_tool" }
+      expect(adapter).not_to be_nil
+      expect(adapter.live?).to be(false)
     end
   end
 end

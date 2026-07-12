@@ -2,7 +2,7 @@
 
 require "spec_helper"
 require "net/http"
-require "rubino/tools/websearch_tool"
+require "rubino/tools/web/websearch_tool"
 
 RSpec.describe Rubino::Tools::WebSearchTool do
   subject(:tool) { described_class.new }

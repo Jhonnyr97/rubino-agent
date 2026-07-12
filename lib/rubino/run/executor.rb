@@ -3,7 +3,6 @@
 require "json"
 require_relative "attachment_downloader"
 require_relative "../llm/content_builder"
-require_relative "../tools/vision_tool"
 
 module Rubino
   module Run

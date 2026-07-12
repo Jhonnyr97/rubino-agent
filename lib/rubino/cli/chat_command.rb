@@ -184,8 +184,9 @@ module Rubino
       # (notices are context to act on), shaped for a turn whose ONLY content is
       # the notices (there is no trailing user message to defer to here).
       def coalesced_resume_prompt(notices)
-        "[background subagents finished — the work you delegated is done. " \
-          "Fold in the results below and deliver the combined answer/summary " \
+        "[background work finished — a task you started (a delegated subagent " \
+          "and/or a background shell/process, e.g. a long test or build run) is " \
+          "done. Fold in the results below and deliver the combined answer/summary " \
           "you owe the user; do not re-delegate or wait further.]\n\n" \
           "#{notices.join("\n\n")}"
       end
@@ -3103,7 +3104,7 @@ module Rubino
           if entry.shell?
             ui.info(pastel.cyan("▶ attached to #{id} · shell") +
                     pastel.dim(" — type to send input · ↓ to switch · ← to go back"))
-            paint_shell_tail(composer, entry, full: true)
+            composer.shell_tailer.paint_full(entry, origin: id)
           else
             ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                     pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
@@ -3116,27 +3117,18 @@ module Rubino
         # is a later refinement.
       end
 
-      # Paint a focused shell's NEW output into the attached view, through the SAME
-      # focus-gated, render-mutex-safe seam subagent live frames use
-      # (composer#print_above with the shell's origin) — so it is safe to call both
-      # from the keystroke handler AND the 1 Hz idle ticker thread. A private,
-      # mutex-guarded cursor tracks bytes already shown so it NEVER advances the
-      # shared read_offset the model's shell_output reads. full: ⇒ from the start
-      # (on attach); otherwise only bytes added since the last paint.
+      # Paint a focused shell's NEW output into the attached view.
+      # Delegates to the shared ShellTailer on the composer — the same
+      # instance the mid-turn status thread (CLI) uses, so the byte cursor
+      # stays synchronised across the idle/mid-turn boundary.
       def paint_shell_tail(composer, entry, full: false)
         return unless composer && entry
 
-        @attached_shell_mutex ||= Mutex.new
-        text = @attached_shell_mutex.synchronize do
-          buf = entry.output_all.to_s
-          @attached_shell_cursor = 0 if full || @attached_shell_cursor.nil?
-          slice = buf.byteslice(@attached_shell_cursor..) || ""
-          @attached_shell_cursor = buf.bytesize
-          slice
+        if full
+          composer.shell_tailer.paint_full(entry, origin: @attached_id)
+        else
+          composer.shell_tailer.paint_delta(entry, origin: @attached_id)
         end
-        return if text.strip.empty?
-
-        composer.print_above(text.chomp, origin: @attached_id)
       end
 
       # The idle ticker's per-tick hook (#start_ticker): live-tail the focused
@@ -3268,10 +3260,7 @@ module Rubino
           # its next turn boundary; a shell writes it to stdin. For a shell, surface
           # the output that input produced so the attached view stays useful.
           agents_request_handler.steer_agent(id, input)
-          if entry.shell?
-            sleep 0.2 # let the shell consume the line + emit its response
-            paint_shell_tail(UI::BottomComposer.current, entry)
-          end
+          paint_shell_tail(UI::BottomComposer.current, entry) if entry.shell?
         end
       end
 

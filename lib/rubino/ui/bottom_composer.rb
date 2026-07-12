@@ -763,16 +763,19 @@ module Rubino
           # drop happens here, where the focus read and the paint are atomic.
           return if origin != @focused_agent_id && !@replaying
           # COALESCE: a card repaint that would draw the EXACT same rows is a
-          # no-op. The idle ticker (1 Hz) and every child tool-start/finish poke
-          # a repaint, but most carry no visible change (same cards, same
-          # elapsed bucket); re-running #render_frame for them only re-issues the
-          # clear→redraw cursor walk over the live region, which on a real
-          # terminal races the raw input reader and could drop/garble an
-          # in-flight keystroke or wedge submit (#485). Repaint ONLY when the
-          # rows actually changed, so an unchanged registry tick never disturbs
-          # the composer buffer/cursor/input reader. (A real CHANGE still
-          # repaints, under this same mutex, so cards stay live.)
-          return if capped == @cards
+          # no-op — UNLESS the agent-menu picker is open. The coalesce compares
+          # @cards (the compact card lines), but when the picker is OPEN the
+          # visible rows come from @agent_menu.rows (subagent_panel.rb:30),
+          # NOT @cards. A registry change that doesn't alter the compact card
+          # text (e.g. a background shell moving from running→done) is coalesced
+          # away and the open picker never repaints until a loop boundary forces
+          # an uncoalesced frame. Bypassing the coalesce while the picker is open
+          # lets every card tick redraw the full frame (mutex-guarded), so the
+          # live @agent_menu.rows reflect the real-time registry (#DROPDOWN_LIVE).
+          # When the picker is CLOSED the original guard still applies — an
+          # unchanged snapshot never disturbs the composer buffer/cursor/input
+          # reader (the clear→redraw cursor walk).
+          return if capped == @cards && !agent_menu_open?
 
           @cards = capped
           render_frame(committed: nil)
@@ -955,6 +958,14 @@ module Rubino
       # The agent currently allowed to paint (the focused view). :main when not
       # attached to any sub. Exposed for the while-attached switcher line and tests.
       attr_reader :focused_agent_id
+
+      # Shared ShellTailer for live-tailing attached shell output. Both the
+      # idle-loop ticker (ChatCommand) and the mid-turn status thread (CLI)
+      # paint through this — they never run simultaneously, so a single
+      # instance with a single cursor on the composer is correct.
+      def shell_tailer
+        @shell_tailer ||= ShellTailer.new(self)
+      end
 
       def main_render_suppressed? = @focused_agent_id != :main
 

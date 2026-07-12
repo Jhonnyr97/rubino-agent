@@ -55,6 +55,91 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       end
     end
 
+    # Regression: when config lists the same physical directory twice (e.g.
+    # ".rubino/skills" alongside "~/.rubino/skills" from $HOME), dedup by
+    # canonical path so skills don't self-shadow and flood stderr.
+    describe "dedup by canonical dir (self-shadow prevention)" do
+      it "scans a dir only once when listed twice via different config entries" do
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "alpha"))
+          File.write(File.join(dir, "alpha", "SKILL.md"),
+                     "---\nname: alpha\ndescription: first\n---\nbody")
+
+          # Two entries that resolve to the same physical directory.
+          reg = described_class.new(
+            config: test_configuration("skills" => { "paths" => [dir, dir] }),
+            include_builtin: false
+          )
+
+          log_io = StringIO.new
+          Rubino.logger = Rubino::Logger.new(io: log_io, level: "debug")
+          reg.discover!
+
+          # Each skill discovered exactly once — no double-count.
+          expect(reg.names).to contain_exactly("alpha")
+          # No shadow log entry (alpha shadowing alpha = self-shadow, eliminated).
+          expect(log_io.string).not_to include("skills.shadowed")
+        end
+      end
+
+      it "still resolves genuine cross-dir overrides (last writer wins)" do
+        Dir.mktmpdir do |dir1|
+          Dir.mktmpdir do |dir2|
+            FileUtils.mkdir_p(File.join(dir1, "echo"))
+            File.write(File.join(dir1, "echo", "SKILL.md"),
+                       "---\nname: echo\ndescription: from dir1 (lower priority)\n---\nbody")
+            FileUtils.mkdir_p(File.join(dir2, "echo"))
+            File.write(File.join(dir2, "echo", "SKILL.md"),
+                       "---\nname: echo\ndescription: from dir2 (higher priority)\n---\nbody")
+
+            reg = described_class.new(
+              config: test_configuration("skills" => { "paths" => [dir1, dir2] }),
+              include_builtin: false
+            )
+
+            log_io = StringIO.new
+            Rubino.logger = Rubino::Logger.new(io: log_io, level: "debug")
+            reg.discover!
+
+            # Higher-precedence dir2 wins the override.
+            expect(reg.find("echo").description).to eq("from dir2 (higher priority)")
+            # A genuine cross-dir shadow is logged at debug — exactly once.
+            expect(log_io.string).to include("skills.shadowed")
+            expect(log_io.string.scan("skills.shadowed").size).to eq(1)
+          end
+        end
+      end
+
+      it "does not re-log the same override on a re-discover" do
+        Dir.mktmpdir do |dir1|
+          Dir.mktmpdir do |dir2|
+            FileUtils.mkdir_p(File.join(dir1, "echo"))
+            File.write(File.join(dir1, "echo", "SKILL.md"),
+                       "---\nname: echo\ndescription: low\n---\nbody")
+            FileUtils.mkdir_p(File.join(dir2, "echo"))
+            File.write(File.join(dir2, "echo", "SKILL.md"),
+                       "---\nname: echo\ndescription: high\n---\nbody")
+
+            reg = described_class.new(
+              config: test_configuration("skills" => { "paths" => [dir1, dir2] }),
+              include_builtin: false
+            )
+
+            log_io = StringIO.new
+            Rubino.logger = Rubino::Logger.new(io: log_io, level: "debug")
+
+            reg.discover! # First scan: logs the shadow once.
+            first_log = log_io.string.dup
+
+            reg.discover! # Second scan: no new shadow log.
+
+            expect(first_log).to include("skills.shadowed")
+            expect(log_io.string).to eq(first_log) # No additional lines.
+          end
+        end
+      end
+    end
+
     # The bundled ruby-expert skill carries `languages: [ruby]` so it no longer
     # auto-brands every session as Ruby/Rails. It stays discoverable/loadable on
     # demand (names/find), but the system-prompt catalogue (#summaries) only
@@ -266,7 +351,11 @@ RSpec.describe "Skills (directory layout + disclosure)" do
           allow(Rubino::Skills::Skill).to receive(:new)
             .with(path: a_string_ending_with("boom.md")).and_raise(RuntimeError, "kaboom")
 
-          expect { reg.names }.to output(/skipping skill.*boom\.md.*kaboom/m).to_stderr
+          log_io = StringIO.new
+          Rubino.logger = Rubino::Logger.new(io: log_io)
+          reg.names
+          expect(log_io.string).to include("skills.skipped")
+          expect(log_io.string).to include("kaboom")
           expect(reg.names).to include("good")
           expect(reg.names).not_to include("boom")
         end
@@ -442,7 +531,10 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         )
         # add_skills rescues the raise and skips it — the skill never registers,
         # so /etc/passwd never reaches a summary or the prompt index.
-        expect { registry.discover! }.to output(/skipping skill/).to_stderr
+        log_io = StringIO.new
+        Rubino.logger = Rubino::Logger.new(io: log_io)
+        registry.discover!
+        expect(log_io.string).to include("skills.skipped")
         expect(registry.summaries.join).not_to include("root:")
       end
 

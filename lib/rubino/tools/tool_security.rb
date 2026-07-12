@@ -24,7 +24,7 @@ module Rubino
       # Sandbox mode: :strict (enforce workspace boundaries),
       # :none (no filesystem sandbox checks).
       def sandbox
-        @config.dig("tools", "workspace_strict") != false ? :strict : :none
+        @config.dig("tools", "workspace_strict") == false ? :none : :strict
       end
 
       # Whether the tool must have read the target file this session

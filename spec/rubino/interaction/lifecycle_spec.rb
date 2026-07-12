@@ -480,8 +480,8 @@ RSpec.describe Rubino::Interaction::Lifecycle do
         "skills" => { "auto_distill" => true, "auto_distill_interval" => 1 }
       )
       lc = described_class.new(session: { id: "sess-rev", model: "gpt-4o" },
-                              event_bus: event_bus, ui: null_ui, config: review_config,
-                              polishing: polishing)
+                               event_bus: event_bus, ui: null_ui, config: review_config,
+                               polishing: polishing)
       stub_message_count(lc, 1)
 
       lc.send(:enqueue_post_turn_jobs)

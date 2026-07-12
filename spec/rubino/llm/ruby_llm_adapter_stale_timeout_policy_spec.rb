@@ -21,16 +21,16 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
 
   describe "#local_endpoint?" do
     {
-      "http://127.0.0.1:8000/v1"            => true,
-      "http://localhost:1234/v1"            => true,
+      "http://127.0.0.1:8000/v1" => true,
+      "http://localhost:1234/v1" => true,
       "http://host.docker.internal:8000/v1" => true,
-      "http://192.168.1.50:11434/v1"        => true,
-      "http://10.0.0.7:8000/v1"             => true,
-      "http://172.16.4.2:8000/v1"           => true,
-      "http://100.96.0.3:8000/v1"           => true,  # Tailscale CGNAT
-      "https://api.openai.com/v1"           => false,
-      "https://api.deepseek.com/v1"         => false,
-      "https://8.8.8.8/v1"                  => false
+      "http://192.168.1.50:11434/v1" => true,
+      "http://10.0.0.7:8000/v1" => true,
+      "http://172.16.4.2:8000/v1" => true,
+      "http://100.96.0.3:8000/v1" => true, # Tailscale CGNAT
+      "https://api.openai.com/v1" => false,
+      "https://api.deepseek.com/v1" => false,
+      "https://8.8.8.8/v1" => false
     }.each do |url, expected|
       it "is #{expected} for #{url}" do
         expect(adapter_for(provider: "gw", base_url: url).send(:local_endpoint?)).to be(expected)

@@ -426,6 +426,7 @@ RSpec.describe Rubino::UI::CLI do
       composer = instance_double(Rubino::UI::BottomComposer)
       allow(composer).to receive(:set_turn_status) { |f| frames << f }
       allow(composer).to receive(:set_partial) # the teardown clears the partial too
+      allow(composer).to receive(:agent_menu_open?).and_return(false)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
       begin
         ui.thinking_started
@@ -511,6 +512,7 @@ RSpec.describe Rubino::UI::CLI do
       allow(composer).to receive(:set_turn_status)
       allow(composer).to receive(:begin_content_stream)
       allow(composer).to receive(:end_content_stream)
+      allow(composer).to receive(:agent_menu_open?).and_return(false)
       allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
 
       live_io = Object.new
@@ -1258,8 +1260,23 @@ RSpec.describe Rubino::UI::CLI do
       ui.send(:refresh_live_cards)
     end
 
-    it "is a no-op when no child is live (a plain turn pays nothing)" do
+    it "is a no-op when no child is live AND menu is closed (a plain turn pays nothing)" do
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(
+        instance_double(Rubino::UI::BottomComposer, agent_menu_open?: false)
+      )
       expect(ui).not_to receive(:set_subagent_cards)
+      ui.send(:refresh_live_cards)
+    end
+
+    # BUG B: the mid-turn ticker calls refresh_live_cards while the agent-menu
+    # picker is OPEN — even when the running set just went EMPTY the stale frame
+    # must be replaced with an empty-card paint so the last finished entry is
+    # removed from the dropdown in real time.
+    it "paints the transition to an empty running set while the agent menu is open (Bug B)" do
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(
+        instance_double(Rubino::UI::BottomComposer, agent_menu_open?: true)
+      )
+      expect(ui).to receive(:set_subagent_cards)
       ui.send(:refresh_live_cards)
     end
   end
@@ -1835,6 +1852,47 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).to include("↳ received while working: [background-task] Task sa_e488")
       expect(out.scan("the bug is in lib/x.rb:42").size).to eq(1) # only in the injected notice
       expect(out).not_to include("report shown above")
+    end
+  end
+
+  # BUG C — subagent_finished surfaces the completion marker LIVE in real time
+  # via subagent_lifecycle (through commit_async_above/print_above — mutex-safe,
+  # parks under approval modals), not only at loop end via @pending_subagent_footers.
+  # The InputQueue notice path (task_tool.rb) is completely untouched.
+  describe "#subagent_finished live-surface & turn-footer dedup (Bug C)" do
+    it "surfaces the completion marker live via subagent_lifecycle (print_above)" do
+      composer = instance_double(Rubino::UI::BottomComposer)
+      committed = []
+      allow(composer).to receive(:print_above) { |s| committed << s }
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      out = capture_stdout do
+        ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done")
+      end
+
+      expect(committed.join("\n")).to include("✓ explore · done")
+      expect(out).to eq("")
+    end
+
+    it "tracks the surfaced id so turn_footer never double-draws the same marker" do
+      live_ids = ui.instance_variable_get(:@live_surfaced_ids)
+      expect(live_ids).to be_nil # clean slate
+
+      ui.subagent_finished("✓ explore · done", id: "sa_e488", status: "done")
+      ui.subagent_finished("✓ general · done", id: "sa_fc", status: "done")
+
+      tracked = ui.instance_variable_get(:@live_surfaced_ids)
+      expect(tracked).to include("sa_e488", "sa_fc")
+
+      # turn_footer with pending footers: the live-surfaced ids should not re-emit
+      ui.instance_variable_set(:@pending_subagent_footers, [
+                                 { id: "sa_e488", fold: "sa_e488 done" },
+                                 { id: "sa_zz", fold: "sa_zz done" }
+                               ])
+
+      out = capture_stdout { ui.turn_footer("turn · 1.0s · 0 tools") }
+      expect(out).to include("sa_zz done")          # not surfaced live → appears
+      expect(out).not_to include("sa_e488 done")    # surfaced live → deduped
     end
   end
 

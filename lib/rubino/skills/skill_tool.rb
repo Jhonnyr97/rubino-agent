@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "fileutils"
-require "set"
 
 module Rubino
   module Skills
@@ -96,7 +95,9 @@ module Rubino
       #   skill(name, file_path: "ref.md")  -> Level 3: one bundled file
       # action: "create" — write a new <name>/SKILL.md inline (Variant A).
       def call(arguments)
-        action = (arguments["action"] || arguments[:action] || "load").to_s
+        arguments = arguments.transform_keys(&:to_sym) if arguments.respond_to?(:transform_keys)
+
+        action = (arguments[:action] || "load").to_s
         case action
         when "create"     then return create(arguments)
         when "edit"       then return edit(arguments)
@@ -105,8 +106,8 @@ module Rubino
         when "delete"     then return delete(arguments)
         end
 
-        skill_name = arguments["name"] || arguments[:name]
-        file_path  = arguments["file_path"] || arguments[:file_path]
+        skill_name = arguments[:name]
+        file_path  = arguments[:file_path]
 
         skill = @registry.find(skill_name)
         return not_found(skill_name) unless skill
@@ -122,9 +123,9 @@ module Rubino
       # ---- create (Variant A: inline, 0 extra LLM calls) --------------------
 
       def create(arguments)
-        skill_name  = (arguments["name"] || arguments[:name]).to_s.strip
-        description = (arguments["description"] || arguments[:description]).to_s.strip
-        body        = (arguments["body"] || arguments[:body]).to_s
+        skill_name  = arguments[:name].to_s.strip
+        description = arguments[:description].to_s.strip
+        body        = arguments[:body].to_s
 
         err = validate_create(skill_name, description, body)
         return err if err
@@ -346,17 +347,15 @@ module Rubino
       end
 
       def description_arg?(arguments)
-        arguments.key?("description") || arguments.key?(:description)
+        arguments.key?(:description)
       end
 
       def str(arguments, key)
-        (arguments[key] || arguments[key.to_sym]).to_s.strip
+        arguments[key.to_sym].to_s.strip
       end
 
       def raw(arguments, key)
-        value = arguments[key]
-        value = arguments[key.to_sym] if value.nil?
-        value.to_s
+        arguments[key.to_sym].to_s
       end
 
       # Emits SKILL_UPDATED so the interactive REPL can surface a background
@@ -379,9 +378,8 @@ module Rubino
       # ---- load ----------------------------------------------------------------
 
       def load_body(skill, skill_name)
-        if @loaded_skill_names.include?(skill_name)
-          return "Skill '#{skill_name}' is already active in this session."
-        end
+        return "Skill '#{skill_name}' is already active in this session." if @loaded_skill_names.include?(skill_name)
+
         @loaded_skill_names.add(skill_name)
 
         content = ContentPreprocessor.preprocess(

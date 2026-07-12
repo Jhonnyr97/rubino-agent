@@ -85,7 +85,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
       line = Timeout.timeout(3) { command.send(:read_idle_line, queue, nil, nil) }
 
-      expect(line).to include("background subagents finished")
+      expect(line).to include("background work finished")
       expect(line).to match(/summary|combined answer/i)
     end
 
@@ -145,7 +145,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       command.instance_variable_set(:@attached_id, nil)
       line = Timeout.timeout(3) { command.send(:read_idle_line, queue, nil, nil) }
       expect(line).to include("[background-task] sa_1 completed")
-      expect(line).to include("background subagents finished")
+      expect(line).to include("background work finished")
       expect(queue.notices_pending?).to be(false)
     end
 
