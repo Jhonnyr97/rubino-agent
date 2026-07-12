@@ -506,14 +506,24 @@ module Rubino
         # right border / bleed past the pane on multibyte or many-column input
         # (#Y1, R1-V2). balanced_column_widths clamps the TOTAL width to +fit+ and
         # wraps cells; below the budget, columns keep content width with no gap.
-        opts = { multiline: true, width: fit }
+        # padding: [0,0,0,0] zeroes the per-cell padding so our budget math
+        # (ncols+1 border chars only) is exact; default padding would push
+        # natural_width past fit and trigger a vertical-orientation rotate + warn.
+        opts = { multiline: true, width: fit, padding: [0, 0, 0, 0] }
         opts[:column_widths] = balanced_column_widths(header, rows, fit) if table.width > fit
+        # Suppress tty-table's Kernel.warn (vertical-orientation spam) and detect
+        # the rotate — if tty-table flips to :vertical, treat it as a failure so
+        # the caller falls back to fallback_table_lines.
+        old_stderr = $stderr
+        $stderr = StringIO.new
         str = table.render(:unicode, **opts)
-        return nil if str.nil?
+        return nil if str.nil? || table.orientation == :vertical
 
         str.split("\n").map { |line| [[line, { fg: :gray }]] }
       rescue StandardError
         nil
+      ensure
+        $stderr = old_stderr if old_stderr
       end
 
       # Allocate per-column widths whose total rendered table width is ALWAYS

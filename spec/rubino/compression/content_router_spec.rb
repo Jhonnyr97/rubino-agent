@@ -230,4 +230,57 @@ RSpec.describe Rubino::Compression::ContentRouter do
       expect(result.content_type).to eq(:error)
     end
   end
+
+  describe "regexp encoding tolerance" do
+    before { enable! }
+
+    # Old /n flag (historical binary) produced "warning: historical binary
+    # regexp match" on $stderr when matching non-ASCII UTF-8 bytes. The fix
+    # removed the /n flag; these specs guard against regression (#H).
+    let(:utf8_grep) do
+      (1..8).map { |i| "src/résumé/fichero#{i}.py:#{i * 10}: def proc_#{i}" }.join("\n")
+    end
+
+    let(:utf8_diff) do
+      "diff --git a/léame.md b/léame.md\n--- a/léame.md\n+++ b/léame.md\n@@ -1,3 +1,4 @@\n line\n"
+    end
+
+    def capture_stderr
+      io = StringIO.new
+      old = $stderr
+      $stderr = io
+      yield
+      io.string
+    ensure
+      $stderr = old
+    end
+
+    it "does not emit warnings when GREP_LINE_RE matches UTF-8 text" do
+      stderr = capture_stderr do
+        result = router.route(utf8_grep, tool_name: "shell")
+        expect(result.content_type).to eq(:grep)
+      end
+      expect(stderr).to be_empty
+    end
+
+    it "does not emit warnings when DIFF_RE matches UTF-8 text" do
+      stderr = capture_stderr do
+        result = router.route(utf8_diff, tool_name: "shell")
+        expect(result.content_type).to eq(:diff)
+      end
+      expect(stderr).to be_empty
+    end
+
+    it "GREP_LINE_RE still matches its intended inputs" do
+      expect(Rubino::Compression::ContentRouter::GREP_LINE_RE.match?("lib/file.rb:42:")).to be true
+      expect(Rubino::Compression::ContentRouter::GREP_LINE_RE.match?("src/app.ts:103:45:")).to be true
+    end
+
+    it "DIFF_RE still matches its intended inputs" do
+      expect(Rubino::Compression::ContentRouter::DIFF_RE.match?("diff --git a/x.rb b/y.rb")).to be true
+      expect(Rubino::Compression::ContentRouter::DIFF_RE.match?("@@ -1,3 +1,4 @@")).to be true
+      expect(Rubino::Compression::ContentRouter::DIFF_RE.match?("+++ b/file.rb")).to be true
+      expect(Rubino::Compression::ContentRouter::DIFF_RE.match?("--- a/file.rb")).to be true
+    end
+  end
 end

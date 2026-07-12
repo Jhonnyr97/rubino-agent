@@ -586,6 +586,33 @@ RSpec.describe Rubino::UI::MarkdownRenderer do
       end
     end
 
+    describe "stderr guard" do
+      # #H: tty-table's vertical-orientation fallback fires a Kernel.warn, which
+      # bypasses the rescue StandardError. The render_tty_table fix swaps $stderr
+      # for the duration and detects the orientation flip; when it fires the
+      # caller gets nil and falls back to fallback_table_lines. This spec proves
+      # no warning leaks and that the fallback renders content.
+      it "suppresses tty-table warnings and falls back for a genuinely too-wide table (#H)" do
+        ncols = 15
+        header = (1..ncols).map { |i| "Col#{i}" }
+        row    = (1..ncols).map { |i| "v#{i}" }
+        md = "| #{header.join(' | ')} |\n|#{'---|' * ncols}\n| #{row.join(' | ')} |\n"
+
+        stderr = StringIO.new
+        old_stderr = $stderr
+        $stderr = stderr
+
+        blocks = described_class.new(width: 20).render(md)
+        $stderr = old_stderr
+
+        expect(blocks).not_to be_empty
+        expect(stderr.string).to be_empty
+        texts = blocks.map { |l| l.map { |t, _| t.to_s }.join }
+        expect(texts.any? { |l| l.include?("v1") }).to be true
+        expect(texts.any? { |l| l.include?("Col1") }).to be true
+      end
+    end
+
     describe "headless width detection" do
       it "falls back to 80 columns when there is no console and does not raise" do
         allow(IO).to receive(:console).and_return(nil)
