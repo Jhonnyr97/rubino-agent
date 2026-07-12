@@ -131,6 +131,10 @@ module Rubino
       # PARTIAL instead of a false "completed" (#core-F1 honesty).
       attr_reader :stop_reason
 
+      # The last model response's cache_read_tokens (prompt-cache usage), surfaced
+      # so the status bar can render the `Nk cached` segment. Reset each turn.
+      attr_reader :last_cache_read_tokens
+
       # Runs the agent loop, returning the final assistant response content.
       def run(messages:, tools:) # rubocop:disable Metrics/PerceivedComplexity,Metrics/CyclomaticComplexity
         # Stash the resolved toolset so #streaming? can decide, per run, whether
@@ -864,6 +868,7 @@ module Rubino
         end
 
         response = @model_call_runner.call!(request, iteration: iteration, &stream_chunk)
+        @last_cache_read_tokens = response.usage[:cache_read_input_tokens] || 0
 
         # Truncation continuation (Slice 9 / conversation_loop.py:1560-1714,3382).
         # When the model hit max_tokens (stop_reason==:length) we stitch the

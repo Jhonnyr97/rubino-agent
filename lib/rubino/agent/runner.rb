@@ -167,6 +167,7 @@ module Rubino
         # Post-turn state, read by the subagent-completion path (task_tool) so a
         # force-summarized/truncated child is reported PARTIAL, not "completed".
         @last_stop_reason = lifecycle.last_stop_reason
+        @last_cache_read_tokens = lifecycle.last_cache_read_tokens
 
         response
       end
@@ -176,6 +177,11 @@ module Rubino
       # tool after a subagent's #run! to distinguish a real completion from a
       # budget-/time-truncated partial.
       attr_reader :last_stop_reason
+
+      # The last turn's cache_read_tokens (prompt-cache usage, #311), surfaced
+      # from the Lifecycle so the footer can render the `Nk cached` segment.
+      # nil until a turn has run.
+      attr_accessor :last_cache_read_tokens
 
       # Pins the agent Definition this runner threads into every subsequent turn
       # (the sticky `/agent <name>` / Tab-cycle switch). Lifecycle reads

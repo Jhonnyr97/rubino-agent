@@ -144,7 +144,7 @@ module Rubino
         end
       end
 
-      def elapsed(entry)
+      def self.elapsed(entry)
         return "" unless entry.started_at
 
         finish = entry.finished_at || Time.now
@@ -153,6 +153,9 @@ module Rubino
         # duration (#44).
         Rubino::Util::Duration.human_duration(finish - entry.started_at, precise: entry.finished_at.nil?)
       end
+
+      # Instance shim so card_line and callers keep working.
+      def elapsed(entry) = self.class.elapsed(entry)
 
       # The descriptive label for a card: a developer running 3 subagents at
       # once needs to tell them apart, and the bare agent TYPE ("general") is the
@@ -163,14 +166,17 @@ module Rubino
       # Falls back to the agent type when the prompt yields nothing usable, so a
       # specialized subagent (explore/etc.) and the sync/headless path keep their
       # existing label. The result is defanged by the caller's #safe.
-      def card_label(entry)
+      def self.card_label(entry)
         prompt = entry.respond_to?(:prompt) ? entry.prompt : nil
         prompt_dimension(prompt) || entry.subagent.to_s
       end
 
+      # Instance shim so card_line and callers keep working.
+      def card_label(entry) = self.class.card_label(entry)
+
       # A short, human-meaningful name pulled from the task prompt, or nil when
       # the prompt has nothing to offer (so the caller can fall back to the type).
-      def prompt_dimension(prompt)
+      def self.prompt_dimension(prompt)
         text = prompt.to_s
         return nil if text.strip.empty?
 
@@ -182,6 +188,9 @@ module Rubino
         line = Rubino::Util::Output.first_line(text, 40).to_s.strip
         line.empty? ? nil : line
       end
+
+      # Instance shim.
+      def prompt_dimension(prompt) = self.class.prompt_dimension(prompt)
 
       # First NON-BLANK line, elided to +max+. A ruby/shell approval command
       # often starts with a newline or a blank line — taking `.lines.first`

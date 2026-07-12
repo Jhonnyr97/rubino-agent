@@ -1618,7 +1618,10 @@ module Rubino
         composer.reset_input
         seed_draft(composer, draft)
         idle_cards.paint
-        ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) { tail_attached_shell(composer) } : nil
+        ticker = idle_cards.children_live? ? idle_cards.start_ticker(composer) {
+          tail_attached_shell(composer)
+          refresh_focused_status(composer, runner) if attached_to_agent?
+        } : nil
 
         # SIGINT trap as a FALLBACK only (BH-2 / #551): the dependable idle Ctrl+C
         # path is now the in-band \x03 byte (on_idle_interrupt above), because
@@ -2075,6 +2078,18 @@ module Rubino
         Signal.trap("INT", prev) if prev
       end
 
+      # Resolves the runner for the currently focused entity. When attached to a
+      # subagent (whose Entry carries its own runner), returns THAT runner so the
+      # status bar reflects the focused entity, not the main session. Falls back
+      # to +main_runner+ when at :main or when the focus isn't a subagent with a
+      # runner (shells, or a dead entry).
+      def focus_runner(main_runner)
+        return main_runner unless attached_to_agent?
+
+        entry = Tools::BackgroundTasks.instance.find(@attached_id)
+        entry&.runner || main_runner
+      end
+
       # The status-bar line for the CURRENT session (see UI::StatusBar):
       # mode (+ branch/skill when set) · resolved model id · context
       # saturation. Saturation derives from the SAME estimate the compaction
@@ -2087,12 +2102,13 @@ module Rubino
       # disabled via display.statusbar or on any failure: a cosmetic line
       # must never break the prompt.
       def build_status_line(runner)
+        runner = focus_runner(runner)
         return nil unless runner && Rubino.configuration.display_statusbar?
 
         session  = runner.session
         budget   = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
         messages = ::Rubino::Session::Store.new.for_session(session[:id])
-        render_status_bar(session, budget, context_tokens(messages, budget))
+        render_status_bar(session, budget, context_tokens(messages, budget), runner: runner)
       rescue StandardError
         nil
       end
@@ -2105,12 +2121,13 @@ module Rubino
       # estimate covers it, and #ensure reconciles to the exact bar at turn end.
       # nil (no live gauge) when the bar is disabled or on any failure.
       def live_status_meter(runner)
+        runner = focus_runner(runner)
         return nil unless runner && Rubino.configuration.display_statusbar?
 
         session = runner.session
         budget  = Context::TokenBudget.new(model_id: session[:model], config: Rubino.configuration)
         base    = context_tokens(::Rubino::Session::Store.new.for_session(session[:id]), budget)
-        ->(extra) { render_status_bar(session, budget, base + extra.to_i) }
+        ->(extra) { render_status_bar(session, budget, base + extra.to_i, runner: runner) }
       rescue StandardError
         nil
       end
@@ -2118,25 +2135,21 @@ module Rubino
       # Renders the model + context-saturation bar for +tokens+ against the
       # session's window. Shared by the turn-boundary bar (#build_status_line) and
       # the live gauge (#live_status_meter) so both read one format (#608e).
-      def render_status_bar(session, budget, tokens)
+      def render_status_bar(session, budget, tokens, runner: nil, cols: nil)
+        cols_val = cols || UI::BottomComposer.current&.cols
         UI::StatusBar.render(
-          chips: { mode: Rubino::Modes.current, agent: status_agent_chip,
-                   skill: Rubino::ActiveSkill.current },
+          mode: Rubino::Modes.current,
+          skill: Rubino::ActiveSkill.current,
+          provider: session[:provider],
           model: session[:model] || model_name,
           tokens: tokens,
           window: budget.available_tokens,
+          cached: runner&.last_cache_read_tokens || 0,
+          cols: cols_val || 80,
           pastel: pastel
         )
       end
 
-      # The status-bar agent chip (#320): the active primary agent name, but
-      # only when it differs from the registry default (build) — like the
-      # skill chip, a plain session keeps the bare bar. nil ⇒ no chip.
-      def status_agent_chip
-        current = Rubino::ActiveAgent.current
-        default = Rubino.agent_registry.default&.name
-        current if current && current != default
-      end
 
       # Estimated tokens in the session's context — the SAME measure the
       # compaction trigger uses (Context::TokenBudget#estimate_tokens, chars/4
@@ -2651,7 +2664,7 @@ module Rubino
 
       # The Tab callback for the composer: cycle to the next PRIMARY agent
       # (Rubino::ActiveAgent), show a transient toast, and RETURN the freshly
-      # built status-bar line so the agent chip updates LIVE — same shape as
+      # built status-bar line so the bar updates LIVE — same shape as
       # #mode_cycle_handler. Only fires when there's nothing to complete (the
       # composer routes a buffer-empty / menu-closed Tab here), so file/command
       # completion is untouched.
@@ -2660,8 +2673,8 @@ module Rubino
       end
 
       # Tab: cycle the active primary agent, toast the transition, and return the
-      # refreshed status-bar line (the agent chip lives in the bar). With a
-      # single primary agent it's a no-op (no toast, no repaint).
+      # refreshed status-bar line. With a single primary agent it's a no-op
+      # (no toast, no repaint).
       def cycle_agent(runner = nil)
         names = Rubino::ActiveAgent.names
         return nil if names.size < 2
@@ -3139,6 +3152,21 @@ module Rubino
 
         entry = Tools::BackgroundTasks.instance.find(@attached_id)
         paint_shell_tail(composer, entry) if entry&.shell?
+      end
+
+      # Refreshes the footer status bar for the currently focused entity.
+      # When attached to a subagent, #build_status_line resolves the sub's
+      # runner via #focus_runner and recomputes the bar from that runner's
+      # session + token budget — the bar shows the sub's model + ctx, not the
+      # main session's. At :main this is a no-op (the bar was already set at
+      # reconfigure). Called from the idle ticker's on_tick so the focal bar
+      # re-tracks the sub's growing ctx ~1/s while attached.
+      def refresh_focused_status(composer, main_runner)
+        return unless attached_to_agent?
+
+        composer.set_status(build_status_line(main_runner))
+      rescue StandardError
+        nil
       end
 
       # Leave the agent-view and return to the main session: clear the screen,

@@ -68,7 +68,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#build_status_line" do
     let(:cmd) { described_class.new({}) }
     let(:status_runner) do
-      instance_double(Rubino::Agent::Runner, session: { id: "sess-1", model: "minimax-m3" })
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "sess-1", model: "minimax-m3" },
+                      last_cache_read_tokens: 0)
     end
 
     def stub_store_with(messages)
@@ -92,17 +94,17 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # Rail rubino: the mode chip moved off the prompt into the status bar —
     # the MODE token leads the line, with the branch / active-skill tokens
     # after it when set.
-    it "leads with the mode token (the chip moved off the prompt)" do
+    it "omits :default mode then renders provider/model + ctx (the chip moved off the prompt)" do
       stub_store_with([{ content: "hi" }])
       line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
-      expect(line).to start_with(" default · ")
+      expect(line).to start_with(" minimax-m3 · ctx ~")
     end
 
-    it "shows the active skill as a `skill <name>` token after the mode" do
+    it "shows the active skill as a `skill <name>` token without mode when default" do
       Rubino::ActiveSkill.set("ruby-expert")
       stub_store_with([{ content: "hi" }])
       line = cmd.send(:build_status_line, status_runner).gsub(/\e\[[0-9;]*m/, "")
-      expect(line).to start_with(" default · skill ruby-expert · minimax-m3")
+      expect(line).to start_with(" skill ruby-expert · minimax-m3")
     ensure
       Rubino::ActiveSkill.reset!
     end
@@ -155,6 +157,137 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "never raises — a store failure degrades to no bar" do
       allow(Rubino::Session::Store).to receive(:new).and_raise(RuntimeError, "db gone")
       expect(cmd.send(:build_status_line, status_runner)).to be_nil
+    end
+
+    # Regression: #render_status_bar must resolve UI::BottomComposer (qualified).
+    # An unqualified BottomComposer raises NameError inside ChatCommand's namespace;
+    # the rescue in build_status_line swallows it → nil bar every time.  This spec
+    # exercises the render pipeline DIRECTLY (no rescue wrapper) so a constant-
+    # resolution bug fails FAST with NameError instead of a silent nil.
+    it "render_status_bar resolves UI constants and produces a non-nil line" do
+      stub_store_with([{ content: "hello" }])
+      session = { id: "sess-1", model: "gpt-4.1", provider: "openrouter" }
+      budget  = Rubino::Context::TokenBudget.new(model_id: "gpt-4.1", config: Rubino.configuration)
+      tokens  = cmd.send(:context_tokens,
+                         Rubino::Session::Store.new.for_session("sess-1"), budget)
+      line = cmd.send(:render_status_bar, session, budget, tokens, runner: status_runner, cols: 80)
+      expect(line).to be_a(String)
+      expect(line).to include("gpt-4.1")
+    end
+
+    # The full call-path: build_status_line → render_status_bar.  A nil here
+    # (from a swallowed NameError or any other plumbing failure) means the
+    # idle bar is silently gone.
+    it "build_status_line returns a non-nil line for a valid runner" do
+      stub_store_with([{ content: "hello" }])
+      line = cmd.send(:build_status_line, status_runner)
+      expect(line).to be_a(String)
+      expect(line).to include("minimax-m3")
+    end
+  end
+
+  # Focus-aware status bar: when attached to a subagent, #build_status_line
+  # must resolve the sub's runner (via #focus_runner) and render THAT runner's
+  # model + ctx, not the main session's. At :main (not attached) the main
+  # runner passes through unchanged.
+  describe "#focus_runner" do
+    let(:cmd) { described_class.new({}) }
+    let(:main_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "main-sess", model: "gpt-4.1" },
+                      last_cache_read_tokens: 0)
+    end
+    let(:sub_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "sub-sess", model: "claude-sonnet" },
+                      last_cache_read_tokens: 0)
+    end
+    let(:entry) do
+      instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                      id: "sa_test1", runner: sub_runner)
+    end
+
+    before do
+      allow(Rubino::Tools::BackgroundTasks.instance)
+        .to receive(:find).with("sa_test1").and_return(entry)
+    end
+
+    it "returns the main runner when not attached" do
+      # @attached_id is nil by default
+      expect(cmd.send(:focus_runner, main_runner)).to eq(main_runner)
+    end
+
+    it "returns the subagent's runner when attached to a live subagent" do
+      cmd.instance_variable_set(:@attached_id, "sa_test1")
+      expect(cmd.send(:focus_runner, main_runner)).to eq(sub_runner)
+    end
+
+    it "falls back to main runner when the attached entry has no runner" do
+      cmd.instance_variable_set(:@attached_id, "sa_test1")
+      allow(entry).to receive(:runner).and_return(nil)
+      expect(cmd.send(:focus_runner, main_runner)).to eq(main_runner)
+    end
+
+    it "falls back to main runner when the attached entry is not found" do
+      cmd.instance_variable_set(:@attached_id, "sa_missing")
+      allow(Rubino::Tools::BackgroundTasks.instance)
+        .to receive(:find).with("sa_missing").and_return(nil)
+      expect(cmd.send(:focus_runner, main_runner)).to eq(main_runner)
+    end
+  end
+
+  describe "#build_status_line with focus-awareness" do
+    let(:cmd) { described_class.new({}) }
+
+    let(:main_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "main-sess", model: "gpt-4.1" },
+                      last_cache_read_tokens: 0)
+    end
+
+    let(:sub_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "sub-sess", model: "claude-sonnet" },
+                      last_cache_read_tokens: 12000)
+    end
+
+    let(:entry) do
+      instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                      id: "sa_focus1", runner: sub_runner)
+    end
+
+    def stub_store_for(session_id, content)
+      store = instance_double(Rubino::Session::Store)
+      msg = instance_double(Rubino::Session::Message, content: content, metadata: {}, token_count: 0)
+      allow(Rubino::Session::Store).to receive(:new).and_return(store)
+      allow(store).to receive(:for_session).with(session_id).and_return([msg])
+    end
+
+    before do
+      allow(Rubino::Tools::BackgroundTasks.instance)
+        .to receive(:find).with("sa_focus1").and_return(entry)
+    end
+
+    it "renders the subagent's model when attached" do
+      cmd.instance_variable_set(:@attached_id, "sa_focus1")
+      stub_store_for("sub-sess", "x" * 4000)
+      line = cmd.send(:build_status_line, main_runner)
+      # sub's model, not the main's
+      expect(line).to include("claude-sonnet")
+      expect(line).not_to include("gpt-4.1")
+    end
+
+    it "renders the subagent's cached tokens when attached" do
+      cmd.instance_variable_set(:@attached_id, "sa_focus1")
+      stub_store_for("sub-sess", "x" * 4000)
+      line = cmd.send(:build_status_line, main_runner)
+      expect(line).to include("12k cached")
+    end
+
+    it "renders the main model when not attached" do
+      stub_store_for("main-sess", "x" * 4000)
+      line = cmd.send(:build_status_line, main_runner)
+      expect(line).to include("gpt-4.1")
     end
   end
 
@@ -1413,7 +1546,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
           .and_return(composer)
 
         runner = instance_double(Rubino::Agent::Runner, cancel!: nil,
-                                                        session: { id: "sess-x", model: "m" })
+                                                        session: { id: "sess-x", model: "m" },
+                                                        last_cache_read_tokens: 0)
         got = cmd.send(:start_session_composer, Rubino::Interaction::InputQueue.new, runner)
         expect(got).to be(composer)
       end
@@ -1427,7 +1561,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
         composer = instance_double(Rubino::UI::BottomComposer)
         cmd.instance_variable_set(:@composer, composer)
         runner = instance_double(Rubino::Agent::Runner, cancel!: nil,
-                                                        session: { id: "sess-x", model: "m" })
+                                                        session: { id: "sess-x", model: "m" },
+                                                        last_cache_read_tokens: 0)
 
         expect(composer).to receive(:reconfigure)
           .with(hash_including(echo: :queued))
@@ -1480,7 +1615,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
       let(:runner) do
         instance_double(Rubino::Agent::Runner, cancel!: nil,
-                                               session: { id: "sess-x", model: "m" })
+                                               session: { id: "sess-x", model: "m" },
+                                               last_cache_read_tokens: 0)
       end
 
       before do
@@ -1586,7 +1722,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
     describe "Esc-interrupt wiring (BH-1, #421)" do
       let(:runner) do
         instance_double(Rubino::Agent::Runner, run: "ok",
-                                               session: { id: "sess-x", model: "m" })
+                                               session: { id: "sess-x", model: "m" },
+                                               last_cache_read_tokens: 0)
       end
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
 
@@ -1648,7 +1785,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # raises, the ensure tears down the composer (cooked mode + real $stdout).
     describe "terminal restore on raise" do
       let(:runner) do
-        instance_double(Rubino::Agent::Runner, session: { id: "sess-x", model: "m" })
+        instance_double(Rubino::Agent::Runner, session: { id: "sess-x", model: "m" },
+                                               last_cache_read_tokens: 0)
       end
       let(:input_queue) { Rubino::Interaction::InputQueue.new }
 

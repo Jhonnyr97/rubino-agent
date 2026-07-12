@@ -3200,8 +3200,8 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(output.string).to end_with("\r\e[2K#{PROMPT}x")
     end
 
-    it "is omitted on a terminal narrower than 40 columns" do
-      narrow = Class.new(StringIO) { def winsize = [24, 39] }.new
+    it "is omitted on a terminal narrower than the floor (20 columns)" do
+      narrow = Class.new(StringIO) { def winsize = [24, 15] }.new
       c = described_class.new(input_queue: queue, input: input, output: narrow,
                               status_line: status)
       c.handle_key("x")
@@ -3211,7 +3211,7 @@ RSpec.describe Rubino::UI::BottomComposer do
 
     it "is omitted whole (never truncated mid-ANSI) when wider than the row" do
       c = described_class.new(input_queue: queue, input: input, output: output,
-                              status_line: "s" * 60) # 40-col terminal
+                              status_line: "s" * 100) # 40-col terminal, far too wide
       c.handle_key("x")
       expect(output.string).not_to include("s" * 10)
       expect(output.string).to end_with("#{PROMPT}x")
@@ -3294,13 +3294,13 @@ RSpec.describe Rubino::UI::BottomComposer do
                             status_line: "m3", on_interrupt: -> {})
       end
 
-      it "prepends the live turn activity to the model/ctx bar while a turn runs" do
+      it "shows only the turn activity during a turn (ctx bar suppressed — tok is in the facet)" do
         composer.handle_key("x")
         composer.begin_turn
         composer.set_turn_status("◆ writing")
         row = composer.send(:status_row)
         expect(row).to include("◆ writing")
-        expect(row).to include("m3")
+        expect(row).not_to include("m3") # ctx bar suppressed during turn
         expect(row.scan("(esc to interrupt)").size).to eq(1) # the hint, exactly once
       end
 
@@ -3320,6 +3320,160 @@ RSpec.describe Rubino::UI::BottomComposer do
         row = composer.send(:status_row)
         expect(row).to include("◆ writing · 9s") # the live info is kept
         expect(row).not_to include("really long model") # the tail is dropped
+      end
+    end
+
+    context "focused subagent live facet (bottom_composer.rb#status_row)" do
+      let(:reg) { Rubino::Tools::BackgroundTasks.instance }
+
+      before { Rubino::Tools::BackgroundTasks.reset! }
+      after  { Rubino::Tools::BackgroundTasks.reset! }
+
+      # Wider terminal so the facet line (up to ~60 cols) fits comfortably.
+      let(:wide_output) { FakeTermIO.new.tap { |io| io.define_singleton_method(:winsize) { [24, 80] } } }
+
+      subject(:composer) do
+        described_class.new(input_queue: queue, input: input, output: wide_output,
+                            status_line: "m3 · 8k ctx", on_interrupt: -> {})
+      end
+
+      it "shows a live facet with sweeping ◆ track for a RUNNING focused sub" do
+        entry = reg.reserve(subagent: "general", prompt: "**BUG AUDIT** review auth flow")
+        reg.record_tool_started(entry.id, "read auth.rb")
+        entry.tool_count = 3
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · BUG AUDIT · running · 3 tools"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).to include("◆")        # sweeping track
+        expect(row).to include("┄")        # track cells
+        expect(row).to include("running")
+        expect(row).to include("BUG AUDIT")
+        expect(row).to include("3 tools")
+        expect(row).not_to include("m3")    # ctx bar suppressed
+      end
+
+      it "shows stopping state in the facet" do
+        entry = reg.reserve(subagent: "explore", prompt: "scan config")
+        entry.status = :stopping
+        entry.tool_count = 1
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · scan config · stopping · 1 tool"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).to include("stopping")
+        expect(row).to include("1 tool")
+      end
+
+      it "omits tool count when tool_count is 0 or nil" do
+        entry = reg.reserve(subagent: "general", prompt: "hello")
+        entry.tool_count = 0
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · hello · running"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).to include("running")
+        expect(row).not_to include("0 tools")
+        expect(row).not_to include("tool")
+      end
+
+      it "reverts to the persisted ctx line for a FINISHED sub" do
+        entry = reg.reserve(subagent: "general", prompt: "audit")
+        entry.status = :completed
+        entry.finished_at = Time.now
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards([], entries: [entry], origin: entry.id)
+
+        row = composer.send(:status_row)
+        expect(row).to include("m3")
+        expect(row).not_to include("◆")
+        expect(row).not_to include("running")
+      end
+
+      it "reverts to the persisted ctx line when focused on :main (unchanged behavior)" do
+        composer.handle_key("x")
+        composer.begin_turn
+        composer.set_turn_status("◆ writing")
+        row = composer.send(:status_row)
+        expect(row).to include("◆ writing")
+        expect(row).not_to include("m3")
+
+        composer.set_turn_status("")
+        row = composer.send(:status_row)
+        expect(row).to include("m3")
+      end
+
+      it "includes token estimate when output_tail has content" do
+        entry = reg.reserve(subagent: "general", prompt: "scan")
+        entry.output_tail = ["line one here", "another line of output"]
+        entry.tool_count = 1
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · scan · running · 1 tool"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).to include("~")
+        expect(row).to include("tok")
+      end
+
+      it "omits token estimate when output_tail is nil" do
+        entry = reg.reserve(subagent: "general", prompt: "scan")
+        entry.tool_count = 1
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · scan · running · 1 tool"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).not_to include("tok")
+      end
+
+      it "omits token estimate when output_tail is empty" do
+        entry = reg.reserve(subagent: "general", prompt: "scan")
+        entry.output_tail = []
+        entry.tool_count = 1
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · scan · running · 1 tool"],
+          entries: [entry], origin: entry.id
+        )
+
+        row = composer.send(:status_row)
+        expect(row).not_to include("tok")
+      end
+
+      it "shows nothing when cols below MIN_STATUS_COLS" do
+        entry = reg.reserve(subagent: "general", prompt: "scan")
+        entry.tool_count = 1
+
+        composer.focus_agent!(entry.id)
+        composer.set_cards(
+          ["▸ #{entry.id} · scan · running · 1 tool"],
+          entries: [entry], origin: entry.id
+        )
+        composer.instance_variable_set(:@cols, 10) # below MIN_STATUS_COLS (25)
+
+        row = composer.send(:status_row)
+        expect(row).to be_nil
       end
     end
 

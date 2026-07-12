@@ -2865,4 +2865,70 @@ RSpec.describe Rubino::UI::CLI do
       expect(out).not_to include("[]")
     end
   end
+
+  # Focus-aware status bar for subagent CLIs: when a CLI's @agent_id != :main,
+  # #build_subagent_status_line resolves the entry's runner from BackgroundTasks
+  # and renders that runner's model + ctx instead of the main session's.
+  describe "#build_subagent_status_line" do
+    let(:sub_runner) do
+      instance_double(Rubino::Agent::Runner,
+                      session: { id: "sub-sess", model: "minimax-m3", provider: "openrouter" },
+                      last_cache_read_tokens: 0)
+    end
+
+    let(:entry) do
+      instance_double(Rubino::Tools::BackgroundTasks::Entry,
+                      id: "sa_sub1", runner: sub_runner)
+    end
+
+    before do
+      Rubino::Tools::BackgroundTasks.reset!
+      allow(Rubino::Tools::BackgroundTasks.instance)
+        .to receive(:find).with("sa_sub1").and_return(entry)
+
+      store = instance_double(Rubino::Session::Store)
+      msg  = instance_double(Rubino::Session::Message,
+                             content: "x" * 4000, metadata: {}, token_count: 0)
+      allow(Rubino::Session::Store).to receive(:new).and_return(store)
+      allow(store).to receive(:for_session).with("sub-sess").and_return([msg])
+    end
+
+    after do
+      Rubino::Tools::BackgroundTasks.reset!
+    end
+
+    it "returns a non-nil line with the subagent's model" do
+      ui = described_class.new(agent_id: "sa_sub1")
+      line = ui.send(:build_subagent_status_line)
+      expect(line).to be_a(String)
+      expect(line).to include("minimax-m3")
+      expect(line).to include("openrouter")
+    end
+
+    it "returns nil when the entry has no runner" do
+      allow(entry).to receive(:runner).and_return(nil)
+      ui = described_class.new(agent_id: "sa_sub1")
+      expect(ui.send(:build_subagent_status_line)).to be_nil
+    end
+
+    it "returns nil when the entry is not found" do
+      allow(Rubino::Tools::BackgroundTasks.instance)
+        .to receive(:find).with("sa_missing").and_return(nil)
+      ui = described_class.new(agent_id: "sa_missing")
+      expect(ui.send(:build_subagent_status_line)).to be_nil
+    end
+
+    it "returns nil when display.statusbar is disabled" do
+      allow(Rubino).to receive(:configuration)
+        .and_return(test_configuration("display" => { "statusbar" => false }))
+      ui = described_class.new(agent_id: "sa_sub1")
+      expect(ui.send(:build_subagent_status_line)).to be_nil
+    end
+
+    it "never raises — a store failure degrades to nil" do
+      allow(Rubino::Session::Store).to receive(:new).and_raise(RuntimeError, "db gone")
+      ui = described_class.new(agent_id: "sa_sub1")
+      expect(ui.send(:build_subagent_status_line)).to be_nil
+    end
+  end
 end

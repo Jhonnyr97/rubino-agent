@@ -81,9 +81,9 @@ module Rubino
       # paste can never push the live region off-screen.
       MAX_INPUT_ROWS = 8
 
-      # The status bar is omitted on terminals narrower than this — at that
-      # width the truncated line carries no information worth a row.
-      MIN_STATUS_COLS = 40
+      # The status bar is omitted on terminals narrower than this — StatusBar
+      # handles its own width tiers down to <52 cols, so the floor is minimal.
+      MIN_STATUS_COLS = 20
 
       # QUEUED-message prefix: submitting a line that starts with this queues the
       # REST instead of interrupting — the discoverable, terminal-independent
@@ -280,6 +280,9 @@ module Rubino
         # there is ONE status bar during a turn instead of a separate row above
         # the prompt. Cleared at turn end so the footer reverts to model/ctx.
         @turn_status = +""
+        # Sweeping ◆ track counter for the subagent live facet (advances on
+        # each footer repaint while focused on a running sub).
+        @facet_tick = 0
         # TRANSIENT announcement row (e.g. the Shift+Tab mode confirmation):
         # rendered in the live region directly above the partial/prompt, redrawn
         # in place every frame and NEVER committed to scrollback. Cleared on the
@@ -309,6 +312,11 @@ module Rubino
         # status footer) by @subagent_panel — the single live representation of
         # running children, no longer a duplicate block above the timeline.
         @cards = []
+        # Raw BackgroundTasks Entry objects for the running children, populated
+        # alongside @cards by #set_cards so #status_row can build a live facet
+        # from the focused subagent's entry fields without re-reading the
+        # registry on every frame.
+        @card_entries = []
         @subagent_panel = Composer::SubagentPanel.new(agent_menu: @agent_menu, cards: -> { @cards })
         # The live-region renderer: owns the count of rows currently drawn ABOVE
         # the prompt and the scroll-safe erase→commit→redraw frame discipline
@@ -743,7 +751,7 @@ module Rubino
       # half-frame with a streamed token or a keystroke. The list is clamped to a
       # sane bound by the caller (UI::SubagentCards), but we also cap it here so a
       # buggy caller can never grow the live region past the screen.
-      def set_cards(lines, origin: :main)
+      def set_cards(lines, origin: :main, entries: nil)
         # While SUSPENDED (run_in_terminal: an approval/ask owns the real
         # terminal) a card repaint here would draw straight over the
         # interactive prompt and can abort its blocked TTY read (#144). Drop
@@ -778,6 +786,7 @@ module Rubino
           return if capped == @cards && !agent_menu_open?
 
           @cards = capped
+          @card_entries = entries if entries
           render_frame(committed: nil)
         end
       end
@@ -958,6 +967,9 @@ module Rubino
       # The agent currently allowed to paint (the focused view). :main when not
       # attached to any sub. Exposed for the while-attached switcher line and tests.
       attr_reader :focused_agent_id
+
+      # Terminal width in columns. Read by StatusBar to decide the footer tier.
+      attr_reader :cols
 
       # Shared ShellTailer for live-tailing attached shell output. Both the
       # idle-loop ticker (ChatCommand) and the mid-turn status thread (CLI)
@@ -1384,22 +1396,69 @@ module Rubino
       # user can see that Esc cancels the current turn (Enter now QUEUES). The
       # hint is appended only when the styled status line is present and the
       # combined plain width still fits; it never replaces the bar.
+      # The footer row. StatusBar is the single owner of width — it decides the
+      # tier from @cols. This method only owns the facet-vs-idle switch and the
+      # interrupt-hint shedding.
+      #
+      # During an active turn the ctx bar is suppressed (tok is already in the
+      # facet), so the footer is just the facet (@turn_status). Idle, it is the
+      # StatusBar-built string (@status).
+      #
+      # When FOCUSED on a RUNNING subagent, the footer shows a LIVE facet built
+      # from the entry's real-time fields (state, label, tool_count, elapsed) with
+      # the same sweeping ◆ track the main turn facet uses. A finished/idle sub,
+      # a shell, or :main focus → unchanged (main ctx bar / current behavior).
+      #
+      # The interrupt hint is appended when it fits; shed the hint first, then
+      # omit entirely if the base alone won't fit.
       def status_row
         return nil if @cols < MIN_STATUS_COLS
 
-        # The live turn activity ("◆ writing · …") prepended to the model/ctx bar
-        # so a turn shows ONE footer, not a separate activity row above the prompt.
-        active = !@turn_status.empty?
-        base   = active ? "#{@turn_status}  #{@status}".strip : @status
-        hint   = (@turn_active || @content_streaming) && @on_interrupt ? interrupt_hint : nil
+        base = if @focused_agent_id != :main
+                 # Focused on a sub: build a live facet if the entry is running.
+                 entry = @card_entries.find { |e| e.id == @focused_agent_id }
+                 if entry && Tools::BackgroundTasks.live_status?(entry.status)
+                   live_subagent_facet(entry)
+                 else
+                   # Finished/idle sub or no entry yet → persisted ctx line.
+                   @status
+                 end
+               else
+                 # Main view: live turn facet or idle ctx bar.
+                 !@turn_status.empty? ? @turn_status : @status
+               end
+        return nil if base.empty?
 
-        # Candidates richest-first; render the first that fits the row. On
-        # overflow we shed the least-important pieces in order — drop the cosmetic
-        # hint, then the model/ctx tail (keep the live turn info, which changes
-        # every frame) — rather than truncating mid-ANSI or showing nothing.
-        candidates = [hint && join(base, hint), base]
-        candidates += [hint && join(@turn_status, hint), @turn_status] if active
-        candidates.compact.reject(&:empty?).find { |row| fits?(row) }
+        hint = (@turn_active || @content_streaming) && @on_interrupt ? interrupt_hint : nil
+        row  = hint ? join(base, hint) : base
+        return row if fits?(row)
+        # shed the hint; if base alone still won't fit, omit entirely
+        fits?(base) ? base : nil
+      end
+
+      # Builds a LIVE facet line for a RUNNING subagent from the entry's
+      # real-time fields (label, tool_count, elapsed) with the sweeping ◆ track.
+      # Token estimate (~N tok) only when output_tail is non-empty:
+      # approximate as chars/4.
+      def live_subagent_facet(entry)
+        @facet_tick += 1
+        track = UI.build_facet_track(@facet_tick, pastel)
+
+        label = SubagentCards.card_label(entry)
+        state = entry.status == :stopping ? "stopping" : "running"
+        count = entry.tool_count.to_i
+        metric = count.positive? ? "#{count} tool#{"s" if count != 1} · " : ""
+        elapsed = SubagentCards.elapsed(entry)
+
+        text = pastel.dim("#{state} · #{label} · #{metric}#{elapsed}")
+
+        # Token estimate: only if output_tail has live content.
+        if entry.output_tail && !entry.output_tail.empty?
+          est = entry.output_tail.sum(0) { |line| line.length } / 4
+          text += pastel.dim(" · ~#{est} tok") if est > 0
+        end
+
+        "#{track} #{text}"
       end
 
       # Joins two status pieces with the two-space separator the bar uses,
@@ -2225,9 +2284,9 @@ module Rubino
       end
 
       # Tab on empty input: ask the callback to cycle + persist the primary
-      # agent, then adopt the status-bar line it returns (the agent chip leads
-      # the bar) and redraw. A nil return (no callback, or a single agent) is a
-      # no-op. Mirrors #cycle_mode for Shift+Tab.
+      # agent, then adopt the status-bar line it returns and redraw. A nil
+      # return (no callback, or a single agent) is a no-op.
+      # Mirrors #cycle_mode for Shift+Tab.
       def cycle_agent
         return unless @on_agent_cycle
 
@@ -2723,6 +2782,7 @@ module Rubino
         @region.clear
         @partial = +""
         @cards = []
+        @card_entries = []
         @menu.hide!
         @announce = +""
         @output.flush

@@ -26,6 +26,10 @@ module Rubino
       # nil until a turn has run.
       attr_reader :last_stop_reason
 
+      # The last turn's cache_read_tokens (prompt-cache usage, #311), surfaced
+      # so the footer can render the `Nk cached` segment. nil until a turn runs.
+      attr_reader :last_cache_read_tokens
+
       def initialize(session:, event_bus:, ui:, config:, ignore_rules: false,
                      agent_definition: nil, cancel_token: nil,
                      model_override: nil, provider_override: nil,
@@ -412,6 +416,7 @@ module Rubino
             # Post-turn state, captured like #active_session: the caller reads it
             # off #last_stop_reason after #execute returns.
             @last_stop_reason = loop_runner.stop_reason
+            @last_cache_read_tokens = loop_runner.last_cache_read_tokens
             content
           end
         end

@@ -1030,7 +1030,7 @@ module Rubino
         return unless composer
 
         entries = Tools::BackgroundTasks.instance.running
-        composer.set_cards(subagent_cards.card_lines(entries), origin: @agent_id)
+        composer.set_cards(subagent_cards.card_lines(entries), origin: @agent_id, entries: entries)
       rescue StandardError
         # A card repaint is cosmetic — never let it break the turn or the child.
       end
@@ -1083,11 +1083,56 @@ module Rubino
       # @turn_tok_chars/4 is the SAME chars/4 estimate the facet's `~N tok` uses.
       # No-op off the interactive REPL (provider nil) or between turns. Cosmetic:
       # a paint failure must never disturb the turn.
+      #
+      # For SUBAGENT CLIs (@agent_id != :main) this builds the status line from
+      # the entry's runner directly — subagent CLIs have a status thread (started
+      # by thinking_started) but no @live_status_provider set by ChatCommand.
+      # The bar re-reads the session store each tick (~1/s) so it tracks the
+      # subagent's growing context live while attached.
       def refresh_live_ctx_bar
+        if @agent_id != :main
+          line = build_subagent_status_line
+          BottomComposer.current&.set_status(line) if line
+          return
+        end
+
         return unless @turn_active && @live_status_provider
 
         line = @live_status_provider.call(@turn_tok_chars / 4)
         BottomComposer.current&.set_status(line) if line
+      rescue StandardError
+        nil
+      end
+
+      # Builds a status-bar line from the subagent's runner (looked up via
+      # @agent_id from BackgroundTasks). Mirrors ChatCommand#build_status_line
+      # but is callable from the subagent CLI's own status thread without
+      # needing the ChatCommand instance. Returns nil when disabled or on any
+      # failure — a cosmetic line must never break anything.
+      def build_subagent_status_line
+        return nil unless Rubino.configuration.display_statusbar?
+
+        entry = Tools::BackgroundTasks.instance.find(@agent_id)
+        runner = entry&.runner
+        return nil unless runner
+
+        session  = runner.session
+        budget   = Context::TokenBudget.new(model_id: session[:model],
+                                            config: Rubino.configuration)
+        messages = ::Rubino::Session::Store.new.for_session(session[:id])
+        tokens   = budget.estimate_tokens(messages)
+
+        UI::StatusBar.render(
+          mode: Rubino::Modes.current,
+          skill: Rubino::ActiveSkill.current,
+          provider: session[:provider],
+          model: session[:model],
+          tokens: tokens,
+          window: budget.available_tokens,
+          cached: runner.last_cache_read_tokens || 0,
+          cols: BottomComposer.current&.cols || 80,
+          pastel: @pastel
+        )
       rescue StandardError
         nil
       end
@@ -1412,11 +1457,8 @@ module Rubino
       # flickers the row, but a real multi-second transport silence (bursty
       # delivery / proxy stall) stops the screen looking frozen.
       STREAM_STALL_AFTER = 0.6
-      # "Ruby facet" skin: a red ◆ sweeping back and forth on a 5-cell dim ┄
-      # track (the house separator glyph). 12-frame loop @100ms — the facet
-      # dwells one extra beat at each end of the sweep.
-      FACET_TRACK_CELLS = 5
-      FACET_FRAMES = [0, 0, 0, 1, 2, 3, 4, 4, 4, 3, 2, 1].freeze
+      # Facet track animation constants are defined on Rubino::UI (shared with
+      # BottomComposer for the subagent live facet).
 
       # Marks the start of a TURN: resets the per-turn stats and starts the
       # status-row engine in its initial "thinking" phase (the P1 wait). Called
@@ -2991,12 +3033,29 @@ module Rubino
       end
 
       # One frame: the sweeping red ◆ on its dim ┄ track, label + stats right.
+      # Appends "N tok/s" computed from @turn_tok_chars and the turn clock;
+      # omitted when 0 or no elapsed.
       def status_frame(tick)
-        pos   = FACET_FRAMES[tick % FACET_FRAMES.length]
-        track = (0...FACET_TRACK_CELLS).map do |cell|
-          cell == pos ? @pastel.red("◆") : @pastel.dim("┄")
-        end.join
-        "#{track} #{@pastel.dim(status_text)}"
+        track = UI.build_facet_track(tick, @pastel)
+        text = @pastel.dim(status_text)
+        tps  = turn_tok_per_sec
+        text += @pastel.dim(" · #{tps} tok/s") if tps
+        "#{track} #{text}"
+      end
+
+      # tok/s from @turn_tok_chars (estimate: chars/4) divided by turn elapsed.
+      # nil when zero or no elapsed (omit).
+      def turn_tok_per_sec
+        return nil unless @turn_started_at
+
+        elapsed = monotonic_now - @turn_started_at
+        return nil if elapsed <= 0
+
+        est_tokens = @turn_tok_chars / 4
+        return nil if est_tokens <= 0
+
+        rate = (est_tokens / elapsed).to_i
+        rate.positive? ? rate.to_s : nil
       end
 
       # True when a block is mid-stream (the in-flight tail owns the hidden
