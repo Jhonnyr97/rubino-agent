@@ -71,6 +71,14 @@ RSpec.describe Rubino::UI::CLI do
       expect_neutralized(out)
     end
 
+    # #566c — the formatted markdown path (#reasoning_markdown_lines routes through
+    # #margined_render, which sanitizes via #render_markdown_block, then wraps in
+    # @pastel.dim). Must still defang escapes AND keep dim SGR.
+    it "defangs escapes in #reasoning_markdown_lines and keeps dim styling" do
+      out = ui.send(:reasoning_markdown_lines, pwn).join("\n")
+      expect_neutralized(out)
+    end
+
     # #566b — the all-at-once aside (#commit_reasoning_aside prints to stdout).
     it "defangs escapes in #commit_reasoning_aside" do
       out = capture_stdout { ui.send(:commit_reasoning_aside, pwn, 2) }

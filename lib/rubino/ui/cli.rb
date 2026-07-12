@@ -2655,19 +2655,64 @@ module Rubino
 
         completed = @reasoning_md.feed(text)
         clear_plain_tail if completed.any?
-        completed.each { |block| commit_block_atomic(reasoning_aside_lines(block)) }
-        # Bounded dim rolling window over the in-flight (un-committed) thought.
-        show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
+        completed.each { |block| commit_block_atomic(reasoning_markdown_lines(block)) }
+        # Dynamic live tail for the in-flight thought — same 3-way branch as
+        # #stream_content but DIMMED: a growing table or markdown block stays
+        # fully visible (bounded by the composer's screen-height budget, NOT a
+        # fixed 3-row window) so its earlier rows never scroll away.  The raw
+        # fallback keeps the existing show_reasoning_tail (fixed 3-row window +
+        # per-line dim).
+        #
+        # CORRECTNESS INVARIANT: the reasoning render MUST stay highlight:false
+        # (no Rouge).  pastel.dim re-wraps its OWN nested resets so dim survives,
+        # but Rouge emits non-pastel escapes (e.g. \e[39;49;00m) whose `00`
+        # clears the dim SGR — highlight:true would produce half-dimmed code
+        # lines.
+        if @reasoning_md.in_table?
+          lines = render_partial_table_lines(@reasoning_md.table_rows_so_far)
+          frame = dim_markdown_lines(lines).join("\n")
+          note_live_tail(frame)
+          paint_live(frame)
+        elsif live_markdown?
+          lines = live_markdown_lines(@reasoning_md)
+          frame = dim_markdown_lines(lines).join("\n")
+          note_live_tail(frame)
+          paint_live(frame)
+        else
+          show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
+        end
       end
 
       # The streamed-aside body for a completed reasoning block: each line dim and
       # flush-left under the `┄ thinking ┄` rail — the SAME shape
       # #commit_reasoning_aside commits, so the live-streamed scrollback matches
       # the all-at-once aside exactly.
+      # UNCHANGED raw fallback: one pass defang -> line-by-line dim. Only used
+      # when live_markdown? is OFF — the dynamic (formatted) paths use
+      # #reasoning_markdown_lines instead, which renders through the full
+      # markdown pipeline.
       def reasoning_aside_lines(block)
         # CWE-150 (#566): committed reasoning is model output — defang escapes
         # before wrapping each line in our own (trusted) @pastel dim styling.
         block.to_s.split("\n", -1).map { |line| @pastel.dim(safe(line).to_s) }
+      end
+
+      # Completed reasoning block rendered as FORMATTED dimmed markdown:
+      # tables get borders + balanced columns, lists get bullets, etc. —
+      # all through the same #margined_render the content stream uses, then
+      # wrapped in @pastel.dim.  highlight is FALSE by CORRECTNESS, not style:
+      # pastel.dim survives its own nested SGR resets, but Rouge emits non-pastel
+      # escapes (e.g. \e[39;49;00m) whose `00` clears dim — so highlight:true
+      # would produce half-dimmed code blocks.
+      def reasoning_markdown_lines(block)
+        dim_markdown_lines(margined_render(block))
+      end
+
+      # Wrap markdown-rendered (already-ANSI-styled) lines in @pastel.dim so
+      # the whole reasoning block stays dim/grey.  Used by the live markdown
+      # tail, the live table tail, and the committed completed blocks.
+      def dim_markdown_lines(lines)
+        lines.map { |l| @pastel.dim(l) }
       end
 
       # The DIM live tail for the in-flight reasoning line — same wrap/clamp
@@ -3166,7 +3211,7 @@ module Rubino
       def finalize_reasoning_stream(seconds)
         remaining = @reasoning_md&.flush
         if remaining && !remaining.empty?
-          commit_block_atomic(reasoning_aside_lines(remaining))
+          commit_block_atomic(reasoning_markdown_lines(remaining))
         else
           show_live_tail("") # clear the transient tail row even with no remainder
         end

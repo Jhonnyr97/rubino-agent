@@ -263,6 +263,36 @@ RSpec.describe Rubino::UI::CLI do
       expect(after).to include("answer")
     end
 
+    # With live_markdown ON, the reasoning live tail uses the SAME dynamic
+    # budget as the content stream: tables are rendered as partial markdown
+    # (borders/columns, not raw pipe truncation), and markdown blocks keep
+    # EVERY visible row instead of a fixed 3-line raw window.  Both paths wrap
+    # in @pastel.dim so the grey aesthetic is preserved.
+    it "renders reasoning live tail as formatted dimmed markdown for tables, not 3-row raw truncation" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      Rubino.configuration.set("display", "live_markdown", true)
+      # A 6-row table streaming in-flight — the raw path would only show the
+      # last 3 lines. The dynamic path shows all 6 rows.
+      rows = ["| Col A | Col B |", "| --- | --- |", "| v1 | v2 |", "| v3 | v4 |", "| v5 | v6 |", "| v7 | v8 |"]
+      rendered = ui.send(:render_partial_table_lines, rows)
+      dimmed = ui.send(:dim_markdown_lines, rendered)
+      expect(dimmed.size).to be > 3
+      expect(dimmed).to all(include("\e[2m"))  # every row carries dim SGR
+      plain = dimmed.map { |l| l.gsub(/\e\[[0-9;]*m/, "") }
+      expect(plain.join("\n")).to include("v1")  # earlier rows are NOT lost
+      expect(plain.join("\n")).to include("v7")  # later rows present too
+    end
+
+    it "renders a completed reasoning block as formatted dimmed markdown (bullets + dim)" do
+      ui.instance_variable_set(:@pastel, Pastel.new(enabled: true))
+      block = "- step one\n- step two\n- step three\n- step four\n"
+      lines = ui.send(:reasoning_markdown_lines, block)
+      expect(lines).to all(include("\e[2m"))  # every line dimmed
+      plain = lines.map { |l| l.gsub(/\e\[[0-9;]*m/, "") }
+      expect(plain.join("\n")).to include("step one")   # bullet preserved
+      expect(plain.join("\n")).to include("step four")
+    end
+
     # :collapsed (the DEFAULT) does NOT stream reasoning: nothing reasoning-shaped
     # appears during the phase — only the one-liner cue lands at collapse.
     it "does NOT stream reasoning live in collapsed mode (cue only at the end)" do
