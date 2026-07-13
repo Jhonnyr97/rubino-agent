@@ -325,7 +325,7 @@ module Rubino
             valid_from: (valid_from.to_s.empty? ? now : valid_from),
             valid_to: nil,
             superseded_by: nil,
-            embedding: maybe_embed(text),
+            embedding: (emb = maybe_embed(text)) && Sequel.blob(emb),
             created_at: now,
             updated_at: now
           )
@@ -397,13 +397,16 @@ module Rubino
 
         # ---- embeddings (best-effort) ----
 
-        # Vector mode is opt-in (`memory.sqlite.vector: true`) AND requires
-        # RubyLLM.embed to be wired. Off by default → FTS5-only hybrid.
+        # Vector mode is opt-in (`memory.sqlite.vector: true`). Off by default →
+        # FTS5-only hybrid. No embed call is EVER made unless the user sets
+        # vector:true. When vector:true, embeddings are routed through the
+        # configurable `auxiliary.embedding` endpoint (local-first, no paid API);
+        # at its defaults (provider:"main", model:"") it falls back to the
+        # global RubyLLM.embed.
         def vector?
           return @vector unless @vector.nil?
 
-          @vector = @config.dig("memory", "sqlite", "vector") == true &&
-                    defined?(RubyLLM) && RubyLLM.respond_to?(:embed)
+          @vector = @config.dig("memory", "sqlite", "vector") == true
         end
 
         # Graph-lite 1-hop blend is ON by default; `memory.sqlite.graph: false`
@@ -424,10 +427,75 @@ module Rubino
         def embed(text)
           return nil unless vector?
 
-          res = RubyLLM.embed(text.to_s)
+          cfg = embedding_config
+          res = if embedding_configured?(cfg)
+                  scoped_embed(text, cfg)
+                else
+                  RubyLLM.embed(text.to_s)
+                end
           res.respond_to?(:vectors) ? res.vectors : res
         rescue StandardError
           nil
+        end
+
+        # -- aux embedding resolution --
+
+        def embedding_config
+          cfg = @config.auxiliary_config("embedding") || {}
+          return cfg unless cfg.is_a?(Hash) && !cfg.empty?
+
+          cfg
+        end
+
+        def embedding_configured?(cfg)
+          return false unless cfg.is_a?(Hash)
+
+          provider = cfg["provider"].to_s.strip
+          model    = cfg["model"].to_s.strip
+          !(provider.empty? || provider == "main") || !model.empty?
+        end
+
+        def scoped_embed(text, cfg)
+          resolved_provider = resolve_embedding_provider(cfg)
+          model = cfg["model"].to_s.strip
+          base_url = cfg["base_url"].to_s.strip
+
+          llm_config = RubyLLM::Configuration.new
+          # Copy API keys from the global RubyLLM config so the scoped
+          # context inherits the process's credentials (ENV vars).
+          copy_llm_api_keys(llm_config)
+          # Point the resolved provider at the configured base URL.
+          set_provider_base_url(llm_config, resolved_provider, base_url) unless base_url.empty?
+          # Honour the configured model (or keep the global default).
+          llm_config.default_embedding_model = model unless model.empty?
+
+          RubyLLM.embed(text.to_s, context: RubyLLM::Context.new(llm_config))
+        end
+
+        def resolve_embedding_provider(cfg)
+          provider = cfg["provider"].to_s.strip
+          return @config.dig("model", "provider").to_s if provider.empty? || provider == "main"
+
+          provider
+        end
+
+        # Copy known API keys from the global RubyLLM config to a scoped one
+        # so embedding calls to a custom endpoint still carry credentials.
+        def copy_llm_api_keys(target)
+          %w[openai_api_key anthropic_api_key gemini_api_key deepseek_api_key
+             ollama_api_key bedrock_api_key bedrock_secret_key].each do |key|
+            val = RubyLLM.config.public_send(key)
+            target.public_send("#{key}=", val) if val
+          rescue NoMethodError
+            # Provider option not registered — ignore
+          end
+        end
+
+        def set_provider_base_url(target, provider_name, base_url)
+          key = "#{provider_name}_api_base"
+          target.public_send("#{key}=", base_url) if target.respond_to?("#{key}=")
+        rescue NoMethodError
+          # Provider doesn't support base_url — ignore
         end
 
         def encode_embedding(vec) = vec.pack("e*")

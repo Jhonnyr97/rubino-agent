@@ -158,7 +158,12 @@ module Rubino
             "model" => "",
             "base_url" => nil,
             "timeout" => 30
-          }
+          },
+          # Embeddings aux endpoint (opt-in, no default — must be explicitly
+          # configured in config.yml when `memory.sqlite.vector: true`).
+          # Point this at a local embedding model (e.g. an oMLX/ds4 embeddings
+          # endpoint) to get semantic recall with NO paid API — local-first,
+          # off by default. See docs/memory.md.
         },
         "agent" => {
           # OUTER rail on tool iterations, enforced in IterationBudget alongside

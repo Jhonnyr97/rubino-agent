@@ -58,6 +58,14 @@ module Rubino
         Array(@metadata["languages"]).map { |l| l.to_s.strip.downcase }.reject(&:empty?)
       end
 
+      # Category this skill belongs to, from the `category:` frontmatter key.
+      # Defaults to "General" when absent. Categories group skills in the
+      # prompt index (P2: deterministic grouping — pure string assembly, no LLM).
+      def category
+        val = @metadata["category"]
+        val.to_s.strip.empty? ? "General" : val.to_s.strip
+      end
+
       # Platforms this skill is restricted to (e.g. ["macos", "linux"]), from the
       # agentskills.io `platforms:` frontmatter. Empty/nil means the skill runs on
       # all platforms. A skill restricted to a non-matching platform is excluded
@@ -65,6 +73,36 @@ module Rubino
       # discoverable/loadable on demand — same gating contract as `languages`.
       def platforms
         Array(@metadata["platforms"]).map { |p| p.to_s.strip.downcase }.reject(&:empty?)
+      end
+
+      # Tool-conditional visibility (P3): skills declare which tools must be
+      # present for them to appear in the catalogue, and which tools they are a
+      # fallback for (hidden when the primary tool exists). All three read from
+      # the `metadata.hermes` frontmatter block (mirrors Hermes' extract_skill_conditions).
+
+      # Tools that must ALL be in the active set for this skill to appear.
+      # Absent = no restriction (always shown). Array of tool name strings.
+      def requires_tools
+        hermes_meta("requires_tools")
+      end
+
+      # Toolsets that must ALL be in the active set for this skill to appear.
+      # Absent = no restriction. Array of toolset name strings.
+      def requires_toolsets
+        hermes_meta("requires_toolsets")
+      end
+
+      # Tools for which this skill is a FALLBACK. When the named tool IS in the
+      # active set, this skill is hidden (the primary tool wins). When the tool
+      # is NOT present, this skill acts as its substitute. Array of tool names.
+      def fallback_for_tools
+        hermes_meta("fallback_for_tools")
+      end
+
+      # Environment variables this skill needs to function (P5). Array of
+      # ENV var name strings, parsed from metadata.hermes. Empty = no requirement.
+      def required_environment_variables
+        hermes_meta("required_environment_variables")
       end
 
       # Whether this skill is compatible with the current OS platform.
@@ -151,12 +189,6 @@ module Rubino
       # Returns a summary for the agent to see available skills
       def summary
         "#{@name}: #{@description}"
-      end
-
-      # Full catalog entry with location — used by PromptIndex for the
-      # agentskills.io disclosure format (name + description + path).
-      def catalog_entry
-        "#{@name}: #{@description}\n  location: #{@path}"
       end
 
       private
@@ -324,6 +356,19 @@ module Rubino
         else
           raw
         end
+      end
+
+      # Helper that reads a keys under `metadata.hermes` frontmatter block,
+      # normalising to an array of strings. Mirrors Hermes' extract_skill_conditions.
+      # Returns an empty array when the key or its parent blocks are absent.
+      def hermes_meta(key)
+        meta = @metadata["metadata"]
+        return [] unless meta.is_a?(Hash)
+
+        hermes = meta["hermes"]
+        return [] unless hermes.is_a?(Hash)
+
+        Array(hermes[key]).map(&:to_s).reject(&:empty?)
       end
 
       EXCLUDED_DIRS = %w[.git .svn .hg node_modules __pycache__ .DS_Store].freeze

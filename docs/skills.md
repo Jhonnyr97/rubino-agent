@@ -51,9 +51,13 @@ because it can carry bundled references, scripts, and assets.
 
 On top of the configured user paths, the registry **always** scans the
 `skills/` directory shipped *inside the gem*. This is how a skill reaches every
-install with no copy step and updates automatically on `gem update`. The bundled
-**`ruby-expert`** skill (deep Ruby/Rails knowledge across idioms, OO design,
-concurrency, Rails, testing, performance, security, and more) ships this way.
+install with no copy step and updates automatically on `gem update`. Two bundled
+skills ship this way:
+
+- **`ruby-expert`** — deep Ruby/Rails knowledge across idioms, OO design,
+  concurrency, Rails, testing, performance, security, and more.
+- **`skill-authoring`** — how to write effective `SKILL.md` files: frontmatter,
+  the "Use when …" description convention, body structure, and common pitfalls.
 
 Built-ins are scanned **before** the user paths, so a user skill of the same
 name placed in `.rubino/skills` or `~/.rubino/skills` transparently overrides the

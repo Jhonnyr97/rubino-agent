@@ -463,6 +463,113 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       expect(flat_skill.read_file("anything.md")).to be_nil
     end
 
+    # P2/P3: frontmatter readers
+    describe "frontmatter readers (P2 category, P3 tool conditions)" do
+      def skill_from_yaml(yaml)
+        Dir.mktmpdir do |dir|
+          FileUtils.mkdir_p(File.join(dir, "test-skill"))
+          File.write(File.join(dir, "test-skill", "SKILL.md"), "---\n#{yaml}\n---\nbody")
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          reg.find("test-skill")
+        end
+      end
+
+      it "reads category from frontmatter, defaulting to 'General'" do
+        skill = skill_from_yaml("name: test-skill\ndescription: d\ncategory: DevOps")
+        expect(skill.category).to eq("DevOps")
+      end
+
+      it "defaults category to 'General' when absent" do
+        skill = skill_from_yaml("name: test-skill\ndescription: d")
+        expect(skill.category).to eq("General")
+      end
+
+      it "defaults category to 'General' when blank" do
+        skill = skill_from_yaml("name: test-skill\ndescription: d\ncategory: '  '")
+        expect(skill.category).to eq("General")
+      end
+
+      it "reads requires_tools from metadata.hermes block" do
+        yaml = <<~YAML
+          name: test-skill
+          description: d
+          metadata:
+            hermes:
+              requires_tools: [read_file, write_file]
+        YAML
+        skill = skill_from_yaml(yaml)
+        expect(skill.requires_tools).to contain_exactly("read_file", "write_file")
+      end
+
+      it "returns empty array for requires_tools when absent" do
+        skill = skill_from_yaml("name: test-skill\ndescription: d")
+        expect(skill.requires_tools).to eq([])
+      end
+
+      it "reads requires_toolsets from metadata.hermes block" do
+        yaml = <<~YAML
+          name: test-skill
+          description: d
+          metadata:
+            hermes:
+              requires_toolsets: [file_ops]
+        YAML
+        skill = skill_from_yaml(yaml)
+        expect(skill.requires_toolsets).to contain_exactly("file_ops")
+      end
+
+      it "reads fallback_for_tools from metadata.hermes block" do
+        yaml = <<~YAML
+          name: test-skill
+          description: d
+          metadata:
+            hermes:
+              fallback_for_tools: [read_attachment, web_fetch]
+        YAML
+        skill = skill_from_yaml(yaml)
+        expect(skill.fallback_for_tools).to contain_exactly("read_attachment", "web_fetch")
+      end
+
+      it "returns empty array when metadata.hermes is absent entirely" do
+        yaml = <<~YAML
+          name: test-skill
+          description: d
+          metadata:
+            other: value
+        YAML
+        skill = skill_from_yaml(yaml)
+        expect(skill.requires_tools).to eq([])
+        expect(skill.fallback_for_tools).to eq([])
+      end
+
+      # P5: required_environment_variables
+      it "reads required_environment_variables from metadata.hermes block (P5)" do
+        yaml = <<~YAML
+          name: test-skill
+          description: d
+          metadata:
+            hermes:
+              required_environment_variables: [API_KEY, DATABASE_URL]
+        YAML
+        skill = skill_from_yaml(yaml)
+        expect(skill.required_environment_variables).to contain_exactly("API_KEY", "DATABASE_URL")
+      end
+
+      it "returns empty array for required_environment_variables when absent (P5)" do
+        skill = skill_from_yaml("name: test-skill\ndescription: d")
+        expect(skill.required_environment_variables).to eq([])
+      end
+
+      it "returns empty array for required_environment_variables when metadata.hermes absent (P5)" do
+        yaml = "name: test-skill\ndescription: d\nmetadata:\n  other: value"
+        skill = skill_from_yaml(yaml)
+        expect(skill.required_environment_variables).to eq([])
+      end
+    end
+
     # W3 (TOCTOU): the skill dir can be mutated between init (when linked_files
     # is snapshotted) and a read. A teardown mid-read must surface as a clean
     # miss, and the LIVE listing must not still advertise the vanished file.
@@ -662,6 +769,175 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       expect(desc).not_to include("data-helper")
     end
 
+    it "describes the 'Use when <trigger-class>' convention in its tool description (P1)" do
+      desc = described_class.new(registry: registry).description
+      expect(desc).to include("Use when <trigger-class>")
+      expect(desc).to include("describe the TRIGGER")
+      expect(desc).to include("## When to use")
+    end
+
+    it "describes the 'Use when' convention in the create action param docs (P1)" do
+      props = described_class.new(registry: registry).input_schema[:properties]
+      desc_param = props[:description][:description]
+      expect(desc_param).to include("Use when <trigger-class>")
+      expect(desc_param).to include("describe the TRIGGER")
+    end
+
+    # P5: environment variable readiness check on load
+    describe "environment variable readiness (P5)" do
+      def write_env_skill(dir, name, description, env_vars = nil)
+        FileUtils.mkdir_p(File.join(dir, name))
+        yaml_lines = ["name: #{name}", "description: #{description}"]
+        if env_vars
+          yaml_lines << "metadata:"
+          yaml_lines << "  hermes:"
+          yaml_lines << "    required_environment_variables: #{env_vars.inspect}"
+        end
+        File.write(File.join(dir, name, "SKILL.md"), "---\n#{yaml_lines.join("\n")}\n---\n\nbody")
+      end
+
+      it "prepends a setup-needed note when a required env var is missing" do
+        Dir.mktmpdir do |dir|
+          write_env_skill(dir, "api-skill", "API skill", %w[MISSING_KEY])
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          t = described_class.new(registry: reg)
+          out = t.call("name" => "api-skill")
+          expect(out).to include("Setup needed")
+          expect(out).to include("MISSING_KEY")
+          expect(out).to include("Ask the user to set them")
+        end
+      end
+
+      it "prepends no note when all required env vars are set" do
+        Dir.mktmpdir do |dir|
+          write_env_skill(dir, "api-skill", "API skill", %w[PATH HOME])
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          t = described_class.new(registry: reg)
+          out = t.call("name" => "api-skill")
+          expect(out).not_to include("Setup needed")
+          expect(out).to include("<skill_content")
+        end
+      end
+
+      it "prepends no note when the skill has no required_environment_variables" do
+        Dir.mktmpdir do |dir|
+          write_env_skill(dir, "plain-skill", "Plain skill")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          t = described_class.new(registry: reg)
+          out = t.call("name" => "plain-skill")
+          expect(out).not_to include("Setup needed")
+          expect(out).to include("<skill_content")
+        end
+      end
+
+      it "lists all missing vars when multiple are absent" do
+        Dir.mktmpdir do |dir|
+          write_env_skill(dir, "multi-skill", "Multi", %w[GHOST_A GHOST_B])
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          t = described_class.new(registry: reg)
+          out = t.call("name" => "multi-skill")
+          expect(out).to include("GHOST_A")
+          expect(out).to include("GHOST_B")
+        end
+      end
+    end
+
+    # P6: review-fork read-before-write enforcement
+    describe "review-fork read-before-write (P6)" do
+      let(:home_registry) do
+        cfg = test_configuration("skills" => { "paths" => [@write_dir] })
+        Rubino::Skills::Registry.new(config: cfg, include_builtin: false)
+      end
+
+      around do |example|
+        Dir.mktmpdir do |home|
+          @home = home
+          @write_dir = File.join(home, "skills")
+          FileUtils.mkdir_p(@write_dir)
+          example.run
+        end
+      end
+
+      before do
+        allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
+      end
+
+      def create_skill(t, name)
+        t.call("action" => "create", "name" => name, "description" => "d", "body" => "# body\n")
+      end
+
+      it "refuses a review-origin patch of an unloaded skill with a load-first error" do
+        reg = home_registry
+        t = described_class.new(registry: reg)
+        create_skill(t, "target-skill")
+
+        out = Rubino.with_review_toolset(%w[skill]) do
+          t.call("action" => "patch", "name" => "target-skill", "old_str" => "body", "new_str" => "x")
+        end
+        expect(out).to include("without loading it first")
+        expect(out).to include('skill(name: "target-skill")')
+      end
+
+      it "refuses a review-origin edit of an unloaded skill with the same error" do
+        reg = home_registry
+        t = described_class.new(registry: reg)
+        create_skill(t, "target-skill")
+
+        out = Rubino.with_review_toolset(%w[skill]) do
+          t.call("action" => "edit", "name" => "target-skill", "body" => "# new\n")
+        end
+        expect(out).to include("without loading it first")
+      end
+
+      it "allows a review-origin patch after the skill has been loaded" do
+        reg = home_registry
+        t = described_class.new(registry: reg)
+        create_skill(t, "loaded-skill")
+
+        # Load it first
+        t.call("name" => "loaded-skill")
+
+        out = Rubino.with_review_toolset(%w[skill]) do
+          t.call("action" => "patch", "name" => "loaded-skill", "old_str" => "body", "new_str" => "x")
+        end
+        expect(out).to include("Patched SKILL.md")
+      end
+
+      it "allows a foreground (non-review) patch without loading first" do
+        reg = home_registry
+        t = described_class.new(registry: reg)
+        create_skill(t, "fg-skill")
+
+        out = t.call("action" => "patch", "name" => "fg-skill", "old_str" => "body", "new_str" => "x")
+        expect(out).to include("Patched SKILL.md")
+      end
+
+      it "allows a foreground (non-review) edit without loading first" do
+        reg = home_registry
+        t = described_class.new(registry: reg)
+        create_skill(t, "fg-skill")
+
+        out = t.call("action" => "edit", "name" => "fg-skill", "body" => "# fresh\n")
+        expect(out).to include("Updated skill")
+      end
+    end
+
     # Variant A — the on-demand create affordance: skill(action: "create", ...).
     # Writes <name>/SKILL.md inline (0 extra LLM calls), validates the
     # frontmatter contract, and rejects bad input.
@@ -830,12 +1106,16 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         expect(out).to include("Proceed without loading only if genuinely no skill is relevant")
       end
 
-      it "lists each skill as `- name: description` inside <available_skills>" do
+      it "lists each skill grouped by category with headers inside <available_skills>" do
         out = index.render
         expect(out).to include("<available_skills>")
         expect(out).to include("</available_skills>")
-        expect(out).to include("- legacy-flat: A flat-file skill kept for back-compat.")
-        expect(out).to include("- data-helper: Helps with data wrangling tasks.")
+        # Grouped by category (both fixtures default to "General" with no category)
+        expect(out).to include("  General:")
+        expect(out).to include("    - legacy-flat: A flat-file skill kept for back-compat.")
+        expect(out).to include("    - data-helper: Helps with data wrangling tasks.")
+        # P4: location is no longer emitted — it's pure per-turn token waste
+        expect(out).not_to include("location:")
       end
     end
 
@@ -864,6 +1144,193 @@ RSpec.describe "Skills (directory layout + disclosure)" do
         expect(out).to include("<available_skills>")
         expect(out).to include("### Creating skills")
         expect(out).to include('skill(action: "create"')
+      end
+    end
+
+    # P2: category grouping + deterministic ordering
+    context "with mixed categories (P2)" do
+      let(:registry) { Rubino::Skills::Registry.new(config: config) }
+
+      def write_categorized(dir, name, category, description = "#{name} desc")
+        FileUtils.mkdir_p(File.join(dir, name))
+        File.write(File.join(dir, name, "SKILL.md"), <<~SKILL)
+          ---
+          name: #{name}
+          description: #{description}
+          category: #{category}
+          ---
+          body
+        SKILL
+      end
+
+      it "groups skills by category, sorted deterministically" do
+        Dir.mktmpdir do |dir|
+          write_categorized(dir, "zzz-last", "Deployment")
+          write_categorized(dir, "aaa-first", "Code")
+          write_categorized(dir, "bbb-second", "Code")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          idx = described_class.new(registry: reg)
+          out = idx.render
+
+          # Categories sorted alphabetically: Code before Deployment
+          expect(out.index("Code:")).to be < out.index("Deployment:")
+          # Skills sorted alphabetically within category
+          expect(out.index("aaa-first")).to be < out.index("bbb-second")
+          expect(out).to include("  Code:")
+          expect(out).to include("  Deployment:")
+        end
+      end
+
+      it "defaults category to 'General' when absent" do
+        Dir.mktmpdir do |dir|
+          File.write(File.join(dir, "plain.md"), "---\nname: plain\ndescription: d\n---\nbody")
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          idx = described_class.new(registry: reg)
+          expect(idx.render).to include("  General:")
+        end
+      end
+
+      it "renders cache-stable output (deterministic ordering)" do
+        Dir.mktmpdir do |dir|
+          write_categorized(dir, "b-skill", "Deployment")
+          write_categorized(dir, "a-skill", "Code")
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          out1 = described_class.new(registry: reg).render
+          out2 = described_class.new(registry: reg).render
+          expect(out1).to eq(out2)
+        end
+      end
+    end
+
+    # P3: tool-conditional visibility
+    context "tool-conditional visibility (P3)" do
+      def write_gated(dir, name, tool_fields = {})
+        FileUtils.mkdir_p(File.join(dir, name))
+        yaml_lines = []
+        yaml_lines << "name: #{name}"
+        yaml_lines << "description: #{name} desc"
+        unless tool_fields.empty?
+          yaml_lines << "metadata:"
+          yaml_lines << "  hermes:"
+          tool_fields.each { |k, v| yaml_lines << "    #{k}: #{v.inspect}" }
+        end
+        File.write(File.join(dir, name, "SKILL.md"), "---\n#{yaml_lines.join("\n")}\n---\nbody")
+      end
+
+      it "hides a skill whose requires_tools are not all present" do
+        Dir.mktmpdir do |dir|
+          write_gated(dir, "pdf-skill", "requires_tools" => %w[read_file write_file])
+          write_gated(dir, "always-skill")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+
+          # Only "read_file" is available — "write_file" is missing, so pdf-skill is hidden.
+          idx = described_class.new(registry: reg, active_tools: %w[read_file shell])
+          out = idx.render
+          expect(out).not_to include("pdf-skill")
+          expect(out).to include("always-skill")
+        end
+      end
+
+      it "shows a skill when all requires_tools are present" do
+        Dir.mktmpdir do |dir|
+          write_gated(dir, "pdf-skill", "requires_tools" => %w[read_file write_file])
+          write_gated(dir, "always-skill")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+
+          idx = described_class.new(registry: reg, active_tools: %w[read_file write_file shell])
+          out = idx.render
+          expect(out).to include("pdf-skill")
+          expect(out).to include("always-skill")
+        end
+      end
+
+      it "hides a fallback_for skill when its primary tool IS present" do
+        Dir.mktmpdir do |dir|
+          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[read_attachment])
+          write_gated(dir, "always-skill")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+
+          # read_attachment IS available → fallback-reader is hidden.
+          idx = described_class.new(registry: reg, active_tools: %w[read_attachment shell])
+          out = idx.render
+          expect(out).not_to include("fallback-reader")
+          expect(out).to include("always-skill")
+        end
+      end
+
+      it "shows a fallback_for skill when its primary tool is NOT present" do
+        Dir.mktmpdir do |dir|
+          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[read_attachment])
+          write_gated(dir, "always-skill")
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+
+          # read_attachment is NOT available → fallback-reader should be shown.
+          idx = described_class.new(registry: reg, active_tools: %w[shell])
+          out = idx.render
+          expect(out).to include("fallback-reader")
+          expect(out).to include("always-skill")
+        end
+      end
+
+      it "shows all skills when active_tools is nil (backward compatible)" do
+        Dir.mktmpdir do |dir|
+          write_gated(dir, "gated-skill", "requires_tools" => %w[missing_tool])
+
+          reg = Rubino::Skills::Registry.new(
+            config: test_configuration("skills" => { "paths" => [dir] }),
+            include_builtin: false
+          )
+          idx = described_class.new(registry: reg) # no active_tools → show all
+          expect(idx.render).to include("gated-skill")
+        end
+      end
+    end
+
+    # P1: "Use when" description convention in creation_nudge
+    context "description-authoring convention (P1)" do
+      let(:empty_registry) do
+        Rubino::Skills::Registry.new(
+          config: test_configuration("skills" => { "paths" => [] }), include_builtin: false
+        )
+      end
+
+      it "creation_nudge instructs 'Use when <trigger-class>' description convention" do
+        out = described_class.new(registry: empty_registry).render
+        expect(out).to include("Use when <trigger-class>")
+        expect(out).to include("describe the TRIGGER")
+        expect(out).not_to include("match-on-sight") # old wording replaced
+      end
+
+      it "creation_nudge instructs '## When to use' and '## Don\\'t use for' body sections" do
+        out = described_class.new(registry: empty_registry).render
+        expect(out).to include("## When to use")
+        expect(out).to include("Don't use for")
       end
     end
   end

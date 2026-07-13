@@ -23,8 +23,9 @@ module Rubino
       # knows the exact destination + filename contract.
       DEFAULT_SKILL_DIR = ".rubino/skills"
 
-      def initialize(registry: nil)
+      def initialize(registry: nil, active_tools: nil)
         @registry = registry || Registry.new
+        @active_tools = active_tools
       end
 
       # Renders the "## Skills (mandatory)" block: the available-skills
@@ -39,17 +40,27 @@ module Rubino
       # The load-bearing auto-LOAD trigger. Nil when no skills are discovered,
       # so a fresh install shows only the create nudge instead of an empty
       # <available_skills> block.
+      # Groups skills by category (P2: deterministic grouping — pure string
+      # assembly, no LLM). Sorted by category name, then by skill name within
+      # each category.
       def catalogue
-        skills = @registry.catalog
+        skills = @registry.catalog(active_tools: @active_tools)
         return nil if skills.empty?
 
-        lines = skills.map { |s| "  - #{s.catalog_entry}" }.join("\n")
+        grouped = skills.group_by(&:category)
+        lines = grouped.keys.sort.flat_map do |cat|
+          group_lines = ["  #{cat}:"]
+          grouped[cat].sort_by(&:name).each do |s|
+            group_lines << "    - #{s.summary}"
+          end
+          group_lines
+        end
         <<~PROMPT.strip
           ## Skills (mandatory)
           The skill catalogue below is the FIRST thing to consult on every task — read it before you plan or act. If a skill matches or is even partially relevant, you MUST load it with skill(name) and follow its instructions BEFORE answering. When unsure, load it: missing a skill's steps, pitfalls, or required conventions is far worse than loading one you didn't need. Skills carry specialized knowledge — APIs, tool-specific commands, and proven workflows that outperform general-purpose approaches — and the user's required conventions and quality standards, so load the matching skill even for tasks you already know how to do, because the skill defines how it must be done here.
 
           <available_skills>
-          #{lines}
+          #{lines.join("\n")}
           </available_skills>
 
           Proceed without loading only if genuinely no skill is relevant to the task.
@@ -74,7 +85,7 @@ module Rubino
           To create a skill, call the `skill` tool with action "create":
 
           <skill_create>
-          skill(action: "create", name: "<kebab-case-name>", description: "One line saying what the skill is for and WHEN it applies — this is the only text future runs see before loading it, so make it match-on-sight.", body: "# <Title>\\n\\nThe proven, step-by-step instructions, commands, and pitfalls you just worked out. Be specific and prescriptive.")
+          skill(action: "create", name: "<kebab-case-name>", description: "Use when <trigger-class> — describe the TRIGGER that makes this skill relevant, not the task it performs. This is the only text future runs see before they decide to load the skill, so a trigger-focused description is better than a task label.", body: "# <Title>\\n\\n## When to use\\n- Bulleted triggers that warrant loading this skill.\\n- Also include counter-triggers: \\"Don't use for:\\"\\n\\nThe proven, step-by-step instructions, commands, and pitfalls you just worked out. Be specific and prescriptive.")
           </skill_create>
 
           This writes `#{DEFAULT_SKILL_DIR}/<name>/SKILL.md` for you with valid frontmatter — you do not need the write/edit tool for this.

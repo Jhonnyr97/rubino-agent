@@ -334,6 +334,8 @@ module Rubino
         parts << enforcement if enforcement
         memory_guide = memory_guidance_block
         parts << memory_guide if memory_guide
+        memory_index = memory_index_block
+        parts << memory_index if memory_index
         product = product_preamble
         parts << "[Product]\n#{product}" if product
         env = environment_block
@@ -362,20 +364,20 @@ module Rubino
       # The VOLATILE region — the bytes AFTER the cache breakpoint. These can
       # change turn-to-turn within a session, so caching them would invalidate
       # the prefix on every change (#311):
-      #   - [Relevant Memories]: a relevance-aware backend re-ranks recall per
-      #     turn against the new user message, so the set is not session-stable.
-      #     (The default backend returns a stable set; either way it is safe
-      #     here — correctness is unchanged, only cacheability differs.)
+      #   - [Relevant Memories]: reads the LIVE per-turn @memory_context (freshly
+      #     retrieved by Lifecycle#load_memory against the current user message),
+      #     so turn-N recall actually reaches the model — NOT the frozen turn-1
+      #     snapshot. The stable prefix freezes [User Profile] separately for
+      #     anti-poisoning; the volatile tail rides after the cache breakpoint,
+      #     so reading it live does NOT bust the KV cache.
       #   - [Session Summary]: written by compaction MID-session, so it appears
       #     (and grows) part-way through; keeping it out of the prefix means a
       #     compaction does not bust the cached prefix.
       def volatile_tail
-        snapshot = self.class.snapshot_for(@session[:id]) { @memory_context }
-
         parts = []
 
-        if snapshot[:relevant_memories]&.any?
-          memories_text = snapshot[:relevant_memories].map { |m| "- #{m[:content]}" }.join("\n")
+        if @memory_context[:relevant_memories]&.any?
+          memories_text = @memory_context[:relevant_memories].map { |m| "- #{m[:content]}" }.join("\n")
           parts << "[Relevant Memories]\n#{memories_text}"
         end
 
@@ -435,7 +437,8 @@ module Rubino
           registry: Skills::Registry.new(
             config: @config,
             include_project_local: project_local_trusted?
-          )
+          ),
+          active_tools: active_tool_names
         ).render
       rescue StandardError => e
         # Never take down prompt assembly — but LOG (like #active_skill_block at
@@ -516,6 +519,20 @@ module Rubino
         false
       end
 
+      # All tool names exposed to the model this turn. Used by P3
+      # tool-conditional skill visibility to filter the catalogue.
+      def active_tool_names
+        tools =
+          if @agent_definition
+            @agent_definition.resolved_tools
+          else
+            Tools::Registry.instance.enabled_tools
+          end
+        tools.filter_map { |t| t.respond_to?(:name) ? t.name.to_s : nil }
+      rescue StandardError
+        []
+      end
+
       def agent_identity
         return @agent_definition.system_prompt if @agent_definition&.system_prompt
 
@@ -566,6 +583,24 @@ module Rubino
         return nil if @config.dig("memory", "enabled") == false
 
         load_builtin_prompt("memory_guidance")
+      end
+
+      # The always-present memory index — the structural counterpart to the
+      # skills index. Skills inject a mandatory catalogue + "consult FIRST"
+      # directive; memory lacked any always-present framing, so the model
+      # ignored [Relevant Memories] even when injected. This block mirrors the
+      # skills-index approach: gated on memory.enabled (NOT on whether any rows
+      # exist), always-present, short, and cache-stable — it tells the model
+      # what memory IS and HOW to use any that appears under [Relevant
+      # Memories]. Framing modelled on Hermes' agent/memory_manager.py:336-350
+      # (authoritative reference data, should inform responses).
+      def memory_index_block
+        return nil if @config.dig("memory", "enabled") == false
+
+        <<~PROMPT.strip
+          ## Memory
+          You have persistent memory about the user and this project. Any memory relevant to this turn appears below under [Relevant Memories] — treat it as authoritative reference data and consult/apply it BEFORE answering. If you expect stored context (user preferences, project conventions, prior decisions) and none is shown, search it with the memory / session_search tool before assuming it doesn't exist.
+        PROMPT
       end
 
       def model_id_lower

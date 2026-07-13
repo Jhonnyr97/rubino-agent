@@ -161,14 +161,27 @@ module Rubino
       # from the catalogue when the current OS doesn't match. Same gating
       # contract: a Windows-restricted skill is hidden from the macOS catalogue
       # but stays loadable on demand.
-      def summaries
-        catalog.map(&:summary)
+      #
+      # Tool-conditional visibility (P3): when +active_tools+ is provided, a
+      # skill whose requires_tools aren't all present is dropped, and a
+      # fallback_for_tools skill is dropped when its primary tool IS present.
+      # Skills with no gating are always shown (backward compatible).
+      def summaries(active_tools: nil)
+        catalog(active_tools: active_tools).map(&:summary)
       end
 
       # Returns the filtered skill objects for disclosure (name + description +
-      # location per agentskills.io Step 3). Same gates as #summaries.
-      def catalog
-        enabled.select { |skill| language_applicable?(skill) && skill.platform_compatible? }
+      # location per agentskills.io Step 3). Same gates as #summaries, plus
+      # tool-conditional visibility (P3) when +active_tools+ is given.
+      #
+      # +active_tools+ — a set/enumerable of tool name strings that are available
+      # this turn. nil = no filtering (backward compatible; show everything).
+      def catalog(active_tools: nil)
+        skills = enabled.select { |skill| language_applicable?(skill) && skill.platform_compatible? }
+        return skills if active_tools.nil?
+
+        tool_set = active_tools.to_set
+        skills.select { |skill| skill_visible_for_tools?(skill, tool_set) }
       end
 
       # Loads and returns the full content of a skill by name. Returns nil when
@@ -237,6 +250,28 @@ module Rubino
         return if new_names.empty?
 
         Rubino::Metrics.counter(:skills_created_total).increment(by: new_names.size)
+      end
+
+      # P3 — tool-conditional visibility. Mirrors Hermes' _skill_should_show.
+      # +tool_set+ is a Set of tool name strings available this turn.
+      # A skill with no gating fields is always visible (backward compatible).
+      def skill_visible_for_tools?(skill, tool_set)
+        # requires_tools: ALL must be present, else hide.
+        skill.requires_tools.each do |t|
+          return false unless tool_set.include?(t)
+        end
+
+        # requires_toolsets: ALL must be present, else hide.
+        skill.requires_toolsets.each do |ts|
+          return false unless tool_set.include?(ts)
+        end
+
+        # fallback_for_tools: hide when the primary tool IS present.
+        skill.fallback_for_tools.each do |t|
+          return false if tool_set.include?(t)
+        end
+
+        true
       end
 
       def state_repository

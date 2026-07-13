@@ -352,4 +352,43 @@ RSpec.describe Rubino::Config::Configuration do
       expect(config.dig("model", "temperature")).to eq(0.9)
     end
   end
+
+  describe "auxiliary.embedding defaults" do
+    it "exists with inert defaults (provider: main, model: empty)" do
+      cfg = config.auxiliary_config("embedding")
+      expect(cfg).to be_a(Hash)
+      expect(cfg["provider"]).to eq("main")
+      expect(cfg["model"]).to eq("")
+      expect(cfg["base_url"]).to be_nil
+      expect(cfg["timeout"]).to eq(30)
+    end
+
+    it "at defaults, the memory SQLite vector gate is false (no embed calls)" do
+      # With the shipped defaults (memory.sqlite.vector: false), vector?
+      # is false and no embedding is ever computed — stock behaviour unchanged.
+      expect(config.dig("memory", "sqlite", "vector")).to be(false)
+    end
+
+    it "is configurable per aux pattern: provider, model, base_url all settable" do
+      cfg = test_configuration(
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:8080/v1",
+            "timeout" => 60
+          }
+        },
+        "memory" => {
+          "sqlite" => { "vector" => true }
+        }
+      )
+      emb = cfg.auxiliary_config("embedding")
+      expect(emb["provider"]).to eq("openai")
+      expect(emb["model"]).to eq("bge-m3")
+      expect(emb["base_url"]).to eq("http://localhost:8080/v1")
+      expect(emb["timeout"]).to eq(60)
+      expect(cfg.dig("memory", "sqlite", "vector")).to be(true)
+    end
+  end
 end
