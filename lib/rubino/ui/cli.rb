@@ -1792,19 +1792,19 @@ module Rubino
           tool_params_flush
           return delegation_started(arguments, call_id) if name == "task"
 
-          status_show(tool_status_label(name), phase: :tool, hint: status_hint(arguments)) if @turn_active
+          status_show(tool_status_label(name), phase: :tool, hint: status_hint(name, arguments)) if @turn_active
           return
         end
 
         finalize_stream
         return delegation_started(arguments, call_id) if name == "task"
 
-        hint = args_hint(arguments)
+        hint = args_hint(name, arguments)
         activity_started(name, hint: hint)
         # The committed `● name` open row is in scrollback; SWITCH the status-row
         # label to the tool (P3) instead of leaving the live region dead while
         # the tool runs. The engine thread stays the same — label swap only.
-        status_show(tool_status_label(name), phase: :tool, hint: status_hint(arguments)) if @turn_active
+        status_show(tool_status_label(name), phase: :tool, hint: status_hint(name, arguments)) if @turn_active
       end
 
       # Tools whose arguments carry a LARGE free-text payload the user wants to
@@ -3410,45 +3410,64 @@ module Rubino
       end
 
       # Short identifier piece for the tool header.
-      def args_hint(arguments)
+      # Routes through CallSummary for the clean sanitised label, then
+      # wraps file_path/path values in an OSC-8 hyperlink (CLI-specific).
+      def args_hint(name, arguments)
         return nil unless arguments.is_a?(Hash)
 
         raw_key, raw_value = pick_hint(arguments)
         return nil unless raw_value
 
-        # Cat 3 (OSC 8), decision (a)+(b): the masked value is the UNTRUSTED
-        # command/path/pattern. DEFANG it FIRST — so both the link URI (the path)
-        # and the visible label are control-free — and ONLY THEN wrap the clean
-        # path in rubino's own (trusted) OSC 8 hyperlink. Building the link OUTSIDE
-        # the sanitized region means a malicious path can inject via NEITHER the
-        # URI nor the visible text. The `● name hint` row then rides PATH 2
-        # (#emit_styled in #activity_started): #sanitize_terminal_keep_sgr now
-        # PRESERVES a well-formed OSC 8 sequence (its URI is already control-free,
-        # so it can't smuggle a second OSC) while still defanging the label and
-        # every other byte — so the legit hyperlink survives and injection can't.
-        hint  = Util::Output.sanitize_terminal(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
-        first = hint.lines.first.to_s.strip
-        label = first.length > 60 ? "#{first[0, 57]}..." : first
+        # Delegate masking + sanitising to the single renderer.
+        tool = Tools::Registry.find(name)
+        if tool
+          # Compute prefix budget for the timeline row: "● <label> "
+          display_label = Tools::Registry.display_label(name)
+          prefix_width = display_width("● #{display_label} ")
+          wrap_width = [terminal_cols - prefix_width, 1].max
+
+          lines = CallSummary.render(tool, arguments, width: wrap_width, context: :timeline)
+          label = lines.first.to_s.strip
+          # The renderer returns "name hint" — strip the display name prefix
+          # to get just the hint, preserving the old contract.
+          prefix = tool.display_name.to_s
+          first_hint = label.start_with?(prefix) ? label[(prefix.length)..].strip : label
+          # Include continuation lines when wrapping splits the hint across rows
+          hint = if lines.size > 1
+                   ([first_hint] + lines[1..]).join("\n")
+                 else
+                   first_hint
+                 end
+        else
+          hint = Util::Output.sanitize_terminal(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s)
+          hint = hint.lines.first.to_s.strip
+        end
 
         if path_key?(raw_key)
-          Util::Hyperlink.wrap_path(first, label: label)
+          safe_uri = Util::Output.sanitize_terminal(
+                       Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s
+                     ).lines.first.to_s.strip
+          Util::Hyperlink.wrap_path(safe_uri, label: hint)
         else
-          label
+          hint
         end
       end
 
       # A PLAIN short hint for the status row (no OSC-8 hyperlink wrapping —
       # the live row is repainted 10×/s and must stay measurable plain text).
-      def status_hint(arguments)
+      def status_hint(name, arguments)
         return nil unless arguments.is_a?(Hash)
 
-        raw_key, raw_value = pick_hint(arguments)
-        return nil unless raw_value
+        tool = Tools::Registry.find(name)
+        if tool
+          CallSummary.render(tool, arguments, width: 30, context: :status)
+        else
+          raw_key, raw_value = pick_hint(arguments)
+          return nil unless raw_value
 
-        # The status row repaints 10×/s through the live region — an unsanitized
-        # escape here would drive the terminal on every frame (R3C-1, CWE-150).
-        first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
-        first.length > 30 ? "#{first[0, 29]}…" : first
+          first = safe(Util::SecretsMask.mask_value(raw_value, key: raw_key).to_s).lines.first.to_s.strip
+          first.length > 30 ? "#{first[0, 29]}…" : first
+        end
       end
 
       # --- Subagent activity recording (off-screen surfaces) -----------------

@@ -13,6 +13,8 @@ module Rubino
     # action: "create" (0 extra LLM calls; the create happens inline on the
     # tool-call the model already emitted).
     class SkillTool < Tools::Base
+      summary { |a| "#{a[:action] || 'load'} #{a[:name]}".strip }
+
       # Subdirs a supporting file (write_file) may live under (mirrors Hermes).
       SUPPORT_DIRS = %w[references templates scripts assets].freeze
 

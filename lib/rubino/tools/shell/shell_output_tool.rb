@@ -9,6 +9,8 @@ module Rubino
     # repeated polling shows incremental progress like `tail -F`. Pass
     # `mode: "all"` for the full buffer (bounded by Tools::ShellRegistry::RING_BYTES).
     class ShellOutputTool < Base
+      summary :run_id
+
       description "Read output from a background shell started via `shell` with " \
                   "run_in_background: true. By default returns only new bytes since " \
                   "the previous read. Pass mode: 'all' for the full buffered output."

@@ -515,10 +515,10 @@ module Rubino
           #     denial blocked it (§B).
           #     off          — no hatch; the flag is ignored and a jailed write
           #                    hard-fails (Claude allowUnsandboxedCommands:false).
-          #     protect-home — DEFAULT. Escalation runs broadly but ~/.rubino (the
-          #                    sandbox trust anchors) stays OS-refused even when
-          #                    approved; on Linux/Landlock it can't be expressed,
-          #                    so there the floor is approval-only.
+          #     protect-home — DEFAULT. An approved escalation runs UNCONFINED
+          #                    on every platform — the approval prompt (step 4b)
+          #                    is the only boundary. ~/.rubino is NOT OS-blocked
+          #                    during escalation; the human decides.
           #     full         — Codex-style: an approved escalation is fully
           #                    unconfined; the human approval is the only boundary.
           # Always-on when a mechanism exists, INCLUDING under --yolo (--yolo

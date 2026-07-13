@@ -51,6 +51,7 @@ module Rubino
       security     ToolSecurity
       presentation ToolPresentation
       redaction_profile :none
+      summary :file_path, relative_to: :workspace
 
       description "Apply multiple exact string replacements to a single file atomically. " \
                   "Edits are applied sequentially in the given order; later edits see " \

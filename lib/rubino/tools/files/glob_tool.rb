@@ -5,6 +5,8 @@ module Rubino
     # Tool for finding files by glob patterns.
     # Returns matching file paths sorted by modification time.
     class GlobTool < Base
+      summary { |a, ctx| "#{a[:pattern]}  in #{ctx.rel(a[:path] || '.')}" }
+
       description "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
                   "Returns matching file paths sorted by modification time."
 

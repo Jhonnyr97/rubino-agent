@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **27 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **28 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `vision`, `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **22 rows** (config groups), not 27: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **23 rows** (config groups), not 28: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -42,7 +42,7 @@ Read a text file from the filesystem with line numbers (cat -n style). Long line
 
 ```
 Risk: low
-Parameters: file_path, offset, limit
+Parameters: file_path, offset, limit, compress
 ```
 
 ### write
@@ -69,7 +69,7 @@ Apply multiple exact string replacements to a single file atomically. Edits appl
 
 ```
 Risk: medium
-Parameters: file_path, edits[], replace_all
+Parameters: file_path, edits[] (each with old_string, new_string, replace_all)
 ```
 
 ### grep
@@ -78,7 +78,7 @@ Regex content search. Uses ripgrep (rg) if available, falls back to Ruby.
 
 ```
 Risk: low
-Parameters: pattern, path, include, max_results
+Parameters: pattern, path, include, max_results, before, after, context
 ```
 
 ### glob
@@ -87,7 +87,7 @@ Find files by glob pattern. Returns paths sorted by modification time.
 
 ```
 Risk: low
-Parameters: pattern, path, max_results
+Parameters: pattern, path, max_results, include_ignored
 ```
 
 ### shell
@@ -102,7 +102,7 @@ When a write fails because the OS write-jail blocked a path **outside** the work
 
 ```
 Risk: high (always requires approval unless in allowlist or provably read-only)
-Parameters: command, cwd, timeout, run_in_background, disable_sandbox
+Parameters: command, cwd, timeout, run_in_background, disable_sandbox, compress
 ```
 
 ### shell_output
@@ -125,11 +125,11 @@ Parameters: run_id, timeout
 
 ### shell_input
 
-Send a line of input to the stdin of a running background shell (e.g. answer an interactive prompt) addressed by `run_id`.
+Send input to a background shell's stdin — answer an interactive prompt (Y/N, menu selection, password) of a running command. A newline is appended by default (like pressing Enter); pass `enter: false` for raw bytes, or `eof: true` to close stdin (EOF).
 
 ```
 Risk: medium
-Parameters: run_id, input
+Parameters: run_id, text, enter, eof
 ```
 
 ### shell_kill
@@ -258,7 +258,7 @@ Parameters: todos[] (content, status, priority)
 Persist facts across sessions. `action=add` records a new fact, `replace` updates an existing one, `remove` deletes one. `target=user` writes the user profile; `target=memory` writes general memory. Content is scanned for prompt-injection / exfiltration patterns and subject to a character budget.
 
 ```
-Risk: medium
+Risk: low
 Parameters: action, target, content, old_text
 ```
 
@@ -286,7 +286,7 @@ Read an attached document on demand, converting it to Markdown **in-process** (P
 
 ```
 Risk: low
-Parameters: file_path, summarize, focus
+Parameters: file_path
 ```
 
 ### vision
@@ -313,7 +313,7 @@ Delegate a sub-task to an isolated subagent run (default: a background subagent 
 
 ```
 Risk: low (the nested run's tools carry their own approval/risk gates)
-Parameters: subagent, prompt, (background)
+Parameters: subagent, prompt, background (boolean, optional; default false)
 ```
 
 ### task_result
@@ -474,3 +474,16 @@ Receives the display label (e.g. `"edit"`, `"echo (mcp:chaos)"`) and the raw arg
 hash. Returns a complete formatted string for the approval prompt, or `nil` to use the
 default. The `edit` and `multi_edit` tools ship with previews that show the diff/file
 content inline at the approval prompt.
+
+When a tool does **not** provide a custom preview, the generic key-value formatter
+applies these truncation rules (hardcoded, not configurable):
+
+| Rule | Behaviour |
+|---|---|
+| Single arg, single line, ≤120 chars | Inlined: `tool wants to run: <value>` |
+| Single arg, single line, >120 chars | Truncated to 117 chars + `…` |
+| Multi-line value | First **5 lines** shown; rest counted as `[… N more line(s)]` |
+| Secret values | Credential-like values (API keys, tokens) are **masked** before display |
+
+The number of visible key-value pairs is NOT capped — a tool with many parameters shows
+all of them (subject to the per-value truncation above).

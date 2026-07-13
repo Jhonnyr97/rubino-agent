@@ -309,6 +309,67 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
   end
 
+  describe "#decide agent-home read gate (step 5c)" do
+    let(:read_tool)  { make_tool(name: "read", risk_level: :low, risky: false) }
+    let(:grep_tool)  { make_tool(name: "grep", risk_level: :low, risky: false) }
+    let(:glob_tool)  { make_tool(name: "glob", risk_level: :low, risky: false) }
+
+    before do
+      # Default: target is NOT under agent home (normal in-workspace read)
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(false)
+    end
+
+    it "asks when a read targets a file under ~/.rubino" do
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => "~/.rubino/config.yml" })).to eq(:ask)
+    end
+
+    it "allows a read targeting a normal in-workspace file" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => "app/models/user.rb" })).to eq(:allow)
+    end
+
+    it "asks when grep searches under ~/.rubino" do
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(grep_tool, arguments: { "pattern" => "model", "path" => "~/.rubino" })).to eq(:ask)
+    end
+
+    it "asks when glob searches under ~/.rubino" do
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(glob_tool, arguments: { "pattern" => "*.yml", "path" => "~/.rubino" })).to eq(:ask)
+    end
+
+    it "does NOT gate the skill tool load (not in AGENT_HOME_READ_TOOLS)" do
+      skill = make_tool(name: "skill", risk_level: :low, risky: false)
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      # skill load should still be allowed (reads SKILL.md in-process)
+      expect(pol.decide(skill, arguments: { "action" => "load", "name" => "git-flow" })).to eq(:allow)
+    end
+
+    it "grep/glob with default cwd path ('.') is never under agent home" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      # Default "." resolves to cwd, never the agent home
+      expect(pol.decide(grep_tool, arguments: { "pattern" => "TODO" })).to eq(:allow)
+    end
+
+    it "lets a --yolo operator read ~/.rubino unprompted (step 3 wins)" do
+      allow(Rubino::Modes).to receive(:skip_approvals?).and_return(true)
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => "~/.rubino/config.yml" })).to eq(:allow)
+    end
+
+    it "asks for a read of ~/.rubino/.env under auto mode (step 5c, not auto-denied)" do
+      allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => "~/.rubino/.env" })).to eq(:ask)
+    end
+  end
+
   describe ".command_string" do
     it "extracts the shell command" do
       tool = make_tool(name: "shell", risk_level: :high, risky: true)

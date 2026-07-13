@@ -352,7 +352,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       end.new
       allow(registry).to receive(:find).and_return(risky)
 
-      expect(ui).to receive(:warning).with(a_string_matching(/yolo.*shell.*command=ls/))
+      expect(ui).to receive(:warning).with(a_string_matching(/yolo.*shell.*ls/))
       executor.execute(name: "shell", arguments: { "command" => "ls" }, call_id: "c1")
     end
 
@@ -510,11 +510,82 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(question).not_to include("echo 6")
     end
 
-    it "truncates very long single-line values with an explicit ellipsis" do
+    it "shows the full single-line value with no ellipsis (full-fidelity approval)" do
       long = "a" * 300
       question = executor.send(:approval_question, tool, { "blob" => long })
-      expect(question).to include("…")
-      expect(question.length).to be < 400
+      # Full fidelity — the entire value survives wrapping (every character is
+      # still somewhere in the question, even if split across continuation lines).
+      stripped = question.delete(" \n")
+      expect(stripped).to include(long)
+      expect(question).not_to include("…")
+      expect(question.length).to be > 300
+    end
+
+    # Security: secrets must be masked even in approval prompts.
+    it "masks secrets in the approval question" do
+      question = executor.send(:approval_question, tool, { "token" => "sk-secret-12345" })
+      expect(question).not_to include("sk-secret-12345")
+    end
+
+    # Security: terminal escapes in arg values (CWE-150) must be defanged in the
+    # approval prompt — no raw escape sequences reach the terminal scrollback.
+    it "defangs terminal escapes in argument values (CWE-150)" do
+      question = executor.send(:approval_question, tool,
+                               { "command" => "safe\e]0;evil\acommand" })
+      expect(question).not_to include("\e]0;evil\a")
+      expect(question).not_to include("\e]0;")
+      expect(question).to include("safe")
+      expect(question).to include("command")
+    end
+
+    # Anti-regression: the multi-arg layout must disclose EVERY argument.
+    # A shell call with disable_sandbox:true must still show disable_sandbox.
+    it "does not hide any argument — shows disable_sandbox in multi-arg shell call" do
+      question = executor.send(:approval_question, tool,
+                               { "command" => "ls", "disable_sandbox" => true })
+      expect(question).to include("command:")
+      expect(question).to include("disable_sandbox:")
+      expect(question).to include("true")
+    end
+
+    # The summary-DSL label drives the single-arg inline line: a read tool
+    # with a workspace-relative summary shows the relative path, not the
+    # absolute file_path.
+    it "uses the summary-DSL label for the single-arg inline line (workspace-relative)" do
+      tool_with_summary = Class.new(Rubino::Tools::Base) do
+        def name = "read"
+        def description = "reads files"
+        def input_schema = { type: "object" }
+        def risk_level = :low
+        def call(_args) = "ok"
+        summary :file_path, relative_to: :workspace
+      end.new
+
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/user/project")
+
+      question = executor.send(:approval_question, tool_with_summary,
+                               { "file_path" => "/home/user/project/lib/foo.rb" })
+      expect(question).to eq("read wants to run: lib/foo.rb")
+    end
+
+    # Note 2 — pin workspace-relative path in the approval card for the real
+    # ReadTool whose summary :file_path is marked relative_to: :workspace.
+    it "shows workspace-relative path for a read inside the workspace root" do
+      read_tool = Rubino::Tools::ReadTool.new
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/user/project")
+
+      question = executor.send(:approval_question, read_tool,
+                               { "file_path" => "/home/user/project/lib/foo.rb" })
+      expect(question).to eq("read wants to run: lib/foo.rb")
+    end
+
+    it "shows absolute path for a read outside the workspace root" do
+      read_tool = Rubino::Tools::ReadTool.new
+      allow(Rubino::Workspace).to receive(:primary_root).and_return("/home/user/project")
+
+      question = executor.send(:approval_question, read_tool,
+                               { "file_path" => "/other/dir/file.txt" })
+      expect(question).to eq("read wants to run: /other/dir/file.txt")
     end
 
     # #582 — an MCP tool's approval card must mark it as external code: the

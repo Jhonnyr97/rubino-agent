@@ -90,10 +90,13 @@ module Rubino
       # targets a denied secret/credential path, or nil when the read is
       # allowed. Ported 1:1 from Hermes' `get_read_block_error` plus the
       # home credential files/dirs Hermes write-denies (file_safety.py:35-82):
-      # the project-local .env family ANYWHERE on disk, the agent-home
-      # credential stores and the mcp-tokens/ tree, and the user's SSH/AWS/
+      # the project-local .env family ANYWHERE on disk and the user's SSH/AWS/
       # kube/docker/gnupg/azure/gh credential stores under $HOME (#537), plus
       # `.netrc`/`.git-credentials` wherever they sit (HOME or project-local).
+      #
+      # EVERYTHING under the agent home (~/.rubino) is short-circuited to nil
+      # at the top: those reads are gated by EXPLICIT APPROVAL (ApprovalPolicy
+      # step 5c), never auto-denied here. Redaction still applies via Redactor.
       #
       # **NOT a security boundary** — the shell runs as the same OS user and
       # can still `cat .env`, where the value is REDACTED (see Redactor).
@@ -104,15 +107,12 @@ module Rubino
         base   = File.basename(path.to_s)
         target = canonical_path(path) || File.expand_path(path.to_s)
 
-        if under_agent_home?(path) && (BLOCKED_HOME_CREDENTIAL_BASENAMES.include?(base) ||
-             base.end_with?(".sqlite3") || target.downcase.include?("oauth") ||
-             target.downcase.include?("#{File::SEPARATOR}mcp-tokens#{File::SEPARATOR}") ||
-             under_path?(target, File.join(canonical_home, "mcp-tokens")))
-          return "Access denied: #{path} is a Rubino credential store and " \
-                 "cannot be read directly. Provider tools consume these " \
-                 "credentials through internal channels. (Defense-in-depth — " \
-                 "not a security boundary; the shell tool can still bypass.)"
-        end
+        # ~/.rubino is gated by EXPLICIT APPROVAL (ApprovalPolicy step 5c),
+        # never auto-denied here. Credential stores under the agent home
+        # (.env, rubino.sqlite3, oauth, mcp-tokens) are therefore readable
+        # AFTER the human approves, not silently refused. Redaction still
+        # applies via Redactor.
+        return nil if under_agent_home?(path)
 
         if BLOCKED_PROJECT_ENV_BASENAMES.include?(base)
           return "Access denied: #{path} is a secret-bearing environment file " \
@@ -154,16 +154,6 @@ module Rubino
       # so `/etc/shadow` still classifies on a host where it doesn't exist.
       def resolved_root(path)
         canonical_path(path) || path
-      end
-
-      # Resolved Rubino home dir, for the mcp-tokens/ subtree match above.
-      def canonical_home
-        home = Rubino.home_path
-        return "" if home.nil? || home.to_s.empty?
-
-        (File.realpath(home) if File.exist?(home)) || File.expand_path(home)
-      rescue StandardError
-        ""
       end
 
       # Home-relative credential subtrees (resolved against $HOME).

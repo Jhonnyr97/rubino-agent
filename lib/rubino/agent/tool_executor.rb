@@ -535,10 +535,9 @@ module Rubino
       # Names the tool and the actionable escape hatches so a scripted run shows
       # WHY nothing happened instead of failing silently.
       def approval_block_message(tool, arguments)
-        cmd = Security::ApprovalPolicy.command_string(tool, arguments).to_s
-        cmd = cmd.lines.first.to_s.rstrip
-        cmd = "#{cmd[0, 57]}…" if cmd.length > 60
-        suffix = cmd.empty? ? "" : " (#{cmd})"
+        lines = UI::CallSummary.render(tool, arguments, width: 0, context: :approval)
+        summary = lines.first.to_s.strip
+        suffix = summary.empty? ? "" : " (#{summary})"
         "blocked: #{tool.name}#{suffix} needs approval but no interactive session " \
           "(use --yolo to allow, or allowlist it)"
       end
@@ -596,18 +595,8 @@ module Rubino
         return unless @config.dig("approvals", "mode") == "skip"
         return unless tool.respond_to?(:risky?) && tool.risky?
 
-        preview = if arguments.is_a?(Hash)
-                    arguments.map { |k, v| "#{k}=#{summarize_yolo_value(v, key: k)}" }.join(" ")
-                  else
-                    Util::SecretsMask.mask_inline(arguments.to_s)
-                  end
-        @ui.warning("⚡ yolo: #{tool.name} #{preview}")
-      end
-
-      def summarize_yolo_value(value, key: nil)
-        masked = Util::SecretsMask.mask_value(value, key: key).to_s
-        masked = masked.lines.first.to_s.rstrip if masked.include?("\n")
-        masked.length > 60 ? "#{masked[0, 57]}…" : masked
+        hint = UI::CallSummary.render(tool, arguments, width: 60, context: :status)
+        @ui.warning("⚡ yolo: #{tool.name} #{hint}")
       end
 
       # Multi-line aware args formatter for the approval prompt.
@@ -689,13 +678,29 @@ module Rubino
           return preview
         end
 
-        # The common case — ONE short single-line argument (a shell command, a
+        # The common case — ONE single-line argument (a shell command, a
         # file path) — inlines onto the header: `shell wants to run: touch hello.txt`
-        # (P7). Multi-arg / multi-line calls keep the per-key layout below.
+        # (P7). Multi-line calls keep the per-key layout below.
+        # No length cap — the user must see the full command/path when approving.
+        # Route the VALUE through CallSummary so the summary DSL drives the label
+        # (workspace-relative paths, tool-specific formatting) and
+        # mask+sanitize is applied consistently.
         if pairs.size == 1
-          key, value = pairs.first
-          text = Util::SecretsMask.mask_value(value, key: key).to_s
-          return "#{label} wants to run: #{text}" if !text.include?("\n") && text.length <= 120
+          text = UI::CallSummary.label_for(tool, arguments)
+          if text.nil?
+            key, value = pairs.first
+            text = UI::CallSummary.mask_and_sanitize(value, key: key)
+          end
+          if text && !text.include?("\n")
+            header = "#{label} wants to run: #{text}"
+            # Wrap to fit inside the real terminal width, budgeting for the
+            # "⚠ " prefix the CLI adds to the first line of every approval card.
+            wrap = [approval_wrap_width - 2, 1].max
+            if header.length > wrap
+              return UI::CallSummary.wrap_line(header, wrap).join("\n")
+            end
+            return header
+          end
         end
 
         lines = ["#{label} wants to run:"]
@@ -703,20 +708,35 @@ module Rubino
         lines.join("\n")
       end
 
+      # Formats a single key-value pair for the multi-arg approval layout.
+      # Routes EVERY value through CallSummary.mask_and_sanitize (the SAME
+      # mask+sanitize primitive CallSummary uses) — a single chokepoint so
+      # terminal escapes are defanged (CWE-150) and secrets are masked
+      # consistently. Multi-line values: first 5 lines + explicit
+      # "+N more line(s)" marker. Single-line values: full fidelity, wrapped
+      # at terminal width instead of a hardcoded constant.
       def format_arg_pair(key, value)
-        # Mask credentials before any rendering: the approval prompt is the
-        # one place a real secret value could land in the user's scrollback
-        # if the model passed it through unwrapped.
-        text = Util::SecretsMask.mask_value(value, key: key).to_s
+        text = UI::CallSummary.mask_and_sanitize(value, key: key)
         if text.include?("\n")
           body = text.lines.map(&:rstrip)
           head = body.first(5)
           tail = body.size > 5 ? ["  [… #{body.size - 5} more line(s)]"] : []
           ["  #{key}:", *head.map { |l| "    #{l}" }, *tail]
-        elsif text.length > 120
-          ["  #{key}: #{text[0, 117]}…"]
         else
-          ["  #{key}: #{text}"]
+          # Full fidelity — no char cap, the user must see what they approve.
+          # Wrap long single-line values so they don't run off the terminal edge.
+          UI::CallSummary.wrap_line("  #{key}: #{text}", approval_wrap_width)
+        end
+      end
+
+      # The column budget for wrapping approval-card lines. Grabs the real
+      # terminal width from the UI when available; falls back to 80 for
+      # non-CLI adapters (Null, API) and headless runs.
+      def approval_wrap_width
+        if @ui.respond_to?(:terminal_cols)
+          @ui.terminal_cols
+        else
+          80
         end
       end
 

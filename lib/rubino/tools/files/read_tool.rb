@@ -10,6 +10,7 @@ module Rubino
     # let it page through files that would otherwise blow the context.
     class ReadTool < Base
       redaction_profile :code
+      summary :file_path, relative_to: :workspace
 
       DEFAULT_LIMIT  = 2000
       MAX_LINE_WIDTH = 2000

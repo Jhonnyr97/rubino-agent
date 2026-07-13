@@ -15,9 +15,14 @@ Yes. `tools.shell` is **on by default** because the agent ships to run inside an
 3. **yolo / skip-approvals** — allow-exit (the doom-loop guard still applies).
 4. **Doom-loop guard** — breaks an autopilot stuck repeating the same call.
 5. **`permissions: allow` / `ask`** — remaining explicit rules.
+5b. **Secret-file write gate** — writing/editing `.env`, `.ssh`, `.aws`, etc requires explicit approval.
+5c. **Agent-home read gate** — reading any file under `~/.rubino` (config, memories, session DB) with `read`/`grep`/`glob` requires explicit approval. Skill `load` is not gated.
 6. **Command allowlist** (prefix match) — pre-approved commands → allow. Then the **read-only auto-allow** at the same seam: a shell command the parser can prove read-only (see [Auto-allowed read-only commands](#auto-allowed-read-only-commands)) → allow.
+6c. **Skill write gate** — `skill(action: "create")` requires explicit approval.
 7. **Shell confirm policy** — `confirm_all` → ask; `dangerous_only` → ask only if the command matches a dangerous pattern, else allow.
-8. **Mode fallback** — `skip` allows; `auto` asks only for high-risk tools; `manual` asks for any risky tool.
+8a. **Out-of-workspace write widen** — a structured write targeting outside the workspace prompts; approval adds the directory.
+8b/8c. **Structured edit / code-exec symmetry** — under `dangerous_only`, in-workspace edits and the `ruby` tool auto-run.
+9. **Mode fallback** — `skip` allows; `auto` asks only for high-risk tools; `manual` asks for any risky tool.
 
 ## The hardline floor
 
@@ -137,7 +142,13 @@ Above the tool-level workspace check sits the real floor: an **OS write-jail** (
 
 When a write-jail denial blocks a legitimate write **outside** the workspace, the model can re-issue the shell call with `disable_sandbox: true` to run it outside the jail — which **always** requires a fresh, explicit approval that discloses it runs outside the jail (model-driven, aligned with Claude Code's `dangerouslyDisableSandbox`). It sits below `--yolo` and below the non-bypassable hardline floor (`rm -rf /` stays denied), and fails closed headless.
 
-`tools.sandbox.escalation` picks the posture: `off` (no hatch — hard-fail), **`protect-home`** (default — escalation runs broadly but `~/.rubino` stays OS-refused even when approved; approval-only on Linux/Landlock where the exclusion can't be expressed), or `full` (Codex-style fully-unconfined-on-approval, no OS floor on `~/.rubino`). The default keeps the trust-anchor floor OS-enforced so a rubber-stamped approval can't reopen the self-tamper escape.
+`tools.sandbox.escalation` picks the posture: `off` (no hatch — hard-fail), **`protect-home`** (default — an approved escalation runs UNCONFINED on every platform; the approval prompt is the only boundary, `~/.rubino` is NOT OS-blocked), or `full` (Codex-style fully-unconfined-on-approval, no OS floor on `~/.rubino`). Both `protect-home` and `full` require explicit human approval; the difference is the disclosure text on the approval card.
+
+## Agent-home read gate
+
+Reading any file under `~/.rubino` (config, memories, session DB) with the `read`, `grep`, or `glob` tools requires **explicit approval** — symmetric with the write gate. This closes the gap where a model could silently inspect rubino's own configuration, memories, or session data. The `skill` tool `load` action reads SKILL.md in-process and is **not** gated (it's the primary skill-loading path).
+
+The `shell` tool can still `cat ~/.rubino/*` unprompted — this is defense-in-depth, not a security boundary (the shell runs as the same OS user). The `SecretPath.read_block_error` layer already blocks credential files (`.env`, `.sqlite3`, OAuth tokens) under `~/.rubino` on the structured read path.
 
 ## Attachment SSRF guard
 

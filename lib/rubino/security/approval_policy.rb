@@ -35,6 +35,12 @@ module Rubino
       # a secret still requires explicit approval.
       SECRET_GATED_WRITE_TOOLS = STRUCTURED_EDIT_TOOLS
 
+      # Read tools whose target path is checked against the agent home
+      # (~/.rubino). Reading config, memories, or session data requires
+      # explicit approval — symmetric with the write gate. grep/glob path
+      # defaults to "." (the cwd), which is never under the agent home.
+      AGENT_HOME_READ_TOOLS = %w[read grep glob].freeze
+
       # Dedicated code-execution tools that, under dangerous_only, must run
       # unprompted — SYMMETRIC with (and never HARDER than) safe shell.
       #
@@ -202,12 +208,25 @@ module Rubino
         #     and BELOW yolo (step 3) so a --yolo operator who opted into full
         #     file trust isn't re-prompted.
         #
-        #     READING a secret (read/grep/glob) is NOT gated: it is allowed
-        #     unprompted like any broad read (#406), matching the field norm
-        #     (Claude Code / Codex / aider / Windsurf / LangChain all allow
-        #     secret reads; #480). The threat model is exfil/clobber, not the
-        #     agent reading — so only the write side stays gated here.
+        #     READING a secret (read/grep/glob) is NOT gated here —
+        #     SecretPath.read_block_error refuses the project-local .env family
+        #     and the $HOME credential stores OUTSIDE the agent home (~/.ssh,
+        #     ~/.aws, ~/.kube, ~/.docker, ~/.gnupg, ~/.azure, ~/.config/gh,
+        #     .netrc, .git-credentials); EVERYTHING under ~/.rubino is handled
+        #     by the step-5c gate below.
         return :ask if secret_file_access?(tool, arguments)
+
+        # 5c. AGENT-HOME READ GATE. THE RULE: every read under ~/.rubino
+        #     requires EXPLICIT APPROVAL, never an auto-deny.
+        #     SecretPath.read_block_error short-circuits to nil for paths under
+        #     the agent home so the human decides here. Structured reads
+        #     (read/grep/glob) are gated; the skill tool `load` reads SKILL.md
+        #     in-process and is NOT gated here (it's the primary skill-loading
+        #     path). The shell tool can still `cat ~/.rubino/*` unprompted
+        #     (defense-in-depth, like the SecretPath read-block). Runs BELOW
+        #     yolo (step 3) so a --yolo operator opted into full trust is never
+        #     re-prompted.
+        return :ask if agent_home_read?(tool, arguments)
 
         # 6. Config allowlist of pre-approved commands. Checked AFTER deny
         #    patterns (deny always wins) but BEFORE mode-based decision so a
@@ -421,6 +440,18 @@ module Rubino
         end
       end
 
+      # True when this is a structured read (read/grep/glob) whose target
+      # resolves under the agent home (~/.rubino). config.yml, memories,
+      # session data — reading any of it requires explicit approval.
+      # Skill tool `load` is NOT gated (not in AGENT_HOME_READ_TOOLS).
+      def agent_home_read?(tool, arguments)
+        return false unless AGENT_HOME_READ_TOOLS.include?(tool.name)
+
+        raw = self.class.command_string(tool, arguments)
+        return false if raw.to_s.empty?
+
+        SecretPath.under_agent_home?(resolve_workspace_path(raw))
+      end
       # True when this call WRITES a secret/credential path and so must be
       # approval-gated. For write/edit/multi_edit the single target is resolved
       # from file_path; for apply_patch every target file in the patch is

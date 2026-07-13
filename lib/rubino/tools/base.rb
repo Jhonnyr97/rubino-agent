@@ -4,6 +4,14 @@ require "ruby_llm"
 
 module Rubino
   module Tools
+    # Per-tool summary declaration, held as a lightweight value object.
+    # `key` → render that argument; `proc` → block that computes the label
+    # from args (and optional ctx); `relative_to: :workspace` → the renderer
+    # shows the path relative to the workspace root.
+    SummarySpec = Struct.new(:key, :relative_to, :proc) do
+      def block? = proc.respond_to?(:call)
+    end
+
     # Abstract base class for all tools. Inherits from RubyLLM::Tool for
     # ecosystem compatibility (param DSL, schema generation, name derivation)
     # and layers rubino-specific features on top: risk levels, workspace
@@ -98,6 +106,29 @@ module Rubino
         # or nil when the card appears immediately. Read by InlineToolAdapter to
         # gate card visibility and streaming output.
         attr_reader :live_card_after
+
+        # ── Summary DSL ──
+        #
+        #   summary :file_path                          # render that arg
+        #   summary :file_path, relative_to: :workspace  # workspace-relative path
+        #   summary { |a| a[:command] }                  # block from args
+        #   summary { |a, ctx| "#{a[:pattern]} in #{ctx.rel(a[:path])}" }  # with ctx
+        #
+        # Declares the one-line label for this tool's calls. No declaration →
+        # the renderer falls back to UI::ToolLabel.pick_hint.
+        def summary(key = nil, relative_to: nil, &blk)
+          return resolve_summary if key.nil? && blk.nil?
+
+          @summary_spec = SummarySpec.new(key: key, relative_to: relative_to, proc: blk)
+        end
+
+        # Ancestor-walk reader — robust to specs defined after a subclass
+        # and sidesteps the class-instance-variable non-inheritance footgun.
+        def resolve_summary
+          return @summary_spec if defined?(@summary_spec) && @summary_spec
+
+          superclass.respond_to?(:resolve_summary) ? superclass.resolve_summary : nil
+        end
 
         # ── Risk macro ──
         #

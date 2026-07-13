@@ -38,9 +38,12 @@ module Rubino
     # Sentinel to distinguish "no default given" from explicit `default: nil`.
     NO_DEFAULT = Object.new
 
-    # Subclasses collected during eager-loading — registered AFTER
-    # their bodies are fully defined (see finalize_registrations!).
-    @_pending_subclasses = []
+    # Append-only list of every concrete, named subclass — never cleared
+    # during a process. Populated by the `inherited` hook on first boot;
+    # replayed on every `finalize_registrations!` (idempotent — Registry.register
+    # is an upsert by name) so re-registration after a Registry.reset! just
+    # re-populates the freshly-reset registry from the same list.
+    @_tool_subclasses = []
 
     class << self
       # ── Inheritance hook (auto-register + footgun fix) ──
@@ -76,25 +79,32 @@ module Rubino
         # MCP / custom-tool paths are unchanged.
         return if subclass.abstract_tool? || subclass.name.nil?
 
-        @_pending_subclasses << subclass
+        @_tool_subclasses << subclass
       end
 
       # Called after all tool files are loaded to register the collected
       # subclasses.  By this point their class bodies are fully defined,
       # so #name overrides and per-instance init reading class-level
       # config work correctly.
+      #
+      # Replays the append-only @_tool_subclasses list (populated by
+      # `inherited` on first boot). Registry.register is an idempotent
+      # upsert by name (registry.rb: `@tools[tool.name] = tool`), so
+      # replaying after a Registry.reset! just re-populates the
+      # freshly-reset registry — no ObjectSpace, no divergence between
+      # first boot and re-registration.
       def finalize_registrations!
-        @_pending_subclasses.each do |sc|
+        @_tool_subclasses.each do |sc|
           next if sc.abstract_tool?
 
           Tools::Registry.register(sc.new)
         end
-        @_pending_subclasses.clear
       end
 
-      # Test-only: clear pending subclasses so test isolation doesn't leak.
+      # Test-only: clear the append-only subclass list so test isolation
+      # doesn't leak.
       def _clear_pending_registrations!
-        @_pending_subclasses.clear
+        @_tool_subclasses.clear
       end
 
       def abstract!

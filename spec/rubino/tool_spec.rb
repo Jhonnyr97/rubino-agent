@@ -4,7 +4,17 @@ RSpec.describe Rubino::Tool do
   # ── Auto-registration ────────────────────────────────────────────────
 
   describe "auto-registration" do
+    prepend_before do
+      @_saved_tool_subclasses = described_class.instance_variable_get(:@_tool_subclasses).dup
+    end
+
     before { described_class._clear_pending_registrations! }
+
+    after do
+      described_class.instance_variable_set(:@_tool_subclasses, @_saved_tool_subclasses)
+      Rubino::Tools::Registry.reset!
+      Rubino::Tools::Registry.register_defaults!
+    end
 
     it "collects named subclasses and registers them on finalize_registrations!" do
       allow(Rubino::Tools::Registry).to receive(:register)
@@ -54,6 +64,29 @@ RSpec.describe Rubino::Tool do
 
       expect(Rubino::Tools::Registry.find("test_anon_skip")).to be_nil
     end
+
+    # ITEM 3: prove the reload path — after Registry.reset! + re-finalize,
+    # a previously-registered named subclass reappears (no ObjectSpace scan).
+    it "re-registers named subclasses after Registry.reset! + finalize_registrations!" do
+      eval <<~RUBY, binding, __FILE__, __LINE__ + 1
+        class TestReloadEvalTool < Rubino::Tool
+          def name
+            "test_reload_eval"
+          end
+        end
+      RUBY
+
+      described_class.finalize_registrations!
+      expect(Rubino::Tools::Registry.find("test_reload_eval")).not_to be_nil
+
+      Rubino::Tools::Registry.reset!
+      expect(Rubino::Tools::Registry.find("test_reload_eval")).to be_nil
+
+      # Re-finalize — the append-only list replays, no ObjectSpace needed.
+      described_class.finalize_registrations!
+      expect(Rubino::Tools::Registry.find("test_reload_eval")).not_to be_nil
+    end
+
   end
 
   # ── Inheritance footgun fix ──────────────────────────────────────────
@@ -435,6 +468,85 @@ RSpec.describe Rubino::Tool do
         result = tool.attach_image(path, filename: "img.jpg", caption: "Here's the chart")
         expect(result[:output]).to eq("Here's the chart")
       end
+    end
+  end
+
+  # ── Summary DSL ──────────────────────────────────────────────────────
+
+  describe "summary DSL" do
+    it "resolves a key-based summary" do
+      klass = Class.new(described_class) do
+        abstract!
+        summary :command
+      end
+      spec = klass.resolve_summary
+      expect(spec).to be_a(Rubino::Tools::SummarySpec)
+      expect(spec.key).to eq(:command)
+      expect(spec.block?).to be(false)
+    end
+
+    it "resolves a block-based summary" do
+      klass = Class.new(described_class) do
+        abstract!
+        summary { |a| a[:pattern] }
+      end
+      spec = klass.resolve_summary
+      expect(spec).to be_a(Rubino::Tools::SummarySpec)
+      expect(spec.block?).to be(true)
+      expect(spec.proc.call({ pattern: "TODO" })).to eq("TODO")
+    end
+
+    it "resolves summary with relative_to: :workspace" do
+      klass = Class.new(described_class) do
+        abstract!
+        summary :file_path, relative_to: :workspace
+      end
+      spec = klass.resolve_summary
+      expect(spec.relative_to).to eq(:workspace)
+    end
+
+    it "inherits parent's summary spec (ancestor-walk)" do
+      parent = Class.new(described_class) do
+        abstract!
+        summary :command
+      end
+      child = Class.new(parent) do
+        abstract!
+        define_method(:name) { "child_tool" }
+      end
+      spec = child.resolve_summary
+      expect(spec).to be_a(Rubino::Tools::SummarySpec)
+      expect(spec.key).to eq(:command)
+    end
+
+    it "allows child to override parent's summary" do
+      parent = Class.new(described_class) do
+        abstract!
+        summary :command
+      end
+      child = Class.new(parent) do
+        abstract!
+        summary :file_path
+      end
+      spec = child.resolve_summary
+      expect(spec.key).to eq(:file_path)
+    end
+
+    it "returns nil when no summary is declared anywhere in the chain" do
+      klass = Class.new(described_class) do
+        abstract!
+      end
+      expect(klass.resolve_summary).to be_nil
+    end
+
+    it "acts as a reader when called with no arguments" do
+      klass = Class.new(described_class) do
+        abstract!
+        summary :command
+      end
+      # Calling summary() with no args returns the resolved spec
+      expect(klass.summary).to be_a(Rubino::Tools::SummarySpec)
+      expect(klass.summary.key).to eq(:command)
     end
   end
 end

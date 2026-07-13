@@ -32,6 +32,7 @@ module Rubino
       # Deferred by 1s: fast commands appear atomically; commands >1s show
       # the live card with streaming output.
       live "💻 %s", :command, after: 1
+      summary { |a| a[:command] }
 
       DEFAULT_TIMEOUT = 120
       MAX_TIMEOUT     = 600

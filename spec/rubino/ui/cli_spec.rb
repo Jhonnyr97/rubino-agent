@@ -956,10 +956,11 @@ RSpec.describe Rubino::UI::CLI do
       end
     end
 
-    it "truncates long arg hints with an ellipsis" do
+    it "shows the full command in the committed tool card (no ellipsis truncation)" do
       long = "x" * 200
-      expect { ui.tool_started("shell", arguments: { command: long }) }
-        .to output(/\.\.\./).to_stdout
+      out = capture_stdout { ui.tool_started("shell", arguments: { command: long }) }
+      expect(out).to include(long)
+      expect(out).not_to include("…")
     end
 
     # Regression for #136: on the streaming path the model emits answer text

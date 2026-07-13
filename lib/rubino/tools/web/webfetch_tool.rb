@@ -11,6 +11,8 @@ module Rubino
   module Tools
     # Tool for fetching web page content and converting to text/markdown.
     class WebFetchTool < Base
+      summary { |a| a[:url] }
+
       MAX_BODY_SIZE = 100_000
       TIMEOUT = 30
 

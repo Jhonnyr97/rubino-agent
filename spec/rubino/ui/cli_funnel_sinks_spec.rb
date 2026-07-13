@@ -72,14 +72,14 @@ RSpec.describe Rubino::UI::CLI do
     require "tempfile"
     Tempfile.create(["legit", ".txt"]) do |f|
       with_hyperlinks do
-        out = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, { file_path: f.path })) }
+        out = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, "read", { file_path: f.path })) }
         expect(out).to include("\e]8;;file://") # the trusted hyperlink survives
         expect(out).to include("\e]8;;\e\\") # closed properly
       end
       # A path carrying an escape: no raw danger byte reaches the terminal, and
       # the only OSC that survives is a well-formed 8 (link), never a title-set.
       with_hyperlinks do
-        evil_hint = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, { file_path: evil })) }
+        evil_hint = capture { |ui| ui.activity_started("read", hint: ui.send(:args_hint, "read", { file_path: evil })) }
         expect(evil_hint).not_to include("\e]0;") # no title-set injection
         expect(evil_hint).not_to include("\a")
         expect(evil_hint).to include("^[")

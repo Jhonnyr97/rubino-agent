@@ -52,8 +52,13 @@ module Rubino
 
       def emit_trace_line(name)
         arguments = @pending_args.delete(name)
-        label = ToolLabel.label(name, arguments, verbose: @verbose)
-        @trace_io.puts("· #{label}")
+        tool = Tools::Registry.find(name)
+        lines = if tool
+                  CallSummary.render(tool, arguments, width: 0, context: :trace)
+                else
+                  [ToolLabel.label(name, arguments, verbose: @verbose)]
+                end
+        lines.each { |l| @trace_io.puts("· #{l}") }
         @trace_io.flush if @trace_io.respond_to?(:flush)
       rescue StandardError
         nil

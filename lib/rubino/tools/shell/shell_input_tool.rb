@@ -24,6 +24,7 @@ module Rubino
       end
 
       security ToolSecurity
+      summary :run_id
 
       description "Send input to a background shell started via `shell` with " \
                   "run_in_background: true — answer an interactive prompt (Y/N, menu " \

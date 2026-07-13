@@ -6,6 +6,7 @@ module Rubino
     # Backed by ripgrep (rg) if available, falls back to Ruby grep.
     class GrepTool < Base
       redaction_profile :code
+      summary { |a, ctx| "#{a[:pattern]}  in #{ctx.rel(a[:path] || '.')}" }
 
       description "Search file contents using regular expressions. " \
                   "Returns matching file paths and line numbers. " \

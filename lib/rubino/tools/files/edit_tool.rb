@@ -43,6 +43,7 @@ module Rubino
       security     ToolSecurity
       presentation ToolPresentation
       redaction_profile :none
+      summary :file_path, relative_to: :workspace
 
       description "Perform exact string replacement in a file. " \
                   "Specify the old text to find and the new text to replace it with. " \

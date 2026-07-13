@@ -201,7 +201,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 
 ## Built-in tools
 
-The agent ships **27 built-in tools** (the set `rubino tools` lists): `read`, `read_attachment`, `summarize_file`, `write`, `edit`, `multi_edit`, `apply_patch`, `grep`, `glob`, `git`, `github`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `run_tests`, `web`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`. A single `web` tool gates both fetching a URL and searching (config key `tools.web`, on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable). Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
+The agent ships **28 built-in tools** (the set `rubino tools` lists): `vision`, `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`. Several tools share one config gate — `web_fetch` and `web_search` share `tools.web` (on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable), the delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) shares `tools.task`. Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
 
 ## Skills
 

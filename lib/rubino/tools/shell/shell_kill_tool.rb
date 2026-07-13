@@ -11,6 +11,7 @@ module Rubino
       end
 
       security ToolSecurity
+      summary :run_id
 
       GRACE_SECONDS = 2
 

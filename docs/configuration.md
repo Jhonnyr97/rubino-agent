@@ -361,7 +361,7 @@ a legitimate out-of-workspace write:
 | value | behaviour |
 | --- | --- |
 | `off` | no hatch; `disable_sandbox` is ignored and a jailed write hard-fails (Claude Code `allowUnsandboxedCommands:false` / Codex `Never`). |
-| `protect-home` | **default.** Escalation runs broadly, but the `~/.rubino` trust anchors stay OS-refused even when approved (Seatbelt carve-out). On Linux/Landlock the exclusion can't be expressed, so there the floor is approval-only (the approval card says so). |
+| `protect-home` | **default.** An approved escalation runs UNCONFINED on every platform — the approval prompt (step 4b) is the only boundary. `~/.rubino` is NOT OS-blocked during escalation; the human decides. |
 | `full` | Codex-style: an approved escalation is fully unconfined (`SandboxType::None`) — the human approval is the only boundary, no OS floor on `~/.rubino`. |
 
 An escalated command **always** prompts (a fresh, distinct approval that shows it

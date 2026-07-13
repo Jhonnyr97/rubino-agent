@@ -54,8 +54,7 @@ Thumbs.db
 eval/results/*.json
 
 # Kept local, never tracked/pushed/shipped (user directive)
-AGENTS.md
-agents.md
+/AGENTS.md
 agent.md
 task.md
 /dev-prompts/

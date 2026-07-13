@@ -21,6 +21,7 @@ module Rubino
       security     ToolSecurity
       presentation ToolPresentation
       redaction_profile :none
+      summary :file_path, relative_to: :workspace
 
       description "Write content to a file, overwriting any existing content. " \
                   "Creates parent directories if they do not exist. " \

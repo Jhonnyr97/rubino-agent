@@ -288,6 +288,59 @@ RSpec.describe "secret-file write approval gate (#480)" do
       expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, ".env.example"))).to be_nil
       expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, "app.rb"))).to be_nil
     end
+
+    # THE RULE: every read under ~/.rubino is gated by EXPLICIT APPROVAL
+    # (ApprovalPolicy step 5c), never auto-denied. read_block_error returns
+    # nil so the human decides. Project-local .env + $HOME credential stores
+    # OUTSIDE the agent home stay blocked.
+    describe "agent-home reads are never auto-denied" do
+      let(:agent_home) { Dir.mktmpdir("fake_agent_home") }
+
+      before do
+        allow(Rubino).to receive(:home_path).and_return(agent_home)
+      end
+
+      after do
+        FileUtils.rm_rf(agent_home)
+      end
+
+      def write_under_agent_home(*rel, content: "SECRET\n")
+        path = File.join(agent_home, *rel)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, content)
+        path
+      end
+
+      %w[
+        .env rubino.sqlite3 config.yml
+      ].each do |base|
+        it "returns nil for ~/.rubino/#{base}" do
+          path = write_under_agent_home(base)
+          expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
+        end
+      end
+
+      it "returns nil for an oauth file under ~/.rubino" do
+        path = write_under_agent_home("oauth", "credentials.json")
+        expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
+      end
+
+      it "returns nil for an mcp-tokens file under ~/.rubino" do
+        path = write_under_agent_home("mcp-tokens", "server-token.json")
+        expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
+      end
+
+      it "still BLOCKS a project-local .env (outside agent home)" do
+        path = File.join(tmp_dir, ".env")
+        File.write(path, "API_KEY=leak\n")
+        expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
+      end
+
+      it "still BLOCKS ~/.ssh/id_rsa (outside agent home)" do
+        path = write_under_home(".ssh", "id_rsa")
+        expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
+      end
+    end
   end
 
   # ----------------------------------------------------------------------------
