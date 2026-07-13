@@ -836,6 +836,7 @@ module Rubino
       # Idempotent — guarded like the cache middleware below so
       # double-insertion is never a concern.
       def install_oauth_middleware(chat)
+        return unless anthropic_generation_path?
         return unless @oauth_token
 
         token = @oauth_token[:api_key].to_s

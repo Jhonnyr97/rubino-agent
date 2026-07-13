@@ -67,6 +67,7 @@ module Rubino
           # Files with compound names that need exact mapping
           "ruby_llm_adapter" => "RubyLLMAdapter",
           "mcp_tool_wrapper" => "MCPToolWrapper",
+          "oauth_bearer_middleware" => "OAuthBearerMiddleware",
           "bedrock_bearer_client" => "BedrockBearerClient",
           "adapter_response" => "AdapterResponse",
           "indented_io" => "IndentedIO",
