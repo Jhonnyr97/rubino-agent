@@ -4,14 +4,14 @@ module Rubino
   module Tools
     # Tool for managing a task/todo list during a session.
     # Allows the agent to track progress on complex multi-step tasks.
-    class TodoTool < Base
-      redaction_profile :none
+    class TodoTool < Rubino::Tool
+      redaction :none
 
       def name
         "todowrite"
       end
 
-      description "Create and manage a structured task list for the current session. " \
+      describe "Create and manage a structured task list for the current session. " \
                   "Use this to track progress on complex multi-step tasks. " \
                   "Tasks have content, status (pending/in_progress/completed/cancelled), and priority."
 

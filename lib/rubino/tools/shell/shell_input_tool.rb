@@ -18,25 +18,21 @@ module Rubino
     # Works for line-oriented prompts. Full-screen TTY programs (vim, REPLs
     # that require a real terminal) are out of scope: the background shell uses
     # a plain pipe, not a pseudo-terminal.
-    class ShellInputTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-      end
-
-      security ToolSecurity
+    class ShellInputTool < Rubino::Tool
+      risk :medium
       summary :run_id
 
-      description "Send input to a background shell started via `shell` with " \
+      describe "Send input to a background shell started via `shell` with " \
                   "run_in_background: true — answer an interactive prompt (Y/N, menu " \
                   "selection, password) of a running command. A newline is appended by " \
                   "default (like pressing Enter); pass enter: false for raw bytes, or " \
                   "eof: true to close stdin (EOF). Read the prompt and the result with " \
                   "`shell_output`."
 
-      param :run_id, desc: "The run_id returned by `shell` when launched in background"
-      param :text,   desc: "The text to write to the process's stdin (e.g. \"y\", \"2\")", required: false
-      param :enter,  type: :boolean, desc: "Append a newline like pressing Enter (default true)", required: false
-      param :eof,    type: :boolean, desc: "Close stdin / send EOF after writing (default false)", required: false
+      string :run_id, "The run_id returned by `shell` when launched in background"
+      string :text, "The text to write to the process's stdin (e.g. \"y\", \"2\")", default: ""
+      boolean :enter, "Append a newline like pressing Enter (default true)", default: true
+      boolean :eof, "Close stdin / send EOF after writing (default false)", default: false
 
       def execute(run_id:, text: "", enter: true, eof: false)
         registry = Tools::ShellRegistry.instance

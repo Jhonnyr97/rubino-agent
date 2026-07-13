@@ -10,20 +10,19 @@ module Rubino
     # Returns `running` (still working), `completed` (with the full final
     # result — not the truncated notice), or `failed` (with the error). With no
     # `task_id` it lists every tracked background subagent (the /tasks analogue).
-    class TaskResultTool < Base
+    class TaskResultTool < Rubino::Tool
       # Shares the `task` config gate — disabling delegation disables its
       # companion poll/stop tools too.
       def config_key
         "task"
       end
 
-      description "Fetch the status and result of a background subagent started by `task`. " \
+      describe "Fetch the status and result of a background subagent started by `task`. " \
                   "Returns `running` (still working), `completed` (with the full final " \
                   "result), or `failed` (with the error). Call without a task_id to list " \
                   "all tracked background subagents."
 
-      param :task_id, desc: "The task id (sa_…) returned by `task`. Omit to list all background subagents.",
-                      required: false
+      string :task_id, "The task id (sa_…) returned by `task`. Omit to list all background subagents.", default: nil
 
       def execute(task_id: nil)
         task_id = task_id.to_s.strip

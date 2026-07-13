@@ -5,21 +5,17 @@ module Rubino
     # Terminates a background shell. Sends SIGTERM to the whole process
     # group first; if the process is still alive after a 2s grace period,
     # follows up with SIGKILL.
-    class ShellKillTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-      end
-
-      security ToolSecurity
+    class ShellKillTool < Rubino::Tool
+      risk :medium
       summary :run_id
 
       GRACE_SECONDS = 2
 
-      description "Terminate a background shell started via `shell` with run_in_background: true. " \
+      describe "Terminate a background shell started via `shell` with run_in_background: true. " \
                   "Sends SIGTERM to the process group, waits #{GRACE_SECONDS}s, then SIGKILL if " \
                   "the process is still alive."
 
-      param :run_id, desc: "The run_id returned by `shell` when launched in background"
+      string :run_id, "The run_id returned by `shell` when launched in background"
 
       def execute(run_id:)
         registry = Tools::ShellRegistry.instance

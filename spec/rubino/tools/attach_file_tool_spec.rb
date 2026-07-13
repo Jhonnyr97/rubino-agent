@@ -12,6 +12,14 @@ RSpec.describe Rubino::Tools::AttachFileTool do
     FileUtils.rm_rf(tmp_dir)
   end
 
+  describe "schema" do
+    it "does NOT require filename (optional — defaults to nil)" do
+      schema = tool.input_schema
+      required = schema[:required] || []
+      expect(required).not_to include(:filename)
+    end
+  end
+
   it "has name 'attach_file' and :low risk" do
     expect(tool.name).to eq("attach_file")
     expect(tool.risk_level).to eq(:low)

@@ -10,11 +10,11 @@ module Rubino
     #
     # Returns a JSON array of match hits with a highlighted snippet so the
     # model can decide whether to follow up with /v1/sessions/:id.
-    class SessionSearchTool < Base
+    class SessionSearchTool < Rubino::Tool
       DEFAULT_LIMIT = 20
       MAX_LIMIT     = 100
 
-      description "Full-text search across past session messages. " \
+      describe "Full-text search across past session messages. " \
                   "Returns matched messages with highlighted snippets and the owning session id. " \
                   "Use to recall earlier conversations or look up what a tool returned previously."
 

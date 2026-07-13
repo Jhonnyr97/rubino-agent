@@ -12,20 +12,19 @@ module Rubino
     # condition variable would shave ~50ms of jitter and is a refactor for
     # later; for v1, 100ms polling under the agent's tool-call latency is
     # invisible.
-    class ShellTailTool < Base
+    class ShellTailTool < Rubino::Tool
       DEFAULT_TIMEOUT = 30
       MAX_TIMEOUT     = 300
       POLL_INTERVAL   = 0.1
 
-      description "Follow a background shell — block until new stdout/stderr bytes " \
+      describe "Follow a background shell — block until new stdout/stderr bytes " \
                   "arrive on its run_id, the process exits, or `timeout` seconds " \
                   "elapse. Default timeout #{DEFAULT_TIMEOUT}s (max #{MAX_TIMEOUT}s). " \
                   "Returns the new bytes plus a status header. Use for `tail -F`-style " \
                   "following; use shell_output for a one-shot read."
 
-      param :run_id,  desc: "run_id from shell run_in_background:true"
-      param :timeout, type: :integer, desc: "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})",
-                      required: false
+      string :run_id, "run_id from shell run_in_background:true"
+      integer :timeout, "Max seconds to block (default #{DEFAULT_TIMEOUT}, max #{MAX_TIMEOUT})", default: DEFAULT_TIMEOUT
 
       def execute(run_id:, timeout: DEFAULT_TIMEOUT)
         timeout = timeout.to_i.clamp(1, MAX_TIMEOUT)

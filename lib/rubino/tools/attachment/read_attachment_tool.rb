@@ -24,7 +24,7 @@ module Rubino
     #      context -- the model pages it like any other large file.
     #   5. Inline-sized Markdown is wrapped in Preamble's nonce-framed untrusted
     #      envelope (converted document = untrusted user data).
-    class ReadAttachmentTool < Base
+    class ReadAttachmentTool < Rubino::Tool
       # Refuse to spill a CONVERTED document larger than this (≈20MB, matching
       # Gemini's cap). Attachments::Classify already caps the SOURCE size; this
       # guards the post-conversion Markdown, which a converter can balloon.
@@ -34,7 +34,7 @@ module Rubino
         "read_attachment"
       end
 
-      description "Read an attached document on demand, converting it to Markdown IN-PROCESS " \
+      describe "Read an attached document on demand, converting it to Markdown IN-PROCESS " \
                   "(PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, plain/code) and returning the " \
                   "text framed as untrusted user data. Prefer this over shelling out to " \
                   "`markitdown`/`pdftotext`. Pass the path the attachment was staged at. A " \
@@ -43,7 +43,7 @@ module Rubino
                   "If the format has no in-process converter, you get an actionable " \
                   "shell-extraction hint instead."
 
-      param :file_path, desc: "Path to the attachment to read (absolute or workspace-relative)."
+      string :file_path, "Path to the attachment to read (absolute or workspace-relative)."
 
       def execute(file_path:)
         # Classify runs the fail-closed safety pipeline (lstat rejects symlink/

@@ -4,27 +4,24 @@ module Rubino
   module Tools
     # Tool for searching file contents using regex patterns.
     # Backed by ripgrep (rg) if available, falls back to Ruby grep.
-    class GrepTool < Base
-      redaction_profile :code
+    class GrepTool < Rubino::Tool
+      redaction :code
       summary { |a, ctx| "#{a[:pattern]}  in #{ctx.rel(a[:path] || '.')}" }
 
-      description "Search file contents using regular expressions. " \
-                  "Returns matching file paths and line numbers. " \
-                  "Supports include patterns to filter by file type."
+      describe "Search file contents using regular expressions. " \
+              "Returns matching file paths and line numbers. " \
+              "Supports include patterns to filter by file type."
 
-      param :pattern,     desc: "The regex pattern to search for"
-      param :path,        desc: "Directory to search in (defaults to current directory)", required: false
-      param :include,     desc: "File pattern to include (e.g., '*.rb', '*.{ts,tsx}')", required: false
-      param :max_results, type: :integer, desc: "Maximum number of results to return (default: 50)", required: false
-      param :before, type: :integer,
-                     desc: "Lines of leading context to include before each match (-B). Default 0.",
-                     required: false
-      param :after, type: :integer,
-                    desc: "Lines of trailing context to include after each match (-A). Default 0.",
-                    required: false
-      param :context, type: :integer,
-                      desc: "Symmetric context (-C): sets both before and after. Wins over before/after when given.",
-                      required: false
+      string :pattern, "The regex pattern to search for"
+      string :path, "Directory to search in (defaults to current directory)", default: "."
+      string :include, "File pattern to include (e.g., '*.rb', '*.{ts,tsx}')", required: false
+      integer :max_results, "Maximum number of results to return", default: 50
+      integer :before, "Lines of leading context to include before each match (-B). Default 0.",
+              default: 0
+      integer :after, "Lines of trailing context to include after each match (-A). Default 0.",
+              default: 0
+      integer :context, "Symmetric context (-C): sets both before and after. Wins over before/after when given.",
+              required: false
 
       def execute(pattern:, path: ".", include: nil, max_results: 50, before: 0, after: 0, context: nil)
         # -A/-B/-C semantics, mirroring ripgrep: `context` (-C) overrides

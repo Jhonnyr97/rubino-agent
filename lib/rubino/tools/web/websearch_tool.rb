@@ -25,7 +25,7 @@ module Rubino
     # topic/entity answers. Only when BOTH tiers yield nothing do we emit an
     # EXPLICIT "search unavailable" message pointing at TAVILY_API_KEY /
     # SEARXNG_URL — never a silent zero-results-that-looks-like-a-real-answer.
-    class WebSearchTool < Base
+    class WebSearchTool < Rubino::Tool
       summary { |a| a[:query] }
 
       # A realistic browser User-Agent — html.duckduckgo.com serves an empty
@@ -38,12 +38,12 @@ module Rubino
         "web"
       end
 
-      description "Search the web for information. Returns relevant results with titles, " \
-                  "URLs, and snippets. Useful for finding documentation, researching " \
-                  "dependencies, and answering questions about external topics."
+      describe "Search the web for information. Returns relevant results with titles, " \
+              "URLs, and snippets. Useful for finding documentation, researching " \
+              "dependencies, and answering questions about external topics."
 
-      param :query,       desc: "The search query"
-      param :max_results, type: :integer, desc: "Maximum number of results (default: 5)", required: false
+      string :query, "The search query"
+      integer :max_results, "Maximum number of results", default: 5
 
       def execute(query:, max_results: 5)
         if ENV["TAVILY_API_KEY"]

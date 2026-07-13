@@ -9,6 +9,21 @@ RSpec.describe Rubino::Tools::ShellTailTool do
 
   let(:shell) { Rubino::Tools::ShellTool.new }
 
+  describe "schema" do
+    it "does NOT require timeout (optional — defaults to 30)" do
+      schema = tool.input_schema
+      required = schema[:required] || []
+      expect(required).not_to include(:timeout)
+    end
+
+    it "shows the numeric default in the description, not a Ruby sigil" do
+      schema = tool.input_schema
+      timeout_desc = schema.dig(:properties, :timeout, :description)
+      expect(timeout_desc).to include("(default: 30)")
+      expect(timeout_desc).not_to include(":execute")
+    end
+  end
+
   after do
     # Drain any background entries the test left in the registry so a
     # subsequent example doesn't observe stale state.

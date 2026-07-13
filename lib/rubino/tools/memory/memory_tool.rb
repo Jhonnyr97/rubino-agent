@@ -11,7 +11,7 @@ module Rubino
     # the char-budget run inside Memory::Store; this tool only handles
     # the action/target mapping and translates Store exceptions into
     # tool-protocol error strings.
-    class MemoryTool < Base
+    class MemoryTool < Rubino::Tool
       VALID_ACTIONS = %w[add replace remove].freeze
       VALID_TARGETS = %w[memory user project].freeze
 
@@ -27,7 +27,7 @@ module Rubino
         @backend = backend
       end
 
-      description "Persist facts across sessions. Use action=add to record a new fact, " \
+      describe "Persist facts across sessions. Use action=add to record a new fact, " \
                   "replace to update an existing fact (substring match on old_text), " \
                   "or remove to delete one. target=user writes to the user profile; " \
                   "target=project records a durable project/codebase fact (surfaced as " \

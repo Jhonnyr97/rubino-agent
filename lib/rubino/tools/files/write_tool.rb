@@ -8,27 +8,21 @@ module Rubino
     # Overwrites existing files (the LLM is expected to Read first when in
     # doubt). Kept intentionally narrow — no append mode, no partial writes;
     # those belong in `edit` / `multi_edit`.
-    class WriteTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-        def require_overwrite_guard = true
-      end
-
-      class ToolPresentation < Tools::ToolPresentation
-        def stream_params? = true
-      end
-
-      security     ToolSecurity
-      presentation ToolPresentation
-      redaction_profile :none
+    class WriteTool < Rubino::Tool
+      risk :medium, require_overwrite_guard: true
+      redaction :none
       summary :file_path, relative_to: :workspace
 
-      description "Write content to a file, overwriting any existing content. " \
-                  "Creates parent directories if they do not exist. " \
-                  "Use `edit` or `multi_edit` to modify an existing file in place."
+      presentation do
+        stream_params true
+      end
 
-      param :file_path, desc: "Absolute or relative file path"
-      param :content,   desc: "Full file content to write"
+      describe "Write content to a file, overwriting any existing content. " \
+              "Creates parent directories if they do not exist. " \
+              "Use `edit` or `multi_edit` to modify an existing file in place."
+
+      string :file_path, "Absolute or relative file path"
+      string :content, "Full file content to write"
 
       def execute(file_path:, content: "")
         expanded = expand_workspace_path(file_path)

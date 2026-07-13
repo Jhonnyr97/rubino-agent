@@ -39,7 +39,7 @@ module Rubino
     # (tasks.max_concurrent_total). When a cap is hit reserve returns nil and this
     # tool surfaces a clear, reason-specific message (#capacity_message) so the
     # model knows whether to retry later, do the work inline, or report back.
-    class TaskTool < Base # rubocop:disable Metrics/ClassLength -- cohesive subagent surface (spawn/steer/collect/log) tightly coupled
+    class TaskTool < Rubino::Tool # rubocop:disable Metrics/ClassLength -- cohesive subagent surface (spawn/steer/collect/log) tightly coupled
       # Suffix of the placeholder a subagent run lands on when it produced no
       # final assistant text — a no-op or a fully-denied run (every tool denied,
       # nothing said). Used as the single signal that a completion was a no-op so

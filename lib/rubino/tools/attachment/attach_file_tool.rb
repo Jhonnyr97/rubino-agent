@@ -16,7 +16,7 @@ module Rubino
     # scripts, scratch JSON, downloaded fixtures) that should NOT show up
     # as user-facing downloads. An explicit attach_file call makes that
     # decision intentional and reviewable.
-    class AttachFileTool < Base
+    class AttachFileTool < Rubino::Tool
       DEFAULT_CONTENT_TYPE = "application/octet-stream"
 
       # Minimal extension → MIME map. Anything not listed falls back to
@@ -45,15 +45,15 @@ module Rubino
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       }.freeze
 
-      redaction_profile :none
-      description "Attach a previously-written file to the current turn as a downloadable artifact " \
+      redaction :none
+      describe "Attach a previously-written file to the current turn as a downloadable artifact " \
                   "for the user. Call this AFTER you have already created the file with write/edit/shell. " \
                   "Pass the absolute or workspace-relative path. The tool does not copy or move the file — " \
                   "it just registers it as a deliverable. Use for final user-facing outputs " \
                   "(PDF, CSV, ZIP, reports) and not for intermediate helper scripts."
 
-      param :file_path, desc: "Path to the file to attach. Must exist and live inside the workspace."
-      param :filename,  desc: "Optional display name; defaults to the basename of file_path.", required: false
+      string :file_path, "Path to the file to attach. Must exist and live inside the workspace."
+      string :filename, "Optional display name; defaults to the basename of file_path.", default: nil
 
       def execute(file_path:, filename: nil)
         expanded = File.expand_path(file_path)
