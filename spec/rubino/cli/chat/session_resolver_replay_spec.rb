@@ -309,4 +309,39 @@ RSpec.describe Rubino::CLI::Chat::SessionResolver, "#print_session_history" do
       expect(plain(out)).to include("hello there")
     end
   end
+
+  # FIX A — focal-switch-replay: the attach dump replays messages through
+  # #replay_messages with banner:false so it never emits the "Loaded N prior
+  # messages" header + trailing separator. A banner:true replay (resume path)
+  # still emits the banner.
+  describe "#replay_messages banner behaviour" do
+    let(:messages) do
+      [msg(role: "user", content: "hi", metadata: {}, created_at: Time.now)]
+    end
+
+    def replay_with(banner:)
+      old = $stdout
+      $stdout = StringIO.new
+      resolver.replay_messages(ui, messages, banner: banner)
+      $stdout.string
+    ensure
+      $stdout = old
+    end
+
+    it "does NOT emit a trailing separator or 'Loaded N' header with banner:false" do
+      out = replay_with(banner: false)
+      txt = plain(out)
+      expect(txt).not_to include("Loaded")
+      expect(txt).not_to include("prior message")
+      # Messages themselves still render
+      expect(txt).to include("hi")
+    end
+
+    it "still emits the 'Loaded N' header + separators with banner:true (resume path)" do
+      out = replay_with(banner: true)
+      txt = plain(out)
+      expect(txt).to include("Loaded 1 prior message")
+      expect(txt).to include("hi")
+    end
+  end
 end

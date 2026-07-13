@@ -3121,7 +3121,12 @@ module Rubino
           else
             ui.info(pastel.cyan("▶ attached to #{id} · #{entry.subagent}") +
                     pastel.dim(" — type to steer · ↓ to switch subagents · ← to go back"))
-            session_resolver.replay_messages(ui, snapshot)
+            session_resolver.replay_messages(ui, snapshot, banner: false)
+            # Re-emit the entering subagent's in-progress live state (streaming
+            # reasoning, answer prose, open tool card) so the focused view shows
+            # the current operation rather than a frozen empty tail until the
+            # next delta arrives.
+            entry.runner&.ui&.repaint_in_progress
           end
         end
         # No watcher: a subagent's OWN per-sub CLI paints its ongoing activity live

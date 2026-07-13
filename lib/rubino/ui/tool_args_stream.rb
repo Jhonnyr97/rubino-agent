@@ -46,6 +46,13 @@ module Rubino
         out
       end
 
+      # Non-destructive peek at the held partial line — used by repaint_in_progress
+      # to re-emit the tool's in-progress params when focusing on a mid-stream
+      # subagent, without consuming the partial and breaking the ongoing stream.
+      def held_tail
+        @line.dup
+      end
+
       private
 
       # Walks chars, decoding string VALUES into @line. Stops early and stashes

@@ -19,7 +19,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
   end
   let(:entry) do
     instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                    id: "sa_1", subagent: "explore", status: :running, messages: [], shell?: false)
+                    id: "sa_1", subagent: "explore", status: :running, messages: [],
+                    shell?: false, runner: nil)
   end
 
   before do
@@ -45,8 +46,9 @@ RSpec.describe Rubino::CLI::ChatCommand do
   end
 
   describe "#attach_agent_view" do
-    it "marks attached and replays the agent's OWN transcript" do
-      expect(cmd.send(:session_resolver)).to receive(:replay_messages).with(ui, [])
+    it "marks attached and replays the agent's OWN transcript with banner:false" do
+      expect(cmd.send(:session_resolver)).to receive(:replay_messages)
+        .with(ui, [], banner: false)
       attach!
       expect(cmd.send(:attached_to_agent?)).to be(true)
     end
@@ -55,6 +57,40 @@ RSpec.describe Rubino::CLI::ChatCommand do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("ghost").and_return(nil)
       cmd.send(:attach_agent_view, "ghost", ui)
       expect(cmd.send(:attached_to_agent?)).to be(false)
+    end
+
+    # FIX B — focal-switch-replay: after replaying the completed-history
+    # transcript, the entering subagent's in-progress live state is repainted
+    # so the focused view shows the current operation (streaming reasoning,
+    # answer prose, open tool row) rather than a frozen empty tail.
+    it "calls repaint_in_progress on the sub CLI after replay" do
+      sub_cli = instance_double(Rubino::UI::CLI, repaint_in_progress: nil)
+      sub_runner = instance_double(Rubino::Agent::Runner, ui: sub_cli)
+      entry_with_runner = instance_double(
+        Rubino::Tools::BackgroundTasks::Entry,
+        id: "sa_1", subagent: "explore", status: :running,
+        messages: [], shell?: false, runner: sub_runner
+      )
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find)
+        .with("sa_1").and_return(entry_with_runner)
+      allow(cmd.send(:session_resolver)).to receive(:replay_messages)
+
+      cmd.send(:attach_agent_view, "sa_1", ui)
+
+      expect(sub_cli).to have_received(:repaint_in_progress)
+    end
+
+    it "does not crash (no-op) when the entry has no runner (sync/foreground)" do
+      entry_no_runner = instance_double(
+        Rubino::Tools::BackgroundTasks::Entry,
+        id: "sa_no", subagent: "explore", status: :running,
+        messages: [], shell?: false, runner: nil
+      )
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find)
+        .with("sa_no").and_return(entry_no_runner)
+      allow(cmd.send(:session_resolver)).to receive(:replay_messages)
+
+      expect { cmd.send(:attach_agent_view, "sa_no", ui) }.not_to raise_error
     end
   end
 
@@ -229,7 +265,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "switches to ANOTHER agent when the picker re-attaches while attached" do
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_2", subagent: "build", status: :running, messages: [], shell?: false)
+                              id: "sa_2", subagent: "build", status: :running, messages: [],
+                              shell?: false, runner: nil)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
       cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
       expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
@@ -271,7 +308,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
 
     it "acts on a {attach_agent:} signal returned by a dispatched command" do
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_9", subagent: "build", status: :running, messages: [], shell?: false)
+                              id: "sa_9", subagent: "build", status: :running, messages: [],
+                              shell?: false, runner: nil)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_9").and_return(other)
       allow(cmd_executor).to receive(:try_execute).with("/agents sa_9 --attach")
                                                   .and_return({ attach_agent: "sa_9" })
@@ -328,7 +366,8 @@ RSpec.describe Rubino::CLI::ChatCommand do
     it "still lets you SWITCH away from a finished child to another live one" do
       allow(entry).to receive(:status).and_return(:completed)
       other = instance_double(Rubino::Tools::BackgroundTasks::Entry,
-                              id: "sa_2", subagent: "build", status: :running, messages: [], shell?: false)
+                              id: "sa_2", subagent: "build", status: :running, messages: [],
+                              shell?: false, runner: nil)
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sa_2").and_return(other)
       cmd.send(:handle_attached_input, "/agents sa_2 --attach", runner, ui, cmd_executor)
       expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
