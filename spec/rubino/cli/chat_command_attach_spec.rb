@@ -334,4 +334,93 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(cmd.instance_variable_get(:@attached_id)).to eq("sa_2")
     end
   end
+
+  describe "shell attach shows full command" do
+    let(:shell_entry) do
+      instance_double(Rubino::Tools::ShellEntryAdapter,
+                      id: "sh_1", subagent: "shell", status: :running,
+                      messages: [], shell?: true, prompt: "npm run build -- --watch --verbose",
+                      output_all: "")
+    end
+
+    before do
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sh_1").and_return(shell_entry)
+    end
+
+    it "renders the FULL sanitized command in the attach header" do
+      composer = instance_double(Rubino::UI::BottomComposer,
+                                 focus_agent!: nil, set_cards: nil,
+                                 print_above: nil)
+      allow(composer).to receive(:with_replay_exempt) { |&block| block.call }
+      allow(composer).to receive(:shell_tailer).and_return(
+        instance_double(Rubino::UI::ShellTailer, paint_full: nil)
+      )
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+
+      allow(ui).to receive(:info)
+
+      cmd.send(:attach_agent_view, "sh_1", ui)
+
+      expect(ui).to have_received(:info).with(
+        a_string_matching(/▶ attached to sh_1 · shell · npm run build -- --watch --verbose/)
+      )
+    end
+  end
+
+  describe "shell attach sanitizes command" do
+    before do
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).and_call_original
+    end
+
+    def setup_composer
+      composer = instance_double(Rubino::UI::BottomComposer,
+                                 focus_agent!: nil, set_cards: nil,
+                                 print_above: nil)
+      allow(composer).to receive(:with_replay_exempt) { |&block| block.call }
+      allow(composer).to receive(:shell_tailer).and_return(
+        instance_double(Rubino::UI::ShellTailer, paint_full: nil)
+      )
+      allow(Rubino::UI::BottomComposer).to receive(:current).and_return(composer)
+      composer
+    end
+
+    it "sanitizes control characters in the command" do
+      evil = instance_double(Rubino::Tools::ShellEntryAdapter,
+                             id: "sh_evil", subagent: "shell", status: :running,
+                             messages: [], shell?: true, prompt: "echo \x1b[31mRED\x1b[0m \x00NULL",
+                             output_all: "")
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sh_evil").and_return(evil)
+
+      setup_composer
+      allow(ui).to receive(:info)
+
+      cmd.send(:attach_agent_view, "sh_evil", ui)
+
+      header = nil
+      expect(ui).to have_received(:info) { |msg| header = msg }
+      expect(header).to include("^[")
+      expect(header).to include("^@")
+      expect(header).not_to include("\x1b")
+      expect(header).not_to include("\x00")
+    end
+
+    it "masks inline secrets in the command" do
+      secret_cmd = instance_double(Rubino::Tools::ShellEntryAdapter,
+                                   id: "sh_secret", subagent: "shell", status: :running,
+                                   messages: [], shell?: true,
+                                   prompt: %(curl -H "Authorization: Bearer sk-abc123" https://api.example.com),
+                                   output_all: "")
+      allow(Rubino::Tools::BackgroundTasks.instance).to receive(:find).with("sh_secret").and_return(secret_cmd)
+
+      setup_composer
+      allow(ui).to receive(:info)
+
+      cmd.send(:attach_agent_view, "sh_secret", ui)
+
+      header = nil
+      expect(ui).to have_received(:info) { |msg| header = msg }
+      expect(header).not_to include("sk-abc123")
+      expect(header).to include("***")
+    end
+  end
 end
