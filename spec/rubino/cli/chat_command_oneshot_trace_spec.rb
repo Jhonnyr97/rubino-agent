@@ -25,7 +25,16 @@ RSpec.describe Rubino::CLI::ChatCommand do
     allow(Rubino::LLM::RubyLLMAdapter).to receive(:new).and_return(fake_llm)
     allow(Rubino::LLM::CredentialCheck).to receive(:usable?).and_return(true)
     Rubino.ui = null_ui
+    # With the structural fix (logger default $stderr, not $stdout), the
+    # lazy logger binds to $stderr — which the test's #run_oneshot replaces
+    # with a captured StringIO. So operational logs stay off the test stdout
+    # by construction; no explicit /dev/null override is needed.
+    Rubino.logger = nil # force re-lazy-init per test (no cross-file leak)
     Rubino::Modes.reset!
+  end
+
+  after do
+    Rubino.logger = nil # restore lazy-init default for other spec files
   end
 
   # Runs a one-shot, capturing stdout + stderr and any SystemExit status.
@@ -78,6 +87,28 @@ RSpec.describe Rubino::CLI::ChatCommand do
       # Dropping stderr (2>/dev/null) leaves a trace-free answer.
       lines = stdout.each_line.map(&:strip).reject(&:empty?)
       expect(lines).to eq(["the answer"])
+    end
+
+    it "routes operational logs to stderr, never stdout (structural logger-device contract)" do
+      # Simulate the real default: logger on $stderr, NOT /dev/null.
+      # The oneshot path must keep stdout answer-only by construction.
+      Rubino.logger = nil # force re-lazy-init against the captured $stderr
+
+      fake_llm.enqueue_text("just the answer", input_tokens: 6, output_tokens: 3)
+
+      stdout, stderr, status = run_oneshot("query" => "go", "yolo" => true)
+
+      # Stdout: answer only, no JSON log lines.
+      lines = stdout.each_line.map(&:strip).reject(&:empty?)
+      expect(lines).to eq(["just the answer"])
+
+      # Any operational log that did fire lands on stderr.
+      # The cleanup log may or may not fire (throttled), but if it did,
+      # it MUST be on stderr only.
+      expect(stdout).not_to include("cleanup")
+      expect(stdout).not_to include('"event"')
+
+      expect(status).to eq(0)
     end
   end
 

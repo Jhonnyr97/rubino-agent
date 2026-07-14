@@ -1004,9 +1004,9 @@ module Rubino
         @composer_stdout = nil
         if @composer
           @composer_stdout = $stdout
-          # Force the lazily-built logger to bind to the REAL $stdout NOW, before
-          # the swap — otherwise the first log call would build a Logger against
-          # the proxy and route diagnostic lines into the chat.
+          # Force the lazily-built logger to bind to the REAL $stderr NOW, before
+          # any TUI setup — the logger defaults to $stderr so operational lines
+          # never contaminate the answer contract (#126).
           Rubino.logger
           $stdout = UI::StdoutProxy.new(@composer)
         end
@@ -3115,7 +3115,10 @@ module Rubino
           # through the focus gate); a shell has no transcript, so it shows its
           # captured OUTPUT and the user types straight to its stdin.
           if entry.shell?
-            ui.info(pastel.cyan("▶ attached to #{id} · shell") +
+            cmd = Rubino::Util::Output.sanitize_terminal(
+              Rubino::Util::SecretsMask.mask_inline(entry.prompt.to_s)
+            )
+            ui.info(pastel.cyan("▶ attached to #{id} · shell · #{cmd}") +
                     pastel.dim(" — type to send input · ↓ to switch · ← to go back"))
             composer.shell_tailer.paint_full(entry, origin: id)
           else

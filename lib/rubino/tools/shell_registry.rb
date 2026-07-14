@@ -349,38 +349,37 @@ module Rubino
         end
       end
 
+      # Short grace after the leader exits to let the reader thread flush the
+      # final buffered chunk to the log file — mirroring the foreground's
+      # DETACHED_DRAIN_GRACE. A shell_output right after completion must still
+      # return the tail.
+      DRAIN_GRACE = 0.1
+
       # THE single liveness oracle for a background shell — "is the work this
       # entry represents still running?". Every surface (status, the running
       # set, the kill/input guards, the UI cards) routes through here so they
       # can never disagree about whether a shell is alive.
       #
-      # A shell is alive while EITHER:
-      #   - the `bash -c` LEADER is still alive (the normal case — a server run
-      #     without a trailing `&` keeps bash in the foreground), OR
-      #   - the output READER thread is still draining — i.e. SOME descendant
-      #     still holds the merged stdout/stderr pipe open. This is what catches
-      #     a server that backgrounds ITSELF (`npm run dev &`, `cmd & echo up`)
-      #     or a launcher that exits while its child keeps serving: the leader
-      #     reaps but the child holds the pipe, so the work is plainly still
-      #     running. Keying liveness off the leader ALONE (the old behaviour)
-      #     falsely reported these :completed the instant the launcher exited,
-      #     so shell_output retired+closed them mid-flight — orphaning a live
-      #     server and driving the model into a kill/restart loop (port already
-      #     in use → crash → restart → …).
-      #
-      # The reader-thread signal is immune to PID/PGID reuse: it tracks OUR pipe
-      # fd, not a pid, so it can never alias an unrelated later process group the
-      # way a bare `kill(0, -pgid)` probe could after the group is fully reaped.
+      # Liveness is derived from the LEADER PROCESS only (the wait_thr from
+      # Process.detach). The reader thread is NOT part of the liveness signal:
+      # tying completion to whether the stdout pipe is still open caused the
+      # real bug where a finished command whose detached child holds the pipe
+      # was stuck "running" forever — the model could never see completion and
+      # had to KILL it. The reader thread keeps DRAINING residual/child output
+      # into the log; it just no longer GATES completion. A short #drain_tail
+      # grace in #status / #exit_code ensures the final chunk is flushed before
+      # those report :completed/:failed.
       def running?(entry)
         return false unless entry
 
-        entry.wait_thr&.alive? || entry.reader_thr&.alive? || false
+        entry.wait_thr&.alive? || false
       end
 
       def status(entry)
         return :running if running?(entry)
         return :stopped if entry.stopped
 
+        drain_tail(entry)
         code = entry.wait_thr.value.exitstatus
         code && ShellTool.success_exit?(code) ? :completed : :failed
       end
@@ -388,7 +387,15 @@ module Rubino
       def exit_code(entry)
         return nil if running?(entry)
 
+        drain_tail(entry)
         entry.wait_thr.value.exitstatus
+      end
+
+      # Give the reader thread a short window to flush the final readpartial
+      # chunk to the log file after the leader has exited, so a shell_output
+      # call right after status flips to :completed still sees the tail.
+      def drain_tail(entry)
+        entry.reader_thr&.join(DRAIN_GRACE) if entry.reader_thr&.alive?
       end
 
       # The RUNNING background shells (not yet exited, not retired) — the set the
@@ -548,8 +555,15 @@ module Rubino
 
       # Single-reader pattern: only this thread writes to entry.buffer AND the
       # log file. The mutex protects against concurrent reads from shell_output_tool.
+      #
+      # Drains with readpartial (NOT each_line), mirroring the foreground shell
+      # drain (shell_tool.rb ~522). each_line only yields on \n/EOF, so \r-progress
+      # bars, spinners, and un-terminated prompts were buffered and never teed to
+      # the log until a newline or exit — shell_tail/shell_output falsely reported
+      # "no new output". readpartial emits every chunk immediately.
       def drain_into(entry, rd)
-        rd.each_line do |chunk|
+        loop do
+          raw = rd.readpartial(65_536)
           # Scrub to valid UTF-8 AT THE CAPTURE SEAM, mirroring the FOREGROUND
           # shell (ShellTool drains through Util::Output.scrub_utf8). A binary /
           # latin-1 background process (`head -c … /dev/urandom &`, `cat *.png &`)
@@ -560,7 +574,7 @@ module Rubino
           # already safe for every reader (read_new / read_all). Terminal-escape
           # neutralization for what reaches the screen is a separate render-seam
           # concern (CLI#safe on the close-row metric / write_body_lines).
-          chunk = Util::Output.scrub_utf8(chunk)
+          chunk = Util::Output.scrub_utf8(raw)
           entry.mutex.synchronize do
             entry.buffer << chunk
             overflow = entry.buffer.bytesize - RING_BYTES
@@ -574,10 +588,10 @@ module Rubino
             entry.log_file.write(chunk) if entry.log_file && !entry.log_file.closed?
           end
         end
-      rescue IOError, Errno::EBADF, Errno::EIO
-        # End of stream = the process exited. A pipe signals this with EOF/IOError;
-        # a PTY master instead raises Errno::EIO once the child is gone. Both mean
-        # "reader done", same completion path below.
+      rescue EOFError, Errno::EBADF, Errno::EIO
+        # End of stream = the process exited. A pipe signals EOF then raises
+        # EOFError/IOError; a PTY master instead raises Errno::EIO once the child
+        # is gone. Both mean "reader done", same completion path below.
       ensure
         rd.close unless rd.closed?
         # Close the writer handle so the file is complete on disk.

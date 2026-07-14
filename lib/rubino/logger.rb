@@ -35,7 +35,7 @@ module Rubino
     # Replacement string written in place of redacted values.
     REDACTED = "[REDACTED]"
 
-    def initialize(io: $stdout, level: ENV.fetch("RUBINO_LOG_LEVEL", "info"),
+    def initialize(io: $stderr, level: ENV.fetch("RUBINO_LOG_LEVEL", "info"),
                    format: ENV.fetch("RUBINO_LOG_FORMAT", "json"))
       @logger = ::Logger.new(io)
       @logger.level = LEVELS.fetch(level.to_sym, ::Logger::INFO)
