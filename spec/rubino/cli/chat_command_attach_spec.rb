@@ -101,7 +101,11 @@ RSpec.describe Rubino::CLI::ChatCommand do
   describe "#update_polishing_indicator while attached" do
     let(:composer) { instance_spy(Rubino::UI::BottomComposer) }
 
-    before { allow(composer).to receive(:respond_to?).with(:set_status).and_return(true) }
+    before do
+      allow(composer).to receive(:respond_to?).with(:set_status).and_return(true)
+      allow(cmd).to receive(:polishing_status_line).and_return("polishing…")
+      allow(cmd).to receive(:build_status_line).and_return("status")
+    end
 
     it "does NOT paint the polishing status while attached, even when polishing" do
       allow(runner).to receive(:polishing?).and_return(true)
