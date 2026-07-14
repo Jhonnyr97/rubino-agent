@@ -525,12 +525,41 @@ module Rubino
           # skips approval prompts, not the OS write-jail). Fails OPEN with a
           # one-time loud banner where no mechanism is available (old kernel,
           # non-mac/linux); set mode: off to silence it deliberately.
+          # devices: OS device access the write-jail grants to sandboxed shell
+          # commands (macOS/Seatbelt only; Linux/Landlock ignores it). See below.
           "sandbox" => {
             "mode" => "workspace-write",
             "network" => "allow",
             "extra_writable" => [],
             "require" => false,
-            "escalation" => "protect-home"
+            "escalation" => "protect-home",
+            "devices" => {
+              # GPU/Metal (MLX, MPS) device access, ALWAYS-ON by default: the
+              # named IOKit user-clients are appended to the Seatbelt profile so
+              # a sandboxed command can reach the GPU. The write-jail stays ON —
+              # this grants no filesystem write nor extra network, so it is not a
+              # boundary worth a per-command prompt (unlike disable_sandbox, the
+              # write-jail escape hatch). No shell param, no approval — just the
+              # global knob below. macOS/Seatbelt only (Linux/Landlock has no
+              # device concept → GPU already works there, this map is ignored).
+              #   mode: allow (default) | deny
+              #     allow — user-clients added to every sandboxed spawn
+              #     deny  — never added (lock-down / multi-tenant hosts); a
+              #             GPU command then fails with "No Metal device"
+              #   iokit_user_clients: the user-client classes appended to the
+              #     profile (sanitized to [A-Za-z0-9_]). ADD A NEW DEVICE by
+              #     adding an entry here — no code change.
+              "gpu" => {
+                "mode" => "allow",
+                "iokit_user_clients" => [
+                  "AGXDeviceUserClient",
+                  "IOGPUDeviceUserClient",
+                  "IOSurfaceRootUserClient",
+                  "IOSurfaceSendRight",
+                  "AppleGraphicsDeviceControlClient"
+                ]
+              }
+            }
           },
 
           # Default ON, matching Hermes (web tools ship in the default toolset,

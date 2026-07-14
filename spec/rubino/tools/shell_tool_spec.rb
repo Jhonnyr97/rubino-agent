@@ -93,6 +93,31 @@ RSpec.describe Rubino::Tools::ShellTool do
     end
   end
 
+  # Codex-style hot retry: ToolExecutor calls #rerun_escalated after the user
+  # approves the "retry outside the sandbox" prompt. The model usually OMITS
+  # cwd and real tool args are string-keyed, so cwd arrives nil — it must NOT
+  # crash (chdir: nil → "no implicit conversion of nil into String") but fall
+  # back to the workspace root, like the normal path.
+  describe "#rerun_escalated (escalation hot retry)" do
+    after { Rubino::Security::Sandbox.reset! }
+
+    it "runs the command outside the jail when cwd is nil (regression: no chdir:nil crash)" do
+      res = tool.rerun_escalated("echo escalated_ok", nil, described_class::DEFAULT_TIMEOUT)
+      expect(res[:output]).to include("escalated_ok")
+      expect(res[:output]).not_to include("no implicit conversion of nil into String")
+    end
+
+    it "honours an explicit cwd" do
+      res = tool.rerun_escalated("pwd", Dir.pwd, described_class::DEFAULT_TIMEOUT)
+      expect(res[:output]).to include(File.realpath(Dir.pwd))
+    end
+
+    it "falls back to the workspace root for an empty cwd" do
+      res = tool.rerun_escalated("echo empty_ok", "", described_class::DEFAULT_TIMEOUT)
+      expect(res[:output]).to include("empty_ok")
+    end
+  end
+
   describe ".sandbox_refusal_reason (fail-closed delegation)" do
     after { Rubino::Security::Sandbox.reset! }
 

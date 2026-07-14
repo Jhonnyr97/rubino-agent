@@ -257,6 +257,35 @@ module Rubino
         end
       end
 
+      # Hot retry (Codex-style): re-spawn the SAME command outside the sandbox
+      # after the user approved the escalation prompt. Called by ToolExecutor
+      # when the first attempt hit a write-jail denial. Bypasses param validation,
+      # cwd resolution, and destructive checks — the first attempt already cleared
+      # them. Only for foreground commands (background denial is not retried).
+      def rerun_escalated(command, cwd, timeout)
+        # Resolve the cwd exactly like the normal path: the model usually omits
+        # cwd (nil) and real tool args are string-keyed, so `cwd` is frequently
+        # nil here. Passing nil straight to execute_foreground's `chdir:` makes
+        # Process.spawn raise "no implicit conversion of nil into String". Fall
+        # back to the session/workspace root instead of crashing the retry.
+        working_dir = resolve_cwd(cwd)
+        return { output: "Error: cannot access working directory: #{cwd.inspect}", error_code: :denied_command } unless working_dir
+
+        run = execute_foreground(command, working_dir, timeout, escalate: true)
+        run[:text] = append_jail_hint(run[:text], working_dir)
+        {
+          output: run[:text],
+          metrics: foreground_metric(run),
+          body: Util::Output.preview(run[:text]),
+          body_kind: @stream_kind || :plain,
+          exit_code: run[:exit_code],
+          timed_out: run[:timed_out],
+          cancelled: run[:cancelled],
+          error_code: shell_error_code(run),
+          compress_hint: { stream_kind: @stream_kind }
+        }
+      end
+
       # Appends the write-jail attribution (#74) to the captured text when the
       # EACCES it carries is an OS-sandbox denial of a write outside the writable
       # roots. Returns the text unchanged when it isn't (normal perms error, no

@@ -372,4 +372,116 @@ RSpec.describe Rubino::Security::Sandbox do
       expect(argv).to eq(["bash", "-c", "x"])
     end
   end
+
+  describe "device access (GPU, always-on via config)" do
+    # GPU access is always-on: no per-command param, no approval prompt.
+    # The only knob is tools.sandbox.devices.gpu.mode (allow/deny).
+    # When allow (the default), IOKit user-clients are appended to EVERY
+    # Seatbelt profile; the write-jail stays intact. The LLM never decides
+    # whether to "request" GPU — it's just there, like the network stack.
+
+    describe "device_iokit_clients" do
+      it "returns the configured client class list" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        clients = described_class.send(:device_iokit_clients, :gpu)
+        expect(clients).to include("AGXDeviceUserClient")
+        expect(clients).to include("IOGPUDeviceUserClient")
+      end
+
+      it "returns [] for an unknown device" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        expect(described_class.send(:device_iokit_clients, :unknown)).to eq([])
+      end
+
+      it "returns [] when the device is denied" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        Rubino.configuration.dig("tools", "sandbox", "devices", "gpu")["mode"] = "deny"
+        expect(described_class.send(:device_iokit_clients, :gpu)).to eq([])
+      end
+
+      it "sanitizes: drops entries with whitespace/parens/quotes" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        entry = Rubino.configuration.dig("tools", "sandbox", "devices", "gpu")
+        entry["iokit_user_clients"] = ["AGXDeviceUserClient", "Bad Class", 'x") (deny default']
+        clients = described_class.send(:device_iokit_clients, :gpu)
+        expect(clients).to eq(["AGXDeviceUserClient"])
+      end
+
+      it "deduplicates entries" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        entry = Rubino.configuration.dig("tools", "sandbox", "devices", "gpu")
+        entry["iokit_user_clients"] = ["AGXDeviceUserClient", "AGXDeviceUserClient"]
+        expect(described_class.send(:device_iokit_clients, :gpu)).to eq(["AGXDeviceUserClient"])
+      end
+    end
+
+    describe "seatbelt_policy with device_clients" do
+      it "includes the iokit-open-user-client block when clients are given" do
+        policy = described_class.send(:seatbelt_policy, 1, device_clients: ["AGXDeviceUserClient"])
+        expect(policy).to include("(allow iokit-open-user-client")
+        expect(policy).to include('(iokit-user-client-class "AGXDeviceUserClient")')
+        expect(policy).to include("(allow iokit-get-properties)")
+      end
+
+      it "has no iokit line when device_clients is empty (byte-unchanged)" do
+        policy_without = described_class.send(:seatbelt_policy, 1, device_clients: [])
+        policy_with    = described_class.send(:seatbelt_policy, 1)
+        expect(policy_without).to eq(policy_with)
+        expect(policy_without).not_to include("iokit")
+      end
+    end
+
+    describe "command_prefix always includes GPU (always-on)" do
+      it "includes GPU IOKit rules by default (mode: allow from shipped defaults)" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        prefix = described_class.command_prefix(cwd: workspace)
+
+        expect(prefix.first).to eq("/usr/bin/sandbox-exec")
+        policy = prefix[prefix.index("-p") + 1]
+        expect(policy).to include("(allow iokit-open-user-client")
+        expect(policy).to include('(iokit-user-client-class "AGXDeviceUserClient")')
+        expect(policy).to include("(allow iokit-get-properties)")
+      end
+
+      it "excludes GPU rules when mode is deny" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        Rubino.configuration.dig("tools", "sandbox", "devices", "gpu")["mode"] = "deny"
+        prefix = described_class.command_prefix(cwd: workspace)
+
+        policy = prefix[prefix.index("-p") + 1]
+        expect(policy).not_to include("iokit-open-user-client")
+        expect(policy).not_to include("iokit-get-properties")
+      end
+
+      it "has no prefix when escalate:true (unconfined, GPU irrelevant)" do
+        configure(mode: "workspace-write", mechanism: :seatbelt, escalation: "protect-home")
+        prefix = described_class.command_prefix(cwd: workspace, escalate: true)
+        expect(prefix).to eq([])
+      end
+
+      it "has no GPU rules on Landlock (no device concept)" do
+        configure(mode: "workspace-write", mechanism: :landlock)
+        allow(described_class).to receive(:landlock_helper).and_return("/h/rubino-landlock")
+        prefix = described_class.command_prefix(cwd: workspace)
+        expect(prefix).to eq(["/h/rubino-landlock", "--"])
+      end
+    end
+
+    describe "wrap_argv always includes GPU (always-on)" do
+      it "includes GPU IOKit rules by default" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        argv = described_class.wrap_argv(["bash", "-c", "x"], cwd: workspace)
+        policy = argv[argv.index("-p") + 1]
+        expect(policy).to include("(allow iokit-open-user-client")
+      end
+
+      it "excludes GPU rules when mode is deny" do
+        configure(mode: "workspace-write", mechanism: :seatbelt)
+        Rubino.configuration.dig("tools", "sandbox", "devices", "gpu")["mode"] = "deny"
+        argv = described_class.wrap_argv(["bash", "-c", "x"], cwd: workspace)
+        policy = argv[argv.index("-p") + 1]
+        expect(policy).not_to include("iokit-open-user-client")
+      end
+    end
+  end
 end

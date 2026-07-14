@@ -1089,18 +1089,18 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
   # §B: the disable_sandbox escape hatch — an approved out-of-jail run. It ALWAYS
   # prompts (fresh, distinct approval), sits BELOW yolo and BELOW the hardline
   # floor, and is inert when the operator disabled the hatch.
-  describe "sandbox escalation (disable_sandbox)" do
+  describe "escalation (disable_sandbox)" do
     let(:config) { test_configuration("approvals" => { "mode" => "manual" }) }
     let(:policy) { described_class.new(config: config) }
     let(:shell)  { make_tool(name: "shell", risk_level: :high, risky: true) }
 
     after { Rubino::Modes.reset! }
 
-    it "routes an escalated shell command to :ask with reason :sandbox_escalation" do
+    it "routes an escalated shell command to :ask with reason :escalation" do
       allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
       d = policy.decide(shell, arguments: { "command" => "cp a ~/x", "disable_sandbox" => true })
       expect(d).to eq(:ask)
-      expect(policy.last_ask_reason).to eq(:sandbox_escalation)
+      expect(policy.last_ask_reason).to eq(:escalation)
     end
 
     it "prompts even for an otherwise auto-allowed read-only command" do

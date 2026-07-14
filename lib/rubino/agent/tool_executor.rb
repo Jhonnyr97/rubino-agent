@@ -183,6 +183,14 @@ module Rubino
         result = nil
         begin
           result = run_tool(tool, name: name, arguments: arguments, call_id: call_id)
+          # Hot retry on sandbox denial (Codex-style): when the OS write-jail
+          # denied the command, ask for escalation approval and re-run
+          # unsandboxed — zero extra model round-trips. Only for foreground
+          # shell commands with the jail proven enforcing and the escape hatch
+          # open (#74 write-jail attribution + §B escalation).
+          if (escalated = try_escalation(result, tool, arguments, call_id))
+            result = escalated
+          end
         ensure
           duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000).round
           emit_artifact(result) if result.respond_to?(:artifact) && result&.artifact
@@ -542,6 +550,60 @@ module Rubino
           "(use --yolo to allow, or allowlist it)"
       end
 
+      # Hot retry on escalation denial (Codex-style): when the first shell attempt
+      # hit a write-jail EACCES, ask the user for escalation approval and re-run
+      # unsandboxed — zero extra model round-trips. Returns the escalated Tools::Result
+      # on success, nil when the denial wasn't from the jail or escalation is
+      # unavailable/refused. Only fires for foreground shell commands with the jail
+      # proven enforcing and the escape hatch open.
+      def try_escalation(result, tool, arguments, call_id)
+        return nil unless tool.respond_to?(:rerun_escalated)
+        return nil unless result.respond_to?(:output)
+        return nil unless Security::Sandbox.enforcing?
+        return nil unless Security::Sandbox.escalation_allowed?
+
+        # Real tool arguments arrive with STRING keys (JSON tool-call args), so
+        # read both stylings — a symbol-only lookup silently yields nil, which
+        # turned `command` into "" (retry ran nothing) and `cwd` into nil.
+        args    = arguments.is_a?(Hash) ? arguments : {}
+        command = (args[:command] || args["command"]).to_s
+        cwd     = args[:cwd] || args["cwd"]
+        timeout = (args[:timeout] || args["timeout"] || Tools::ShellTool::DEFAULT_TIMEOUT).to_i
+
+        text = result.output.to_s
+        return nil if text.empty?
+        return nil unless Security::Sandbox.write_jail_attribution(text, cwd: cwd)
+
+        # The first attempt surfaced a jail denial. Ask the user.
+        return nil unless @ui.interactive?
+
+        question = "The sandbox blocked this write. Retry outside the sandbox?"
+        approved = @ui.confirm(
+          question,
+          scope: "escalation:#{call_id}",
+          tool: tool.name,
+          command: Security::Sandbox.escalation_disclosure
+        )
+        return nil unless approved
+
+        # Re-run unsandboxed. The tool's rerun_escalated bypasses param
+        # validation and goes straight to execute_foreground(escalate:true).
+        raw = tool.rerun_escalated(command, cwd, timeout)
+        Tools::Result.new(
+          name: tool.name,
+          call_id: call_id,
+          output: raw[:output] || raw["output"],
+          status: :success,
+          metrics: raw[:metrics] || raw["metrics"],
+          error_code: raw[:error_code] || raw["error_code"],
+          artifact: raw[:artifact] || raw["artifact"]
+        )
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "tool_executor.escalation_failed",
+                            error: e.message, error_class: e.class.name)
+        nil
+      end
+
       def request_approval(tool, arguments)
         command = Security::ApprovalPolicy.command_string(tool, arguments)
         _hit, pattern_key, description = Security::DangerousPatterns.detect(command)
@@ -631,13 +693,13 @@ module Rubino
       end
 
       # Appends the out-of-jail disclosure when the policy routed THIS call to the
-      # sandbox-escalation prompt (last_ask_reason == :sandbox_escalation). The
-      # wording is mode-aware (full vs protect-home, and the Landlock degrade) and
-      # lives in Sandbox#escalation_disclosure so the card can't drift from what
-      # the launcher actually does. Any other :ask is unchanged.
+      # escalation prompt (last_ask_reason == :escalation). The wording is
+      # mode-aware (full vs protect-home, and the Landlock degrade) and lives in
+      # Sandbox#escalation_disclosure so the card can't drift from what the
+      # launcher actually does. Any other :ask is unchanged.
       def with_escalation_note(question)
         return question unless @approval_policy.respond_to?(:last_ask_reason)
-        return question unless @approval_policy.last_ask_reason == :sandbox_escalation
+        return question unless @approval_policy.last_ask_reason == :escalation
 
         "#{question}\n   ⚠ #{Security::Sandbox.escalation_disclosure}"
       end

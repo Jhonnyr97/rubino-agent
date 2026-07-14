@@ -999,4 +999,98 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       expect(Rubino.memory_source_session_id).to be_nil
     end
   end
+
+  # Hot retry on escalation denial (Codex-style): when a shell command hits
+  # a write-jail EACCES, the executor re-prompts and re-runs unsandboxed
+  # in the same turn — zero extra model round-trips.
+  describe "escalation hot retry" do
+    let(:shell_tool) do
+      Class.new(Rubino::Tools::ShellTool) do
+        def name = "shell"
+        def rerun_escalated(_command, _cwd, _timeout)
+          { output: "escalated-ok", metrics: "exit 0 · 100ms",
+            exit_code: 0, timed_out: false, cancelled: false,
+            error_code: nil }
+        end
+      end.new
+    end
+
+    before do
+      allow(registry).to receive(:find).with("shell").and_return(shell_tool)
+      allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(true)
+      allow(Rubino::Security::Sandbox).to receive(:escalation_allowed?).and_return(true)
+      allow(policy).to receive(:decide).and_return(:allow)
+    end
+
+    it "retries unsandboxed when the first attempt hits the write-jail" do
+      # First attempt returns EACCES text that write_jail_attribution matches
+      denied_output = "/usr/local/bin/x: Permission denied"
+      allow(shell_tool).to receive(:call).and_return(
+        Rubino::Tools::Result.new(name: "shell", call_id: "c1", output: denied_output, status: :success)
+      )
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .with(denied_output, cwd: anything).and_return("(blocked by the workspace write-jail)")
+
+      result = executor.execute(
+        name: "shell",
+        arguments: { "command" => "pip install x", "cwd" => "/tmp", "timeout" => 30 },
+        call_id: "c1"
+      )
+
+      expect(result.output).to eq("escalated-ok")
+    end
+
+    it "does NOT retry when the jail is not enforcing" do
+      allow(Rubino::Security::Sandbox).to receive(:enforcing?).and_return(false)
+
+      denied_output = "/usr/local/bin/x: Permission denied"
+      allow(shell_tool).to receive(:call).and_return(
+        Rubino::Tools::Result.new(name: "shell", call_id: "c2", output: denied_output, status: :success)
+      )
+
+      result = executor.execute(
+        name: "shell",
+        arguments: { "command" => "pip install x" },
+        call_id: "c2"
+      )
+
+      expect(result.output).to eq(denied_output)
+    end
+
+    it "does NOT retry when the text has no jail denial pattern" do
+      normal_output = "Successfully installed x-1.0"
+      allow(shell_tool).to receive(:call).and_return(
+        Rubino::Tools::Result.new(name: "shell", call_id: "c3", output: normal_output, status: :success)
+      )
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .with(normal_output, cwd: anything).and_return(nil)
+
+      result = executor.execute(
+        name: "shell",
+        arguments: { "command" => "pip install x" },
+        call_id: "c3"
+      )
+
+      expect(result.output).to eq(normal_output)
+    end
+    it "does NOT retry when the UI is not interactive (one-shot/CI fallback)" do
+      allow(ui).to receive(:interactive?).and_return(false)
+
+      denied_output = "/opt/x: Permission denied"
+      allow(shell_tool).to receive(:call).and_return(
+        Rubino::Tools::Result.new(name: "shell", call_id: "c4", output: denied_output, status: :success)
+      )
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .with(denied_output, cwd: anything).and_return("(blocked)")
+
+      result = executor.execute(
+        name: "shell",
+        arguments: { "command" => "touch /opt/x" },
+        call_id: "c4"
+      )
+
+      # Non-interactive: model sees the denial, no retry
+      expect(result.output).to eq(denied_output)
+    end
+  end
 end

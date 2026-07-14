@@ -175,7 +175,7 @@ module Rubino
         #    decision so a legitimate repeated call is not hard-denied.
         return deny_with(:doom_loop) if doom_loop_blocks?(tool, arguments)
 
-        # 4b. Sandbox ESCALATION request (shell disable_sandbox:true, §B). Running
+        # 4b. ESCALATION request (shell disable_sandbox:true, §B). Running
         #     OUTSIDE the OS write-jail is inherently privileged, so it ALWAYS
         #     prompts with a FRESH, distinct approval — never auto-allowed on a
         #     readonly/allowlisted/dangerous? basis, and above the step 5-6 allow
@@ -188,7 +188,7 @@ module Rubino
         #     the hatch (allow_escalation:false) the shell tool ignores the flag,
         #     so this is false and the command routes through the normal gate.
         if escalated_shell?(tool, arguments)
-          @last_ask_reason = :sandbox_escalation
+          @last_ask_reason = :escalation
           return :ask
         end
 

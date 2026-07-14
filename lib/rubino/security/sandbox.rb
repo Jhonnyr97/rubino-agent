@@ -240,6 +240,18 @@ module Rubino
         end
       end
 
+      # True when tools.sandbox.devices.<name>.mode is set to deny (YAML parses a
+      # bare `deny`/`no`/`off`/`false` here). A device is enabled by default —
+      # device access (GPU/Metal via IOKit) is not a security boundary worth a
+      # per-command gate (it grants no filesystem write nor extra network; the
+      # write-jail stays ON), so the only knob is this global deny.
+      def device_denied?(name)
+        mode = Rubino.configuration&.dig("tools", "sandbox", "devices", name.to_s, "mode").to_s
+        %w[deny no off false].include?(mode)
+      rescue StandardError
+        false
+      end
+
       # The de-duped, existing absolute paths the jail allows writes to. The
       # workspace set is read live from Workspace.canonical_roots, so an
       # --add-dir mid-session is reflected on the next shell call; `cwd` is
@@ -449,9 +461,23 @@ module Rubino
         roots = writable_roots(cwd: cwd)
         defines = []
         roots.each_with_index { |r, i| defines << "-DWRITABLE_ROOT_#{i}=#{r}" }
-        [ABS_SANDBOX_EXEC, "-p", seatbelt_policy(roots.size), *defines, "--"]
+        [ABS_SANDBOX_EXEC, "-p", seatbelt_policy(roots.size, device_clients: enabled_device_clients), *defines, "--"]
       end
       private_class_method :seatbelt_prefix
+
+      # The sanitized IOKit user-client rules for EVERY non-denied device in
+      # tools.sandbox.devices — appended to the Seatbelt profile so GPU/Metal
+      # (MLX, MPS) just works, with the write-jail unchanged. [] when the map is
+      # absent/empty or all devices are denied.
+      def enabled_device_clients
+        devices = Rubino.configuration&.dig("tools", "sandbox", "devices")
+        return [] unless devices.is_a?(Hash)
+
+        devices.keys.flat_map { |name| device_iokit_clients(name) }.uniq
+      rescue StandardError
+        []
+      end
+      private_class_method :enabled_device_clients
 
       # The escalated (disable_sandbox) launcher prefix. Only reached when the
       # hatch is open (escalation_allowed?), so the mode here is :full or
@@ -514,15 +540,46 @@ module Rubino
       private_class_method :seatbelt_base_policy
 
       # WORKSPACE-WRITE: deny writes everywhere, allow only the parameterised
-      # roots (the default confinement).
-      def seatbelt_policy(root_count)
+      # roots (the default confinement). When device_clients are given, appends
+      # the IOKit user-client rules AFTER the write rules (order-independent).
+      def seatbelt_policy(root_count, device_clients: [])
         writes = (0...root_count).map do |i|
           "(allow file-write* (subpath (param \"WRITABLE_ROOT_#{i}\")))"
         end.join("\n")
 
-        "#{seatbelt_base_policy}\n; WRITES: deny everywhere, allow only the parameterised roots\n#{writes}\n"
+        "#{seatbelt_base_policy}\n; WRITES: deny everywhere, allow only the parameterised roots\n#{writes}\n#{seatbelt_device_rules(device_clients)}"
       end
       private_class_method :seatbelt_policy
+
+      # The device user-client lines to append to the Seatbelt profile when
+      # the named device is granted. Returns "" when clients is empty.
+      def seatbelt_device_rules(clients)
+        return "" if clients.empty?
+
+        lines = clients.map { |c| " (iokit-user-client-class \"#{c}\")" }
+        "; DEVICE: GPU/Metal user-clients (write-jail unchanged)\n" \
+          "(allow iokit-open-user-client\n#{lines.join("\n")})\n" \
+          "(allow iokit-get-properties)\n"
+      end
+      private_class_method :seatbelt_device_rules
+
+      # SECURITY-CRITICAL: these strings are interpolated INTO the SBPL policy
+      # text. Sanitize: keep ONLY entries matching /\A[A-Za-z0-9_]+\z/ — drop
+      # anything with quotes/parens/whitespace/newlines to prevent SBPL injection.
+      # Dedup. Returns [] on any error or when the device is deny/absent.
+      def device_iokit_clients(name)
+        entry = Rubino.configuration&.dig("tools", "sandbox", "devices", name.to_s)
+        return [] unless entry
+        return [] if device_denied?(name)
+
+        Array(entry["iokit_user_clients"])
+          .map(&:to_s)
+          .select { |c| c.match?(/\A[A-Za-z0-9_]+\z/) }
+          .uniq
+      rescue StandardError
+        []
+      end
+      private_class_method :device_iokit_clients
 
 
 
