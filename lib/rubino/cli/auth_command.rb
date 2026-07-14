@@ -72,7 +72,8 @@ module Rubino
       def logout(provider_id)
         Rubino.ensure_database_ready!
         provider = load_provider(provider_id)
-        repo     = OAuth::ConnectionRepository.new
+        repo     = connection_repo
+        return unless repo
 
         connections = repo.for_provider(provider.id)
         if connections.empty?
@@ -94,7 +95,9 @@ module Rubino
       desc "status", "List connected OAuth accounts"
       def status
         Rubino.ensure_database_ready!
-        repo = OAuth::ConnectionRepository.new
+        repo = connection_repo
+        return unless repo
+
         connections = repo.list
 
         if connections.empty?
@@ -111,6 +114,19 @@ module Rubino
       end
 
       private
+
+      # Wraps ConnectionRepository creation, printing a friendly message
+      # instead of a raw KeyMissingError backtrace when RUBINO_ENCRYPTION_KEY
+      # is unset (mirrors doctor_command.rb:382).
+      def connection_repo
+        OAuth::ConnectionRepository.new
+      rescue OAuth::TokenEncryptor::KeyMissingError
+        ui.error("RUBINO_ENCRYPTION_KEY not set — required for OAuth token storage. " \
+                 "Set it and retry.\n" \
+                 "Generate one: ruby -rsecurerandom -rbase64 -e " \
+                 "'puts Base64.strict_encode64(SecureRandom.random_bytes(32))'")
+        nil
+      end
 
       no_commands do
       # ------------------------------------------------------------------
@@ -338,7 +354,8 @@ module Rubino
 
       def persist_connection(provider, token)
         info = provider.fetch_account_info(token[:access_token])
-        repo = OAuth::ConnectionRepository.new
+        repo = connection_repo
+        return unless repo
 
         connection = repo.upsert(
           provider:       provider.id,

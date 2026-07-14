@@ -93,6 +93,12 @@ RSpec.describe Rubino::CLI::AuthCommand do
       command.status
       expect(Rubino.ui).to have_received(:table)
     end
+
+    it "prints a friendly message (no backtrace) when RUBINO_ENCRYPTION_KEY is unset" do
+      ENV.delete("RUBINO_ENCRYPTION_KEY")
+      expect { command.status }.not_to raise_error
+      expect(Rubino.ui).to have_received(:error).with(/RUBINO_ENCRYPTION_KEY not set/)
+    end
   end
 
   # ------------------------------------------------------------------
@@ -131,6 +137,13 @@ RSpec.describe Rubino::CLI::AuthCommand do
       command.logout("dummy")
       expect(Rubino.ui).to have_received(:warn).with(/boom/)
       expect(repo.find(conn[:id])).to be_nil
+    end
+
+    it "prints a friendly message (no backtrace) when RUBINO_ENCRYPTION_KEY is unset" do
+      register_dummy_provider
+      ENV.delete("RUBINO_ENCRYPTION_KEY")
+      expect { command.logout("dummy") }.not_to raise_error
+      expect(Rubino.ui).to have_received(:error).with(/RUBINO_ENCRYPTION_KEY not set/)
     end
 
     it "raises for unknown provider" do

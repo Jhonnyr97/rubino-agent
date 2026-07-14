@@ -8,6 +8,24 @@ RSpec.describe Rubino::Security::PrefixDeriver do
       expect(rule.value).to eq("docker")
     end
 
+    # Regression: the escalation path used to pass Sandbox.escalation_disclosure
+    # ("runs OUTSIDE the OS write-jail …") as the command, so the approval label
+    # read "Approve — `runs` commands (always)" instead of the real verb (touch, curl, …).
+    # The fix ensures the REAL shell command is passed, so the label reflects the
+    # actual command prefix the user is about to approve.
+    it "derives the correct prefix for the escalation label (not the disclosure text)" do
+      disclosure = Rubino::Security::Sandbox.escalation_disclosure
+      # Before fix: disclosure text tokens → head = "runs" → label = "runs commands"
+      broken = described_class.rule_for(tool: "shell", command: disclosure)
+      expect(broken.kind).to eq(:prefix)
+      expect(broken.value).to eq("runs")
+
+      # After fix: real command → head = "touch" → label = "touch commands"
+      fixed = described_class.rule_for(tool: "shell", command: "touch $HOME/x")
+      expect(fixed.kind).to eq(:prefix)
+      expect(fixed.value).to eq("touch")
+    end
+
     # SEC-R2-1: a git prefix is NARROWED to `git <read-only verb>`, never bare
     # `git` — a bare `git` prefix persisted to the allowlist would pre-approve
     # `git apply`, `git -c alias.x=!cmd x`, ... = RCE/arbitrary-write.

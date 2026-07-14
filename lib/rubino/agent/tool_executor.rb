@@ -582,7 +582,8 @@ module Rubino
           question,
           scope: "escalation:#{call_id}",
           tool: tool.name,
-          command: Security::Sandbox.escalation_disclosure
+          command: command,
+          description: Security::Sandbox.escalation_disclosure
         )
         return nil unless approved
 

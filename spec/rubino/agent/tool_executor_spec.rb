@@ -1073,6 +1073,30 @@ RSpec.describe Rubino::Agent::ToolExecutor do
 
       expect(result.output).to eq(normal_output)
     end
+    it "passes the real command (not disclosure text) to the approval UI" do
+      denied_output = "/usr/local/bin/x: Permission denied"
+      allow(shell_tool).to receive(:call).and_return(
+        Rubino::Tools::Result.new(name: "shell", call_id: "c5", output: denied_output, status: :success)
+      )
+      allow(Rubino::Security::Sandbox).to receive(:write_jail_attribution)
+        .with(denied_output, cwd: anything).and_return("(blocked by the workspace write-jail)")
+
+      disclosure = Rubino::Security::Sandbox.escalation_disclosure
+      expect(ui).to receive(:confirm).with(
+        "The sandbox blocked this write. Retry outside the sandbox?",
+        scope: "escalation:c5",
+        tool: "shell",
+        command: "pip install x",
+        description: disclosure
+      ).and_return(true)
+
+      executor.execute(
+        name: "shell",
+        arguments: { "command" => "pip install x", "cwd" => "/tmp", "timeout" => 30 },
+        call_id: "c5"
+      )
+    end
+
     it "does NOT retry when the UI is not interactive (one-shot/CI fallback)" do
       allow(ui).to receive(:interactive?).and_return(false)
 
