@@ -170,6 +170,26 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(out).not_to be_empty
     end
 
+    # FIX 3 — backfill surfaces durable facts on a no-keyword-match turn.
+    # When the query shares zero tokens with any stored memory (fts_terms
+    # returns empty or FTS returns nothing), tail_backfill fills the recall
+    # budget with recency/graph neighbours so memory is never blank.
+    it "surfaces durable stored facts even when query shares no tokens with any memory" do
+      # Store several durable facts
+      backend.store(kind: "preference", content: "User prefers tabs over spaces.")
+      backend.store(kind: "fact", content: "Project lives at ~/src/myapp on macOS arm64.")
+      backend.store(kind: "fact", content: "Deploys via Capistrano to staging.example.com.")
+
+      # Query with tokens that match NONE of the stored facts
+      out = backend.retrieve(session_id: "s1", query: "zzzzqxy nonexistent gibberish term")
+
+      # Backfill must surface at least one of the stored durable facts —
+      # not just "non-empty" but the actual content we saved.
+      expect(out).not_to be_empty
+      contents = out.map { |m| m[:content] }
+      expect(contents).to include(a_string_matching(/tabs over spaces|src\/myapp|Capistrano/))
+    end
+
     it "packs results under the memory char budget" do
       cfg = test_configuration("memory" => default_memory_cfg("memory_char_limit" => 45))
       b = described_class.new(config: cfg, db: db)
@@ -317,6 +337,130 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(backend.delete(id)).to be(true)
       expect(backend.count).to eq(1)
       expect(backend.find(id)).to be_nil
+    end
+  end
+
+  # -- FIX 4: local embeddings via auxiliary.embedding --
+
+  describe "#vector? and embed — aux endpoint resolution" do
+    it "with defaults (vector:false), vector? is false and embed is never called" do
+      b = described_class.new(config: config, db: db)
+      expect(b.send(:vector?)).to be(false)
+      # embed guard: returns nil immediately without touching RubyLLM
+      expect(b.send(:embed, "test")).to be_nil
+      expect(b.send(:maybe_embed, "test")).to be_nil
+    end
+
+    it "with vector:true but unconfigured aux, falls back to global RubyLLM.embed" do
+      cfg = test_configuration("memory" => default_memory_cfg("sqlite" => { "vector" => true }))
+      b = described_class.new(config: cfg, db: db)
+
+      expect(b.send(:vector?)).to be(true)
+      # aux embedding defaults (provider:"main", model:"") → not configured
+      expect(b.send(:embedding_configured?, cfg.auxiliary_config("embedding"))).to be(false)
+    end
+
+    it "with vector:true + configured aux endpoint, uses the scoped config" do
+      cfg = test_configuration(
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:8080/v1"
+          }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+
+      expect(b.send(:vector?)).to be(true)
+      emb_cfg = cfg.auxiliary_config("embedding")
+      expect(b.send(:embedding_configured?, emb_cfg)).to be(true)
+      expect(b.send(:resolve_embedding_provider, emb_cfg)).to eq("openai")
+    end
+
+    it "degrades to nil on a failing embedding endpoint (FTS-only, no crash)" do
+      cfg = test_configuration(
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:1/v1"
+          }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+      allow(RubyLLM).to receive(:embed).and_raise(StandardError, "connection refused")
+
+      # embed rescues and returns nil — FTS-only recall, no crash
+      expect(b.send(:embed, "test query")).to be_nil
+      expect(b.send(:maybe_embed, "test query")).to be_nil
+    end
+
+    it "calls RubyLLM.embed with configured context when aux is set" do
+      cfg = test_configuration(
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:8080/v1"
+          }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+
+      # Stub the scoped embed call
+      fake_embedding = double("embedding", vectors: [0.1, 0.2, 0.3])
+      expect(b).to receive(:scoped_embed).with("test query", kind_of(Hash)).and_return(fake_embedding).once
+
+      result = b.send(:embed, "test query")
+      expect(result).to eq([0.1, 0.2, 0.3])
+    end
+
+    it "stores an embedding blob on insert when vector mode is on and embed succeeds" do
+      cfg = test_configuration(
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:8080/v1"
+          }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+      allow(b).to receive(:embed).and_return([0.1, 0.2, 0.3])
+
+      row = b.store(kind: "fact", content: "User is in Lima.")
+      stored = db[:memory_facts].where(id: row[:id]).first
+      expect(stored[:embedding]).not_to be_nil
+      expect(stored[:embedding]).to be_a(String)
+      # Decode the packed float32 blob
+      decoded = stored[:embedding].unpack("e*")
+      expect(decoded).to eq([0.1, 0.2, 0.3].pack("e*").unpack("e*"))
+    end
+
+    it "stores nil embedding when embed fails (best-effort, fact still persisted)" do
+      cfg = test_configuration(
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => {
+            "provider" => "openai",
+            "model" => "bge-m3",
+            "base_url" => "http://localhost:1/v1"
+          }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+      allow(b).to receive(:embed).and_return(nil)
+
+      row = b.store(kind: "fact", content: "User is in Lima.")
+      stored = db[:memory_facts].where(id: row[:id]).first
+      # Fact was still persisted despite embed failure
+      expect(stored[:text]).to eq("User is in Lima.")
+      expect(stored[:embedding]).to be_nil
     end
   end
 end

@@ -64,11 +64,25 @@ Results are greedily packed under the retrieval char budget. Common stopwords ("
 ```yaml
 memory:
   sqlite:
-    vector: false   # opt-in sqlite-vec / RubyLLM.embed KNN on top of FTS5 (off by default — no extra deps needed)
+    vector: false   # opt-in sqlite-vec / embedding KNN on top of FTS5 (off by default — no extra deps needed)
     graph: true     # graph-lite 1-hop entity/edge blend (on by default; set false to A/B the graph signal)
+
+# When `memory.sqlite.vector: true`, embeddings are routed through the
+# configurable `auxiliary.embedding` endpoint — local-first, no paid API.
+# At the defaults (provider:"main", model:""), nothing is "configured"
+# and it falls back to the global RubyLLM.embed. Point it at a local
+# embedding model (e.g. oMLX/ds4) for semantic recall:
+auxiliary:
+  embedding:
+    provider: "openai"                 # provider slug
+    model: "bge-m3"                    # or nomic-embed-text, text-embedding-3-small, …
+    base_url: "http://localhost:8080/v1"  # local endpoint
 ```
 
-Vector mode requires both `vector: true` **and** `RubyLLM.embed` to be wired; otherwise it's FTS5-only.
+Vector mode requires `vector: true`. With the shipped defaults, `vector?` is
+`false` and `embed` is never invoked — no network calls, no RubyLLM.embed.
+Set `vector: true` and configure `auxiliary.embedding` to a local endpoint
+for semantic recall with no paid API.
 
 ## The `memory` tool
 

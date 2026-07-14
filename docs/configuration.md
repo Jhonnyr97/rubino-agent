@@ -112,6 +112,11 @@ auxiliary:
     model: ""
     base_url: null
     timeout: 300
+  embedding:              # memory vector-recall endpoint (local-first, off by default)
+    provider: "main"      # "main" reuses primary provider; set to "openai"/"ollama" for local
+    model: ""             # e.g. "bge-m3", "nomic-embed-text", "text-embedding-3-small"
+    base_url: null        # local endpoint URL (e.g. "http://localhost:8080/v1")
+    timeout: 30           # only used when memory.sqlite.vector: true — inert otherwise
 ```
 
 Each block routes through `LLM::AuxiliaryClient`, so `provider`/`model`/`base_url`

@@ -175,6 +175,7 @@ RSpec.describe Rubino::Skills::SkillTool do
 
     it "emits SKILL_UPDATED with origin=review for a review-fork patch" do
       create_demo
+      tool.call("name" => "demo") # P6: load first (read-before-write gate)
       seen = capture(Rubino::Interaction::Events::SKILL_UPDATED) do
         Rubino.with_review_toolset(%w[skill]) do
           tool.call("action" => "patch", "name" => "demo", "old_str" => "step one", "new_str" => "x")

@@ -12,6 +12,49 @@ module Rubino
       def block? = proc.respond_to?(:call)
     end
 
+    # Builder for the block-based presentation DSL.
+    #
+    #   presentation do
+    #     stream_params true
+    #     body_kind :diff
+    #     preview_lines nil
+    #     preview_arguments do |label, args|
+    #       ...
+    #     end
+    #   end
+    class PresentationBuilder
+      def stream_params(bool)
+        @stream_params = bool
+      end
+
+      def body_kind(kind)
+        @body_kind = kind
+      end
+
+      def preview_lines(val)
+        @preview_lines = val
+        @preview_lines_set = true
+      end
+
+      def preview_arguments(&block)
+        @preview_arguments_block = block
+      end
+
+      def build
+        sp  = @stream_params
+        bk  = @body_kind
+        pl  = @preview_lines
+        pls = @preview_lines_set
+        pab = @preview_arguments_block
+        Class.new(ToolPresentationCLI) do
+          define_method(:stream_params?) { sp } unless sp.nil?
+          define_method(:body_kind) { bk } unless bk.nil?
+          define_method(:preview_lines) { pl } if pls
+          define_method(:preview_arguments) { |*args| pab.call(*args) } if pab
+        end.new
+      end
+    end
+
     # Abstract base class for all tools. Inherits from RubyLLM::Tool for
     # ecosystem compatibility (param DSL, schema generation, name derivation)
     # and layers rubino-specific features on top: risk levels, workspace
@@ -31,12 +74,29 @@ module Rubino
           @tool_security = klass.new
         end
 
-        # Declares the Presentation subclass for this tool.
-        #   presentation EditPresentation
+        # Declares the Presentation for this tool.
         #
-        # Same inheritance caveat as security above.
-        def presentation(klass)
-          @tool_presentation = klass.new
+        #   # Class form (escape hatch, kept for backward compat):
+        #   presentation MyPresentation
+        #
+        #   # Block form (preferred):
+        #   presentation do
+        #     stream_params true
+        #     body_kind :diff
+        #     preview_lines nil
+        #     preview_arguments do |label, args|
+        #       "#{label}: #{args[:file_path]}"
+        #     end
+        #   end
+        def presentation(klass = nil, &block)
+          if block
+            @_presentation_builder = PresentationBuilder.new
+            @_presentation_builder.instance_eval(&block)
+          elsif klass
+            @tool_presentation = klass.new
+          else
+            raise ArgumentError, "presentation requires a class or a block"
+          end
         end
 
         def tool_security
@@ -48,12 +108,15 @@ module Rubino
         end
 
         def tool_presentation
-          @tool_presentation || ToolPresentationCLI.new
+          return @tool_presentation if @tool_presentation
+          return @_presentation_builder.build if @_presentation_builder
+
+          ToolPresentationCLI.new
         end
 
         # Declares the redaction profile for this tool's output.
-        #   redaction_profile :code       # source file — skip ENV/JSON patterns
-        #   redaction_profile :none       # structured output — no redaction
+        #   redaction :code       # source file — skip ENV/JSON patterns
+        #   redaction :none       # structured output — no redaction
         #
         # Default is :shell (full patterns — fail-safe). Tools opt DOWN
         # to :none, never UP toward less security.
@@ -140,11 +203,13 @@ module Rubino
         #
         # The full `security SomeClass` escape hatch still works for tools
         # that need custom sandbox/read-gate behaviour beyond what risk() covers.
-        def risk(level = nil, sandbox: nil, require_read: nil, allow_widening: nil, &block)
-          @rubino_risk_level     = block || level
-          @rubino_sandbox        = sandbox if sandbox
-          @rubino_require_read   = require_read unless require_read.nil?
-          @rubino_allow_widening = allow_widening unless allow_widening.nil?
+        def risk(level = nil, sandbox: nil, require_read: nil,
+                 allow_widening: nil, require_overwrite_guard: nil, &block)
+          @rubino_risk_level              = block || level
+          @rubino_sandbox                 = sandbox if sandbox
+          @rubino_require_read            = require_read unless require_read.nil?
+          @rubino_allow_widening          = allow_widening unless allow_widening.nil?
+          @rubino_require_overwrite_guard = require_overwrite_guard
         end
 
         # ── Live card macro ──
@@ -176,9 +241,10 @@ module Rubino
 
         def synthesize_security
           level_or_lambda = @rubino_risk_level
-          sandbox_override     = @rubino_sandbox
-          require_read_val     = @rubino_require_read
-          allow_widening_val   = @rubino_allow_widening
+          sandbox_override              = @rubino_sandbox
+          require_read_val              = @rubino_require_read
+          allow_widening_val            = @rubino_allow_widening
+          require_overwrite_guard_val   = @rubino_require_overwrite_guard
 
           Class.new(ToolSecurity) do
             if level_or_lambda.respond_to?(:call)
@@ -192,6 +258,8 @@ module Rubino
             define_method(:sandbox) { sandbox_override } if sandbox_override
             define_method(:require_read) { require_read_val } unless require_read_val.nil?
             define_method(:allow_widening) { allow_widening_val } unless allow_widening_val.nil?
+            define_method(:require_overwrite_guard) { require_overwrite_guard_val } \
+              unless require_overwrite_guard_val.nil?
           end.new
         end
       end

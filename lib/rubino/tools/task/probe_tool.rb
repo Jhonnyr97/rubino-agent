@@ -23,8 +23,8 @@ module Rubino
     # authorized by OWNERSHIP at call time — the target must be the caller's OWN
     # direct child (BackgroundTasks.owned_by?). Registered normally, NOT on any
     # strip list. Does NOT touch the human CLI probe path (executor.rb).
-    class ProbeTool < Base
-      redaction_profile :none
+    class ProbeTool < Rubino::Tool
+      redaction :none
 
       # How many activity_log lines the cheap snapshot renders (matches the
       # /agents drill-in's `recent:` ring).
@@ -48,7 +48,7 @@ module Rubino
         "task"
       end
 
-      description "Check on one of YOUR OWN running subagents WITHOUT disturbing it (this " \
+      describe "Check on one of YOUR OWN running subagents WITHOUT disturbing it (this " \
                   "is read-only — it changes nothing about what the child does). By default " \
                   "(live:false) it returns a FREE instant snapshot: the child's status, how " \
                   "many tools it has run, its last activity, and a few recent lines — no " \
@@ -57,11 +57,10 @@ module Rubino
                   "round-trip and is budgeted per child; prefer the free snapshot). You can " \
                   "ONLY probe subagents you started (your direct children)."
 
-      param :task_id, desc: "The id (sa_…) of YOUR subagent to probe."
-      param :question, desc: "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context."
-      param :live, type: :boolean, required: false,
-                   desc: "false (default) = FREE instant snapshot from the registry, no model call. " \
-                         "true = billed one-shot model peek over the child's transcript (budgeted per child)."
+      string :task_id, "The id (sa_…) of YOUR subagent to probe."
+      string :question, "What you want to know. For a free snapshot this frames the check; for live:true it is the question the child answers from its context."
+      boolean :live, "false (default) = FREE instant snapshot from the registry, no model call. " \
+                       "true = billed one-shot model peek over the child's transcript (budgeted per child).", default: false
 
       def execute(task_id:, question:, live: false)
         caller_id = Rubino.current_subagent_id

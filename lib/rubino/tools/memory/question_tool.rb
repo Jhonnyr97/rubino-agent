@@ -6,10 +6,10 @@ module Rubino
   module Tools
     # Tool that asks the user interactive questions with predefined options.
     # Allows the agent to gather clarification or preferences from the user.
-    class QuestionTool < Base
-      redaction_profile :none
+    class QuestionTool < Rubino::Tool
+      redaction :none
 
-      description "Ask the user a question with optional predefined choices. " \
+      describe "Ask the user a question with optional predefined choices. " \
                   "Use this when you need clarification, user preferences, or a decision. " \
                   "The user can select from options or type a custom answer."
 

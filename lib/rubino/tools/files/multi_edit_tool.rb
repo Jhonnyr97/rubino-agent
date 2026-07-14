@@ -9,22 +9,16 @@ module Rubino
     #
     # Each subsequent edit sees the result of prior edits in the same call,
     # so you can rename A→B and then change a line that contains B.
-    class MultiEditTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-        def require_read = true
-      end
+    class MultiEditTool < Rubino::Tool
+      risk :medium, require_read: true
+      redaction :none
+      summary :file_path, relative_to: :workspace
 
-      class ToolPresentation < Tools::ToolPresentationCLI
-        APPROVAL_PREVIEW_LINES = 16
-
-        def stream_params? = true
-        def body_kind = :diff
-        def preview_lines = nil
-
-        # Per-edit diff preview for the approval prompt: each edit rendered
-        # as "- old" / "+ new" blocks, blank-line separated.
-        def preview_arguments(label, arguments)
+      presentation do
+        stream_params true
+        body_kind :diff
+        preview_lines nil
+        preview_arguments do |label, arguments|
           edits = arguments[:edits]
           return nil unless edits.is_a?(Array) && !edits.empty?
 
@@ -39,7 +33,7 @@ module Rubino
             body.concat(Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" })
             body.concat(Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" })
           end
-          Util::Preview.truncate_lines!(body, APPROVAL_PREVIEW_LINES)
+          Util::Preview.truncate_lines!(body, 16)
           ([header] + body).join("\n")
         rescue StandardError => e
           Rubino.logger&.warn(event: "multi_edit.preview_arguments_failed",
@@ -48,14 +42,9 @@ module Rubino
         end
       end
 
-      security     ToolSecurity
-      presentation ToolPresentation
-      redaction_profile :none
-      summary :file_path, relative_to: :workspace
-
-      description "Apply multiple exact string replacements to a single file atomically. " \
-                  "Edits are applied sequentially in the given order; later edits see " \
-                  "the result of earlier ones. If any edit fails, NO changes are written."
+      describe "Apply multiple exact string replacements to a single file atomically. " \
+              "Edits are applied sequentially in the given order; later edits see " \
+              "the result of earlier ones. If any edit fails, NO changes are written."
 
       params do
         string :file_path, description: "Path to the file to edit"

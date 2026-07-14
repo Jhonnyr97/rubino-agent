@@ -15,13 +15,12 @@ module Rubino
     # Read-only and low risk: it reads exclusively from the agent's own
     # tool-results dir, sanitizing the id the SAME way ToolExecutor#spill_full_output
     # sanitizes the call_id, so a `../` in the id can't traverse out.
-    class RetrieveOutputTool < Base
-      description "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
+    class RetrieveOutputTool < Rubino::Tool
+      describe "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
                   "use ONLY when a specific hidden line is needed; the compressed view already " \
                   "keeps the important content (errors/failures, summary, changes)."
 
-      param :id, required: true,
-                 desc: "The id printed in a compression pointer (retrieve_output id=…)."
+      string :id, "The id printed in a compression pointer (retrieve_output id=…)."
 
       # Gate on the SAME key the compression feature uses, so it disappears from
       # the registry whenever compression is off (the default).

@@ -10,7 +10,7 @@ require "fileutils"
 module Rubino
   module Tools
     # Tool for fetching web page content and converting to text/markdown.
-    class WebFetchTool < Base
+    class WebFetchTool < Rubino::Tool
       summary { |a| a[:url] }
 
       MAX_BODY_SIZE = 100_000
@@ -68,15 +68,15 @@ module Rubino
         "web"
       end
 
-      description "Fetch content from a URL and return it as text. " \
-                  "Useful for reading documentation, API references, and web pages."
+      describe "Fetch content from a URL and return it as text. " \
+              "Useful for reading documentation, API references, and web pages."
 
-      param :url, desc: "The URL to fetch content from"
-      param :format, type: :string, desc: "Output format: 'text' (default, strips HTML) or 'html' (raw)",
-                     required: false
-      param :method, type: :string, desc: "HTTP method: 'get' (default, fetches body) or 'head' " \
+      string :url, "The URL to fetch content from"
+      string :format, "Output format: 'text' (default, strips HTML) or 'html' (raw)",
+             default: "text"
+      string :method, "HTTP method: 'get' (default, fetches body) or 'head' " \
                      "(only returns status + headers, no body fetch)",
-                     required: false
+             default: "get"
 
       def execute(url:, format: "text", method: "get")
         raw_uri = URI.parse(url)

@@ -23,7 +23,7 @@ module Rubino
     # of yolo is "trust the model to move fast", not "let it wipe the root
     # filesystem if it confuses paths" — so catastrophic, unrecoverable
     # commands are refused here even if the policy was somehow bypassed.
-    class ShellTool < Base # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
+    class ShellTool < Rubino::Tool # rubocop:disable Metrics/ClassLength -- one cohesive shell surface (spawn/jail/stream/cwd-carry/escalation) whose parts are tightly coupled around the single Process.spawn
       risk :high, allow_widening: true
 
       # Show the shell command in the multiplexer dropdown while it runs

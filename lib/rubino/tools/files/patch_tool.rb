@@ -5,31 +5,25 @@ require "fileutils"
 module Rubino
   module Tools
     # Tool for applying unified diff patches to files.
-    class PatchTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-        def require_read = true
-        def require_overwrite_guard = true
-      end
+    class PatchTool < Rubino::Tool
+      risk :medium, require_read: true, require_overwrite_guard: true
+      redaction :none
 
-      class ToolPresentation < Tools::ToolPresentation
-        def stream_params? = true
-        def body_kind = :diff
+      presentation do
+        stream_params true
+        body_kind :diff
       end
-
-      security     ToolSecurity
-      presentation ToolPresentation
-      redaction_profile :none
 
       def name
         "apply_patch"
       end
 
-      description "Apply a unified diff patch to one or more files. " \
-                  "Accepts standard unified diff format (like output from 'git diff')."
+      describe "Apply a unified diff patch to one or more files. " \
+              "Accepts standard unified diff format (like output from 'git diff')."
 
-      param :patch,     desc: "The unified diff patch content to apply"
-      param :base_path, desc: "Base directory for relative paths in the patch (defaults to cwd)", required: false
+      string :patch, "The unified diff patch content to apply"
+      string :base_path, "Base directory for relative paths in the patch (defaults to cwd)",
+             required: false
 
       def execute(patch:, base_path: nil)
         # Anchor relative patch paths at the SESSION cwd (Workspace.current_cwd

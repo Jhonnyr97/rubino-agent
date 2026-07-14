@@ -260,6 +260,131 @@ RSpec.describe Rubino::Tool do
       expect(tool.risk_level).to eq(:high)
       expect(tool.risky?).to be(true)
     end
+
+    it "supports require_read via risk macro" do
+      klass = Class.new(described_class) do
+        abstract!
+        risk :medium, require_read: true
+        describe "read-gated"
+        define_method(:name) { "test_risk_read" }
+      end
+      expect(klass.new.security.require_read).to be(true)
+    end
+
+    it "supports require_overwrite_guard via risk macro" do
+      klass = Class.new(described_class) do
+        abstract!
+        risk :medium, require_overwrite_guard: true
+        describe "overwrite-gated"
+        define_method(:name) { "test_risk_owg" }
+      end
+      expect(klass.new.security.require_overwrite_guard).to be(true)
+    end
+
+    it "supports allow_widening via risk macro" do
+      klass = Class.new(described_class) do
+        abstract!
+        risk :medium, allow_widening: true
+        describe "widening"
+        define_method(:name) { "test_risk_widen" }
+      end
+      expect(klass.new.security.allow_widening).to be(true)
+    end
+  end
+
+  # ── Presentation DSL ──────────────────────────────────────────────────
+
+  describe "presentation DSL" do
+    it "defaults to ToolPresentationCLI with no declaration" do
+      klass = Class.new(described_class) do
+        abstract!
+        describe "no pres"
+        define_method(:name) { "test_pres_default" }
+      end
+      expect(klass.new.presentation).to be_a(Rubino::Tools::ToolPresentationCLI)
+      expect(klass.new.presentation.stream_params?).to be(false)
+      expect(klass.new.presentation.body_kind).to eq(:plain)
+    end
+
+    it "accepts a class (backward compat)" do
+      inner = Class.new(Rubino::Tools::ToolPresentation) do
+        define_method(:stream_params?) { true }
+        define_method(:body_kind) { :diff }
+      end
+
+      klass = Class.new(described_class) do
+        abstract!
+        presentation inner
+        describe "class pres"
+        define_method(:name) { "test_pres_class" }
+      end
+      pres = klass.new.presentation
+      expect(pres.stream_params?).to be(true)
+      expect(pres.body_kind).to eq(:diff)
+    end
+
+    it "synthesises from a block: stream_params + body_kind" do
+      klass = Class.new(described_class) do
+        abstract!
+        presentation do
+          stream_params true
+          body_kind :diff
+        end
+        describe "block pres"
+        define_method(:name) { "test_pres_block" }
+      end
+      pres = klass.new.presentation
+      expect(pres.stream_params?).to be(true)
+      expect(pres.body_kind).to eq(:diff)
+    end
+
+    it "synthesises from a block: preview_lines" do
+      klass = Class.new(described_class) do
+        abstract!
+        presentation do
+          preview_lines nil
+        end
+        describe "preview_lines nil"
+        define_method(:name) { "test_pres_plines" }
+      end
+      expect(klass.new.presentation.preview_lines).to be_nil
+    end
+
+    it "synthesises preview_arguments from a block" do
+      klass = Class.new(described_class) do
+        abstract!
+        presentation do
+          preview_arguments do |label, args|
+            "#{label}: #{args[:file_path]}"
+          end
+        end
+        describe "preview_args"
+        define_method(:name) { "test_pres_pa" }
+      end
+      result = klass.new.presentation.preview_arguments("edit", { file_path: "foo.rb" })
+      expect(result).to eq("edit: foo.rb")
+    end
+
+    it "returns nil from preview_arguments when the block returns nil" do
+      klass = Class.new(described_class) do
+        abstract!
+        presentation do
+          preview_arguments { |_, _| nil }
+        end
+        describe "nil pa"
+        define_method(:name) { "test_pres_nil_pa" }
+      end
+      expect(klass.new.presentation.preview_arguments("test", {})).to be_nil
+    end
+
+    it "raises ArgumentError when presentation receives neither class nor block" do
+      expect do
+        Class.new(described_class) do
+          abstract!
+          presentation
+        end
+      end.to raise_error(ArgumentError, /requires a class or a block/)
+    end
   end
 
   # ── Image param guards ───────────────────────────────────────────────

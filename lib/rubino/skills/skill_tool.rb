@@ -35,7 +35,11 @@ module Rubino
           "task (typically 5+ tool calls) likely to recur, either UPDATE an existing " \
           "skill it fits (action \"edit\"/\"patch\", or \"write_file\" for a support " \
           "file) or, if none covers it, action \"create\" a new one with " \
-          "name/description/body."
+          "name/description/body. Descriptions MUST follow the \"Use when <trigger-class>" \
+          " — …\" convention: describe the TRIGGER that warrants loading the skill, " \
+          "not the task it performs (\"Use when debugging timeouts in Rack apps\" not " \
+          "\"Debug timeouts\"). Include \"## When to use\" and \"## Don't use for\" " \
+          "sections in the body so future runs can decide correctly."
       end
 
       params do
@@ -59,7 +63,11 @@ module Rubino
                required: false
         string :description,
                description: "Required for create (optional for edit — kept as-is if omitted). " \
-                            "One line: what the skill is for and WHEN it applies.",
+                            "Use when <trigger-class> — describe the TRIGGER that makes this " \
+                            "skill relevant, not the task it performs. This is the only text " \
+                            "future runs see before deciding to load the skill, so a " \
+                            "match-on-sight trigger (\"Use when debugging timeouts in Rack " \
+                            "apps\") is better than a task label (\"Debug timeouts\").",
                required: false
         string :body,
                description: "Required for create/edit. The markdown body: proven step-by-step " \
@@ -207,6 +215,7 @@ module Rubino
         body = str(arguments, "body")
         skill, dir, err = editable(name)
         return err if err
+        return review_load_first(name) if review_load_first(name)
         return "Cannot edit skill '#{name}': body is required." if body.empty?
 
         description = description_arg?(arguments) ? str(arguments, "description") : skill.description.to_s
@@ -229,6 +238,7 @@ module Rubino
         new_str = raw(arguments, "new_str")
         skill, dir, err = editable(name)
         return err if err
+        return review_load_first(name) if review_load_first(name)
         return "Cannot patch skill '#{name}': old_str is required." if old_str.empty?
 
         label  = rel.empty? ? "SKILL.md" : rel
@@ -377,6 +387,18 @@ module Rubino
         Rubino.review_toolset ? "review" : "foreground"
       end
 
+      # P6: enforce read-before-write in the autonomous review fork.
+      # Only the review origin is gated — interactive/user-driven edits proceed.
+      # Returns an error string when the fork hasn't loaded this skill yet, or
+      # nil when the write can proceed (user-driven OR the skill was loaded).
+      def review_load_first(name)
+        return nil unless skill_write_origin == "review"
+        return nil if @loaded_skill_names.include?(name)
+
+        "Cannot edit skill '#{name}' without loading it first. " \
+          "Use skill(name: \"#{name}\") to load the skill, then retry the edit."
+      end
+
       # ---- load ----------------------------------------------------------------
 
       def load_body(skill, skill_name)
@@ -400,8 +422,27 @@ module Rubino
           resources = skill.linked_files.map { |f| "    <file>#{f}</file>" }.join("\n")
           body << "\n\n<skill_resources>\n#{resources}\n</skill_resources>"
         end
+
+        # P5: readiness note for missing required environment variables
+        body = env_readiness_note(skill) + body
+
         announce_loaded(skill_name)
         body
+      end
+
+      # P5: deterministic ENV.key? check — no LLM, no shell.
+      # Prepends a setup-needed note when required environment variables are
+      # missing, so the model sees it before the skill body.
+      def env_readiness_note(skill)
+        required = skill.required_environment_variables
+        return "" if required.empty?
+
+        missing = required.reject { |var| ENV.key?(var) }
+        return "" if missing.empty?
+
+        "⚠ Setup needed — this skill needs these environment variables, " \
+          "currently missing: #{missing.join(', ')}. " \
+          "Ask the user to set them before relying on the skill.\n\n"
       end
 
       def announce_loaded(skill_name)

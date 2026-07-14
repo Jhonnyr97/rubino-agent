@@ -62,7 +62,8 @@ module Rubino
           @live_card_after
           @redaction_profile @image_params @aux_task
           @rubino_risk_level @rubino_sandbox @rubino_require_read
-          @rubino_allow_widening
+          @rubino_allow_widening @rubino_require_overwrite_guard
+          @_presentation_builder
         ].each do |var|
           next unless instance_variable_defined?(var)
 

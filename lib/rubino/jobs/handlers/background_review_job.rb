@@ -82,10 +82,14 @@ module Rubino
                one-line pointer to it in the skill's SKILL.md.
             3. CREATE A NEW CLASS-LEVEL SKILL when nothing covers the class,
                using the "create" action with a name, a one-line
-               match-on-sight description, and a prescriptive body. The name MUST
-               be class-level — NOT a PR number, error string, codename,
-               library-alone name, or "fix-X / debug-Y" session artifact. If the
-               name only makes sense for today's task, fall back to (1) or (2).
+               "Use when <trigger-class> — …" description (trigger-focused, not
+               task-labeled — "Use when debugging timeouts in Rack apps", not
+               "Debug timeouts"), and a prescriptive body that includes
+               "## When to use" and "## Don't use for" counter-triggers.
+               The name MUST be class-level — NOT a PR number, error string,
+               codename, library-alone name, or "fix-X / debug-Y" session
+               artifact. If the name only makes sense for today's task, fall
+               back to (1) or (2).
 
           Bundled skills are protected — do not try to edit them; capture a new
           skill or update a user-authored one instead.
@@ -174,8 +178,9 @@ module Rubino
           Preference order for skills: (1) "patch"/"edit" an existing relevant
           skill (skills are listed under "## Skills" in your system prompt); (2)
           add a support file via "write_file"; (3) "create" a new CLASS-LEVEL skill
-          (kebab-case name, one-line description, markdown body) when nothing
-          covers it.
+          (kebab-case name, a "Use when <trigger-class> — …" trigger-focused
+          description, and a markdown body with "## When to use" and
+          "## Don't use for" sections) when nothing covers it.
 
           Boundary: Memory says "WHO the user is and the current state"; skills say
           "HOW to do this class of task for this user". When the user complains

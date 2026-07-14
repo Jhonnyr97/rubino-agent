@@ -4,22 +4,16 @@ module Rubino
   module Tools
     # Tool for performing exact string replacements in files.
     # Replaces a specific old string with a new string - more precise than full file writes.
-    class EditTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-        def require_read = true
-      end
+    class EditTool < Rubino::Tool
+      risk :medium, require_read: true
+      redaction :none
+      summary :file_path, relative_to: :workspace
 
-      class ToolPresentation < Tools::ToolPresentationCLI
-        APPROVAL_PREVIEW_LINES = 30
-
-        def stream_params? = true
-        def body_kind = :diff
-        def preview_lines = nil
-
-        # Diff preview for the approval prompt: "- old" then "+ new" so the
-        # user can see what will change BEFORE approving.
-        def preview_arguments(label, arguments)
+      presentation do
+        stream_params true
+        body_kind :diff
+        preview_lines nil
+        preview_arguments do |label, arguments|
           old_s = arguments[:old_string]
           new_s = arguments[:new_string]
           return nil unless old_s.is_a?(String) && new_s.is_a?(String)
@@ -31,7 +25,7 @@ module Rubino
           minus = Util::SecretsMask.mask_value(old_s, key: "old_string").to_s.lines.map { |l| "  - #{l.chomp}" }
           plus  = Util::SecretsMask.mask_value(new_s, key: "new_string").to_s.lines.map { |l| "  + #{l.chomp}" }
           body  = minus + plus
-          Util::Preview.truncate_lines!(body, APPROVAL_PREVIEW_LINES)
+          Util::Preview.truncate_lines!(body, 30)
           ([header] + body).join("\n")
         rescue StandardError => e
           Rubino.logger&.warn(event: "edit.preview_arguments_failed",
@@ -40,22 +34,16 @@ module Rubino
         end
       end
 
-      security     ToolSecurity
-      presentation ToolPresentation
-      redaction_profile :none
-      summary :file_path, relative_to: :workspace
+      describe "Perform exact string replacement in a file. " \
+              "Specify the old text to find and the new text to replace it with. " \
+              "The old text must match exactly (including whitespace/indentation). " \
+              "Use replace_all to replace all occurrences."
 
-      description "Perform exact string replacement in a file. " \
-                  "Specify the old text to find and the new text to replace it with. " \
-                  "The old text must match exactly (including whitespace/indentation). " \
-                  "Use replace_all to replace all occurrences."
-
-      param :file_path,  desc: "The path to the file to edit"
-      param :old_string, desc: "The exact text to find and replace"
-      param :new_string, desc: "The text to replace it with"
-      param :replace_all, type: :boolean,
-                          desc: "Replace all occurrences (default: false, replaces first only)",
-                          required: false
+      string :file_path, "The path to the file to edit"
+      string :old_string, "The exact text to find and replace"
+      string :new_string, "The text to replace it with"
+      boolean :replace_all, "Replace all occurrences (default: false, replaces first only)",
+              default: false
 
       def execute(file_path:, old_string:, new_string:, replace_all: false)
         # Input guards (#329a/b): reject an empty needle (a literal sub/gsub on

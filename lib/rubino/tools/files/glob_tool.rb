@@ -4,19 +4,18 @@ module Rubino
   module Tools
     # Tool for finding files by glob patterns.
     # Returns matching file paths sorted by modification time.
-    class GlobTool < Base
+    class GlobTool < Rubino::Tool
       summary { |a, ctx| "#{a[:pattern]}  in #{ctx.rel(a[:path] || '.')}" }
 
-      description "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
-                  "Returns matching file paths sorted by modification time."
+      describe "Find files by glob pattern (e.g., '**/*.rb', 'src/**/*.ts'). " \
+               "Returns matching file paths sorted by modification time."
 
-      param :pattern, desc: "The glob pattern to match files against (e.g., '**/*.rb')"
-      param :path,    desc: "Base directory to search in (defaults to current directory)", required: false
-      param :max_results, type: :integer, desc: "Maximum number of results (default: 100)", required: false
-      param :include_ignored, type: :boolean,
-                              desc: "Include files git ignores (.gitignore, build artifacts). " \
-                                    "Default false — results honor .gitignore like grep does.",
-                              required: false
+      string :pattern, "The glob pattern to match files against (e.g., '**/*.rb')"
+      string :path, "Base directory to search in (defaults to current directory)", default: "."
+      integer :max_results, "Maximum number of results", default: 100
+      boolean :include_ignored, "Include files git ignores (.gitignore, build artifacts). " \
+                                "Default false — results honor .gitignore like grep does.",
+              default: false
 
       def execute(pattern:, path: ".", max_results: 100, include_ignored: false)
         # Glob is BROAD (#406): it resolves any path like Hermes/Claude/Codex.

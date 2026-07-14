@@ -8,8 +8,8 @@ module Rubino
     # and a hard cap on per-line length. Line numbers let the LLM cite or
     # edit exact lines instead of "the second occurrence of X"; offset/limit
     # let it page through files that would otherwise blow the context.
-    class ReadTool < Base
-      redaction_profile :code
+    class ReadTool < Rubino::Tool
+      redaction :code
       summary :file_path, relative_to: :workspace
 
       DEFAULT_LIMIT  = 2000

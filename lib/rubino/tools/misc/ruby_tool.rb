@@ -15,20 +15,16 @@ module Rubino
     # back to `shell`. A child process also keeps the snippet from crashing or
     # polluting the agent (it can `exit`, redefine constants, spawn threads,
     # leak globals) without affecting the host.
-    class RubyTool < Base
-      class ToolSecurity < Tools::ToolSecurity
-        def risk = :medium
-      end
+    class RubyTool < Rubino::Tool
+      risk :medium
 
-      security ToolSecurity
-
-      description "Evaluate Ruby code and return the result. " \
+      describe "Evaluate Ruby code and return the result. " \
                   "Useful for calculations, data transformations, and scripting tasks. " \
                   "Runs in a separate Ruby process rooted at the workspace, with the " \
                   "project's lib/ (and the workspace root) on the load path, so " \
                   "`require 'my_project/file'` and relative requires of project code work."
 
-      param :code, desc: "The Ruby code to evaluate"
+      string :code, "The Ruby code to evaluate"
 
       def execute(code:)
         # Fail-closed (tools.sandbox.require): refuse before spawning when the
