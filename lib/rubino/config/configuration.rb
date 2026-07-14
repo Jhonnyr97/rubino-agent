@@ -22,6 +22,10 @@ module Rubino
         path = dig("database", "path")
         if path == Defaults::DEFAULT_DATABASE_PATH
           File.join(resolved_home, "rubino.sqlite3")
+        elsif path.to_s.start_with?(":memory:") || path.to_s == "file::memory:"
+          # SQLite in-memory paths are sentinels, not filesystem paths —
+          # expanding them would turn ":memory:" into "/cwd/:memory:".
+          path
         else
           File.expand_path(path)
         end

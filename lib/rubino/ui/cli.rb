@@ -867,6 +867,55 @@ module Rubino
         show_live_tail("")
       end
 
+      # Re-emit this CLI's current uncommitted live state into the live region —
+      # the in-progress reasoning tail, streaming answer prose, and any open tool
+      # card with held params. Called when the user focuses on a mid-operation
+      # subagent so its live state layers on top of the completed-history replay,
+      # instead of showing a frozen empty view until the next delta arrives.
+      # No-op when the CLI is idle (nothing open/streaming).
+      def repaint_in_progress
+        # 1. Re-emit the streaming reasoning tail (dim `┊` aside, live).
+        if @reasoning_streaming && @reasoning_md
+          if @reasoning_md.in_table?
+            lines = render_partial_table_lines(@reasoning_md.table_rows_so_far)
+            frame = dim_markdown_lines(lines).join("\n")
+            note_live_tail(frame)
+            paint_live(frame)
+          elsif live_markdown?
+            lines = live_markdown_lines(@reasoning_md)
+            frame = dim_markdown_lines(lines).join("\n")
+            note_live_tail(frame)
+            paint_live(frame)
+          else
+            show_reasoning_tail(@reasoning_md.live_tail(LIVE_TAIL_ROWS))
+          end
+        end
+
+        # 2. Re-emit the streaming answer prose (live tail).
+        if @stream_md
+          if @stream_md.in_table?
+            show_live_table(@stream_md.table_rows_so_far)
+          elsif live_markdown?
+            show_live_markdown(@stream_md)
+          else
+            show_live_tail(@stream_md.live_tail(LIVE_TAIL_ROWS))
+          end
+        end
+
+        # 3. Re-emit any open tool card: re-commit the header (it was lost with
+        #    clear_terminal) and flush the held partial params without consuming
+        #    the stream. Routes through commit_block_atomic so the composer's
+        #    origin/focus gate handles it correctly.
+        if @tool_params_open && @activity_name
+          label = Tools::Registry.display_label(@activity_name)
+          commit_block_atomic(["#{@pastel.cyan('●')} #{@pastel.dim(label)}"])
+          if @tool_params_stream
+            held = @tool_params_stream.held_tail
+            commit_block_atomic([@pastel.dim(held)]) unless held.empty?
+          end
+        end
+      end
+
       # Free-line annotation rendered as `┄ message ┄`, dim.
       def note(text)
         return if text.nil? || text.to_s.empty?

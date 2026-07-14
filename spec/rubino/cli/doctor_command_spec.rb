@@ -74,17 +74,28 @@ RSpec.describe Rubino::CLI::DoctorCommand do
     around do |example|
       saved = ENV.to_hash.slice(
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
-        "GOOGLE_API_KEY", "BEDROCK_API_KEY"
+        "GOOGLE_API_KEY", "BEDROCK_API_KEY",
+        "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"
       )
-      %w[OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY BEDROCK_API_KEY].each do |k|
+      %w[OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
+         BEDROCK_API_KEY ANTHROPIC_TOKEN CLAUDE_CODE_OAUTH_TOKEN].each do |k|
         ENV.delete(k)
       end
       example.run
     ensure
-      %w[OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY BEDROCK_API_KEY].each do |k|
+      %w[OPENAI_API_KEY ANTHROPIC_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
+         BEDROCK_API_KEY ANTHROPIC_TOKEN CLAUDE_CODE_OAUTH_TOKEN].each do |k|
         ENV.delete(k)
       end
       saved.each { |k, v| ENV[k] = v }
+    end
+
+    # The macOS Keychain / ~/.claude/.credentials.json may hold OAuth tokens
+    # that make CredentialCheck.usable? return true for Anthropic even when
+    # no static API key is set. Stub the chain so no-credential tests are
+    # deterministic regardless of machine-local OAuth state.
+    before do
+      allow(Rubino::LLM::CredentialSources).to receive(:resolve).and_return(nil)
     end
 
     it "is :ok when the configured provider's native ENV key is set" do

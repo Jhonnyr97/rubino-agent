@@ -2962,4 +2962,87 @@ RSpec.describe Rubino::UI::CLI do
       expect(ui.send(:build_subagent_status_line)).to be_nil
     end
   end
+
+  # FIX B — focal-switch-replay: repaint_in_progress re-emits the CLI's
+  # current uncommitted live state (reasoning tail, streaming answer prose,
+  # open tool card) so a focused subagent shows its in-progress operation
+  # instead of a frozen empty view. No-op when idle.
+  describe "#repaint_in_progress" do
+    it "re-emits the reasoning tail when streaming reasoning is active" do
+      ui.instance_variable_set(:@reasoning_streaming, true)
+      md = instance_double(Rubino::UI::StreamingMarkdown,
+                           in_table?: false, live_tail: %w[thinking line])
+      ui.instance_variable_set(:@reasoning_md, md)
+      allow(ui).to receive(:live_markdown?).and_return(false)
+
+      expect(ui).to receive(:show_reasoning_tail).with(%w[thinking line])
+
+      ui.repaint_in_progress
+    end
+
+    it "re-emits the streaming answer prose live tail when @stream_md exists" do
+      md = instance_double(Rubino::UI::StreamingMarkdown,
+                           in_table?: false, live_tail: %w[partial answer])
+      ui.instance_variable_set(:@stream_md, md)
+      allow(ui).to receive(:live_markdown?).and_return(false)
+
+      expect(ui).to receive(:show_live_tail).with(%w[partial answer])
+
+      ui.repaint_in_progress
+    end
+
+    it "re-emits a live table from @stream_md when in_table? is true" do
+      md = instance_double(Rubino::UI::StreamingMarkdown,
+                           in_table?: true, table_rows_so_far: [%w[a b]])
+      ui.instance_variable_set(:@stream_md, md)
+
+      expect(ui).to receive(:show_live_table).with([%w[a b]])
+
+      ui.repaint_in_progress
+    end
+
+    it "re-commits the open tool card header + held params when @tool_params_open is set" do
+      ui.instance_variable_set(:@tool_params_open, "write")
+      ui.instance_variable_set(:@activity_name, "write")
+      stream = instance_double(Rubino::UI::ToolArgsStream, held_tail: "line 1\n")
+      ui.instance_variable_set(:@tool_params_stream, stream)
+
+      expect(ui).to receive(:commit_block_atomic).with(
+        [a_string_including("●").and(a_string_including("write"))]
+      )
+      expect(ui).to receive(:commit_block_atomic).with(
+        [a_string_including("line 1")]
+      )
+
+      ui.repaint_in_progress
+    end
+
+    it "re-commits only the tool card header when held_tail is empty" do
+      ui.instance_variable_set(:@tool_params_open, "shell")
+      ui.instance_variable_set(:@activity_name, "shell")
+      stream = instance_double(Rubino::UI::ToolArgsStream, held_tail: "")
+      ui.instance_variable_set(:@tool_params_stream, stream)
+
+      allow(ui).to receive(:commit_block_atomic)
+
+      ui.repaint_in_progress
+
+      expect(ui).to have_received(:commit_block_atomic).once
+      expect(ui).to have_received(:commit_block_atomic).with(
+        [a_string_including("●").and(a_string_including("shell"))]
+      )
+    end
+
+    it "is a no-op when the CLI is idle (nothing open/streaming)" do
+      # No streaming state set — should not call any paint/commit method
+      expect(ui).not_to receive(:show_reasoning_tail)
+      expect(ui).not_to receive(:show_live_tail)
+      expect(ui).not_to receive(:show_live_table)
+      expect(ui).not_to receive(:show_live_markdown)
+      expect(ui).not_to receive(:commit_block_atomic)
+      expect(ui).not_to receive(:paint_live)
+
+      ui.repaint_in_progress
+    end
+  end
 end

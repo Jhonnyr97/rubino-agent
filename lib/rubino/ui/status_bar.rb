@@ -128,6 +128,12 @@ module Rubino
         end
       end
 
+      # Public alias: the mode token coloured for the status bar, with no
+      # leading space or middot — callers compose the full bar themselves.
+      def mode_segment(mode, pastel)
+        mode_prefix(mode, pastel)
+      end
+
       # --- percentage colour ------------------------------------------------
 
       # The saturation percentage shown in parentheses, CLAMPED to 0..100.

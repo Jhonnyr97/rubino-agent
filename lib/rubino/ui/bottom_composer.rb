@@ -961,7 +961,17 @@ module Rubino
       # a composer is a no-op (the CLI guards with `&.`). The focused id also marks
       # the FOCUSED sub in the compact switcher line (#87). nil ⇒ :main.
       def focus_agent!(id)
-        @render.synchronize { @focused_agent_id = id || :main }
+        @render.synchronize do
+          @focused_agent_id = id || :main
+          # Reset stale live transients from the previous focus so a leftover
+          # partial / turn-status / announce row can't bleed through into the
+          # newly-focused agent's view. Skip redraw (the attach replay redraws).
+          @partial           = +""
+          @turn_status       = +""
+          @announce          = +""
+          @content_streaming = false
+          @deferred_reveal   = false
+        end
       end
 
       # The agent currently allowed to paint (the focused view). :main when not

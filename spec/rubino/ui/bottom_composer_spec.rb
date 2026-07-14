@@ -2324,6 +2324,27 @@ RSpec.describe Rubino::UI::BottomComposer do
       composer.focus_agent!(nil) # nil normalizes to :main
       expect(composer.focused_agent_id).to eq(:main)
     end
+
+    # FIX B — focal-switch-replay: focus_agent! resets stale live transients
+    # so a leftover partial / turn-status / announce row from the previous
+    # focus can't bleed through into the newly-focused agent's view.
+    it "resets stale live transients on focus switch" do
+      # Pre-seed transients with stale data from a previous focus
+      composer.instance_variable_set(:@partial, "stale partial")
+      composer.instance_variable_set(:@turn_status, "stale status")
+      composer.instance_variable_set(:@announce, "stale announce")
+      composer.instance_variable_set(:@content_streaming, true)
+      composer.instance_variable_set(:@deferred_reveal, true)
+
+      composer.focus_agent!("sa_sub")
+
+      expect(composer.instance_variable_get(:@partial)).to eq("")
+      expect(composer.instance_variable_get(:@turn_status)).to eq("")
+      expect(composer.instance_variable_get(:@announce)).to eq("")
+      expect(composer.instance_variable_get(:@content_streaming)).to be(false)
+      expect(composer.instance_variable_get(:@deferred_reveal)).to be(false)
+      expect(composer.focused_agent_id).to eq("sa_sub")
+    end
   end
 
   # #87 — while ATTACHED to a sub, #37 hid the parent's subagent cards so the
