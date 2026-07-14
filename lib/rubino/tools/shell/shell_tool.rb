@@ -415,6 +415,7 @@ module Rubino
       end
 
       def spawn_background(command, cwd)
+        command = rewrite_compound_background(command)
         entry = Tools::ShellRegistry.instance.spawn(command: command, cwd: cwd)
         log_line = entry.log_path ? "  Log:     #{entry.log_path}\n" : ""
         "Started background shell #{entry.id} (pid #{entry.pid})\n" \
@@ -786,6 +787,197 @@ module Rubino
         Rubino.configuration.tool_output_capture_max_bytes
       rescue StandardError
         2_000_000
+      end
+
+      # Port of hermes-agent terminal_tool.py `_rewrite_compound_background`.
+      # Wraps `A && B &` (or `A || B &`) to `A && { B & }` at depth 0 so a
+      # long-running backgrounded child is orphaned instead of wedging the
+      # parent shell / holding its stdout pipe open. Preserves && / || error
+      # semantics, handles redirects (&>, 2>&1), skips content inside quotes
+      # and parenthesised subshells, and leaves a simple `cmd &` alone.
+      def rewrite_compound_background(command)
+        n = command.length
+        i = 0
+        paren_depth = 0
+        brace_depth = 0
+        last_chain_op_end = -1
+        rewrites = [] # [chain_op_end, amp_pos]
+
+        while i < n
+          ch = command[i]
+
+          # Newline terminates a statement at depth 0 — reset chain state.
+          if ch == "\n" && paren_depth.zero? && brace_depth.zero?
+            last_chain_op_end = -1
+            i += 1
+            next
+          end
+
+          if ch =~ /\s/
+            i += 1
+            next
+          end
+
+          # Comments (only at statement start).
+          if ch == "#"
+            nl = command.index("\n", i)
+            break unless nl
+
+            i = nl
+            next
+          end
+
+          if ch == "\\" && i + 1 < n
+            i += 2
+            next
+          end
+
+          # Quoted tokens — consume whole string.
+          if %w[' "].include?(ch)
+            _, next_i = read_shell_token(command, i)
+            i = [next_i, i + 1].max
+            next
+          end
+
+          if ch == "("
+            paren_depth += 1
+            i += 1
+            next
+          end
+
+          if ch == ")"
+            paren_depth = [0, paren_depth - 1].max
+            i += 1
+            next
+          end
+
+          # Brace groups: `{ ... }`. bash requires whitespace after `{`.
+          if ch == "{" && i + 1 < n && (command[i + 1] =~ /\s/)
+            brace_depth += 1
+            i += 1
+            next
+          end
+          if ch == "}" && brace_depth.positive?
+            brace_depth -= 1
+            last_chain_op_end = -1
+            i += 1
+            next
+          end
+
+          # Inside parens or brace groups, skip operators.
+          if paren_depth.positive? || brace_depth.positive?
+            i += 1
+            next
+          end
+
+          # Chain operators at depth 0.
+          if %w[&& ||].include?(command[i, 2])
+            last_chain_op_end = i + 2
+            i += 2
+            next
+          end
+
+          # Statement terminators reset the chain state.
+          if ch == ";"
+            last_chain_op_end = -1
+            i += 1
+            next
+          end
+
+          # Single `|` (pipe) starts a new pipeline stage.
+          if ch == "|"
+            last_chain_op_end = -1
+            i += 1
+            next
+          end
+
+          # `&` handling: distinguish &&, &>, fd redirect (>&, <&), and true &.
+          if ch == "&"
+            if i + 1 < n && command[i + 1] == ">"
+              i += 2
+              next
+            end
+            # `>&` / `<&` fd target — look back past whitespace.
+            j = i - 1
+            j -= 1 while j >= 0 && command[j] =~ /\s/
+            if j >= 0 && %w[< >].include?(command[j])
+              i += 1
+              next
+            end
+            # Real background operator.
+            rewrites << [last_chain_op_end, i] if last_chain_op_end >= 0
+            last_chain_op_end = -1
+            i += 1
+            next
+          end
+
+          # Regular unquoted token — advance past it.
+          _, next_i = read_shell_token(command, i)
+          i = [next_i, i + 1].max
+        end
+
+        return command if rewrites.empty?
+
+        # Apply rewrites back-to-front so earlier indices remain valid.
+        result = command
+        rewrites.reverse_each do |chain_end, amp_pos|
+          insert_pos = chain_end
+          insert_pos += 1 while insert_pos < amp_pos && result[insert_pos] =~ /\s/
+          prefix = result[0...insert_pos]
+          middle = result[insert_pos...amp_pos]
+          suffix = result[(amp_pos + 1)..]
+          result = "#{prefix}{ #{middle}& }#{suffix}"
+        end
+
+        result
+      end
+
+      # Port of hermes-agent terminal_tool.py `_read_shell_token`.
+      # Reads one shell token (preserving quotes/escapes) starting at `start`.
+      def read_shell_token(command, start)
+        i = start
+        n = command.length
+
+        while i < n
+          ch = command[i]
+          break if ch =~ /\s/ || ";|&()".include?(ch)
+
+          if ch == "'"
+            i += 1
+            i += 1 while i < n && command[i] != "'"
+            i += 1 if i < n
+            next
+          end
+
+          if ch == '"'
+            i = advance_past_double_quote(command, i, n)
+            next
+          end
+
+          if ch == "\\" && i + 1 < n
+            i += 2
+            next
+          end
+
+          i += 1
+        end
+
+        [command[start...i], i]
+      end
+
+      # Advance i past double-quoted content, handling \" escapes.
+      def advance_past_double_quote(command, i, n)
+        i += 1
+        while i < n
+          if command[i] == "\\" && i + 1 < n
+            i += 2
+          elsif command[i] == '"'
+            return i + 1
+          else
+            i += 1
+          end
+        end
+        i
       end
 
       # Bounded head+tail accumulator for a subprocess's merged output (#539).
