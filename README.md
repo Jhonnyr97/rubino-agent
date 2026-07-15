@@ -8,7 +8,7 @@ A coding & automation **agent** — small, self-contained, and built to run *whe
 - **Persistent memory** — a tiny SQLite fact store that learns about you and the project across sessions.
 - **Context compaction** — automatic compression with session lineage when the conversation outgrows the window.
 - **CLI *and* HTTP API** — an interactive terminal session for humans, a bearer-protected JSON + SSE API for programs.
-- **Real tools, gated** — read/write/edit, shell, ruby, grep/glob, apply_patch, vision, and more (git, GitHub, and tests run through the hardened shell), behind an approval model with a non-bypassable hardline floor.
+- **Real tools, gated** — read/write/edit, shell, ruby, grep/glob, vision, and more (git, GitHub, and tests run through the hardened shell), behind an approval model with a non-bypassable hardline floor.
 - **Built on ruby_llm** — provider-agnostic: MiniMax, OpenAI, Anthropic, Gemini, or an OpenAI-compatible gateway.
 
 ## Cache-friendly compaction (measured)
@@ -200,7 +200,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 
 ## Built-in tools
 
-The agent ships **28 built-in tools** (the set `rubino tools` lists): `vision`, `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`. Several tools share one config gate — `web_fetch` and `web_search` share `tools.web` (on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable), the delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) shares `tools.task`. Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
+The agent ships **26 built-in tools** (the set `rubino tools` lists): `vision`, `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`. Several tools share one config gate — `web_fetch` and `web_search` share `tools.web` (on by default via the keyless DuckDuckGo backend; it degrades gracefully when no search backend is reachable), the delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) shares `tools.task`. Each tool is gated by a `tools.<key>` config flag (opt-out) and the approval model. See **[docs/tools.md](docs/tools.md)**.
 
 ## Skills
 

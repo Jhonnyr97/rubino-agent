@@ -2,7 +2,7 @@
 
 # #446: the always-on write-side credential DENYLIST (#413) was replaced by a
 # unified APPROVAL GATE in Security::ApprovalPolicy#decide. The per-tool
-# self-refusal is GONE — a write/edit/multi_edit/apply_patch that reaches the
+# self-refusal is GONE — a write/edit that reaches the
 # tool's #call has already been approved, so it actually writes the secret.
 # These examples pin the new TOOL-LEVEL behavior (an approved secret write
 # proceeds, a normal file is unaffected). The gate itself — when :ask fires,
@@ -52,10 +52,10 @@ RSpec.describe "secret writes proceed at the tool level (gate moved upstream, #4
     end
   end
 
-  describe Rubino::Tools::MultiEditTool do
-    subject(:tool) { described_class.new.tap { |t| t.read_tracker = Rubino::Tools::ReadTracker.new } }
+  describe "#{Rubino::Tools::EditTool} (edits array form)" do
+    subject(:tool) { Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = Rubino::Tools::ReadTracker.new } }
 
-    it "multi_edits an APPROVED .env in the workspace" do
+    it "applies an APPROVED multi-edit .env in the workspace" do
       path = File.join(tmp_dir, ".env")
       File.write(path, "A=1\nB=2\n")
       tool.read_tracker.register(path, File.mtime(path), nil)
@@ -63,22 +63,6 @@ RSpec.describe "secret writes proceed at the tool level (gate moved upstream, #4
                          "edits" => [{ "old_string" => "A=1", "new_string" => "A=9" }])
       expect(payload(result)).to include("Applied")
       expect(File.read(path)).to eq("A=9\nB=2\n")
-    end
-  end
-
-  describe Rubino::Tools::PatchTool do
-    subject(:tool) { described_class.new }
-
-    it "applies an APPROVED patch that creates a .env file" do
-      patch = <<~PATCH
-        --- /dev/null
-        +++ b/.env
-        @@ -0,0 +1,1 @@
-        +API_KEY=set
-      PATCH
-      result = payload(tool.call("patch" => patch, "base_path" => tmp_dir))
-      expect(result).to include("Created")
-      expect(File.read(File.join(tmp_dir, ".env"))).to eq("API_KEY=set\n")
     end
   end
 end

@@ -2,7 +2,7 @@
 
 module Rubino
   module Tools
-    # Fuzzy fallback for the edit/multi_edit tools, ported from the `pi`
+    # Fuzzy fallback for the edit tool, ported from the `pi`
     # coding agent's edit-diff (the single biggest edit success-rate lever).
     #
     # The edit tools first try a byte-EXACT match. On a miss, the model's

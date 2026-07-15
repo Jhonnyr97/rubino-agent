@@ -5,7 +5,7 @@ require "digest"
 module Rubino
   module Tools
     # Single source of truth for per-path read/write state in a session, keyed
-    # on {content-hash, mtime}. Edit / MultiEdit / Write consult it before
+    # on {content-hash, mtime}. Edit / Write consult it before
     # writing so the model can't edit a file it never opened (and would then be
     # editing from training-time priors), and ReadTool consults it to skip
     # re-emitting bytes already in context.
@@ -103,7 +103,7 @@ module Rubino
         end
       end
 
-      # Flags that the last edit/multi_edit to +path+ FAILED, so the model's
+      # Flags that the last edit to +path+ FAILED, so the model's
       # next read of it bypasses dedup and gets fresh disk content for recovery
       # (r5 B3). One-shot: consumed by the next duplicate_read? check.
       def note_edit_failure(path)

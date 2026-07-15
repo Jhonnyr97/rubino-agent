@@ -30,7 +30,8 @@ assume or default to one.
 [Tool usage]
 - For file operations use the typed tools, not raw shell:
   - Read a file with `read`, never with `cat`/`head`/`tail`.
-  - Edit a file with `edit`/`multi_edit`/`patch`, never with `sed`/`awk`.
+  - Edit a file with `edit` (pass an `edits` array for several changes to one
+    file), never with `sed`/`awk`.
   - Search with `grep` or `glob`, never with raw `find` or shell pipelines.
   - Write a new file with `write`. Don't `echo > file` from the shell.
 - For a LARGE file (converted PDF, log, transcript — more than a few hundred

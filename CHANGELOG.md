@@ -46,6 +46,23 @@
   steers the model to the right next move (the `skill` tool for `~/.rubino`,
   `disable_sandbox` for elsewhere).
 
+### Changed
+
+- **`edit` absorbs `multi_edit`.** The `edit` tool now accepts an optional
+  `edits` array (each `{old_string, new_string, replace_all?}`) for multiple
+  replacements in one file, applied atomically (all-or-nothing) and sequentially
+  (later edits see the result of earlier ones) — the former `multi_edit`
+  behaviour, folded into a single editing surface (mirrors Claude Code's `Edit`).
+  The scalar `old_string`/`new_string` form is unchanged; pass one form or the
+  other, not both.
+
+### Removed
+
+- **`multi_edit` tool removed** — folded into `edit` (see Changed above).
+- **`apply_patch` tool removed.** Unified-diff application is dropped; `edit`
+  and `write` cover its use, and unified diffs are the format small local models
+  most often corrupt. Built-in tool count is now 26 (was 28).
+
 ## [0.5.2.2] - 2026-07-01
 
 ### Added

@@ -633,17 +633,15 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     # #427: structured in-workspace edit symmetry. Under dangerous_only a safe
-    # `shell sed -i …` runs unprompted, so the structured edit/write/
-    # multi_edit/apply_patch tools must ALSO be unprompted — otherwise headless
-    # automation is pushed toward raw shell mutation and away from the safer,
-    # read-tracked, diff-producing tools. The always-on #413 write-denylist +
-    # workspace sandbox (enforced inside #call) remain the boundary; the
-    # hardline floor and permissions:deny still run first.
+    # `shell sed -i …` runs unprompted, so the structured edit/write tools must
+    # ALSO be unprompted — otherwise headless automation is pushed toward raw
+    # shell mutation and away from the safer, read-tracked, diff-producing
+    # tools. The always-on #413 write-denylist + workspace sandbox (enforced
+    # inside #call) remain the boundary; the hardline floor and permissions:deny
+    # still run first.
     context "structured edit symmetry (#427)" do
       let(:edit)       { make_tool(name: "edit",        risk_level: :medium, risky: true) }
       let(:write_t)    { make_tool(name: "write",       risk_level: :medium, risky: true) }
-      let(:multi_edit) { make_tool(name: "multi_edit",  risk_level: :medium, risky: true) }
-      let(:apply_patch) { make_tool(name: "apply_patch", risk_level: :medium, risky: true) }
 
       context "dangerous_only" do
         let(:pol) do
@@ -665,14 +663,6 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
 
         it "allows write WITHOUT a prompt" do
           expect(pol.decide(write_t, arguments: { "file_path" => "in_ws.txt", "content" => "hi" })).to eq(:allow)
-        end
-
-        it "allows multi_edit WITHOUT a prompt" do
-          expect(pol.decide(multi_edit, arguments: { "file_path" => "in_ws.txt" })).to eq(:allow)
-        end
-
-        it "allows apply_patch WITHOUT a prompt" do
-          expect(pol.decide(apply_patch, arguments: { "patch" => "diff" })).to eq(:allow)
         end
 
         it "still honors an explicit permissions:deny on a structured edit (deny-class wins)" do
@@ -702,7 +692,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
 
     # Out-of-workspace structured write → :ask, then widen (step 8a,
-    # Claude-Code-aligned). A write/edit/multi_edit/apply_patch whose target is
+    # Claude-Code-aligned). A write/edit whose target is
     # OUTSIDE every allowed root is no longer let through to the tool's dead-end
     # "refusing to access"; the policy prompts and reports the directory the
     # ToolExecutor must add on approval.
@@ -771,12 +761,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
         Rubino.configuration.set("tools", "workspace_strict", nil)
       end
 
-      it "asks for edit + multi_edit + apply_patch targets outside the workspace" do
+      it "asks for edit targets outside the workspace" do
         expect(pol.decide(edit, arguments: { "file_path" => File.join(outside, "e.rb"),
                                              "old_string" => "a", "new_string" => "b" })).to eq(:ask)
-        patch = "--- a/#{File.join(outside, "p.rb")}\n+++ b/#{File.join(outside, "p.rb")}\n"
-        apply = make_tool(name: "apply_patch", risk_level: :medium, risky: true)
-        expect(pol.decide(apply, arguments: { "patch" => patch, "base_path" => workspace })).to eq(:ask)
       end
     end
 

@@ -271,7 +271,7 @@ module Rubino
       attr_accessor :cancel_token
 
       # Session-scoped ReadTracker. ReadTool registers reads; EditTool /
-      # MultiEditTool consult it before writing. Nil-tolerant.
+      # WriteTool consult it before writing. Nil-tolerant.
       attr_accessor :read_tracker
 
       # Optional Proc for incremental output chunks during long calls.
@@ -512,7 +512,7 @@ module Rubino
         unless @read_tracker.seen?(expanded)
           return { output: "Error: refusing to overwrite existing file #{display_path} — " \
                            "you have not read it this session, so a blind write would clobber its " \
-                           "current contents. Read it first (then use `edit`/`multi_edit` for a " \
+                           "current contents. Read it first (then use `edit` for a " \
                            "targeted change, or `write` the full intended content).",
                    error_code: :unread_overwrite }
         end

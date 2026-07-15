@@ -97,7 +97,6 @@ module Rubino
           register(Rubino::Tools::ReadTool.new)
           register(Rubino::Tools::WriteTool.new)
           register(Rubino::Tools::EditTool.new)
-          register(Rubino::Tools::MultiEditTool.new)
           register(Rubino::Tools::GrepTool.new)
           register(Rubino::Tools::GlobTool.new)
           register(Rubino::Tools::ShellTool.new)
@@ -106,7 +105,6 @@ module Rubino
           register(Rubino::Tools::ShellInputTool.new)
           register(Rubino::Tools::ShellKillTool.new)
           register(Rubino::Tools::RubyTool.new)
-          register(Rubino::Tools::PatchTool.new)
           register(Rubino::Tools::WebFetchTool.new)
           register(Rubino::Tools::WebSearchTool.new)
 

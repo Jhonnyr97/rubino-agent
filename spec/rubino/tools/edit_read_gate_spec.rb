@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Edit and MultiEdit must refuse to write a file unless it was read in the
+# Edit (scalar and edits-array forms) must refuse to write a file unless it was read in the
 # current turn AND its mtime is unchanged since the read. The gate lives on
 # the tool itself and is opt-in: if no ReadTracker is injected the tool
 # behaves as before (unit-test ergonomics, single-shot MCP calls).
@@ -72,9 +72,9 @@ RSpec.describe "Read-before-Edit gate" do
     end
   end
 
-  describe Rubino::Tools::MultiEditTool do
+  describe "#{Rubino::Tools::EditTool} (edits array form)" do
     subject(:tool) do
-      described_class.new.tap { |t| t.read_tracker = tracker }
+      Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = tracker }
     end
 
     it "refuses when the tracker has not seen the file" do

@@ -95,22 +95,22 @@ module Rubino
         "executed" => %w[shell ruby],
         "test" => %w[shell],
         "tested" => %w[shell],
-        "save" => %w[write edit multi_edit patch],
-        "saved" => %w[write edit multi_edit patch],
-        "write" => %w[write edit multi_edit patch],
-        "wrote" => %w[write edit multi_edit patch],
-        "edit" => %w[edit multi_edit write patch],
-        "edited" => %w[edit multi_edit write patch],
-        "create" => %w[write edit multi_edit],
-        "created" => %w[write edit multi_edit],
+        "save" => %w[write edit],
+        "saved" => %w[write edit],
+        "write" => %w[write edit],
+        "wrote" => %w[write edit],
+        "edit" => %w[edit write],
+        "edited" => %w[edit write],
+        "create" => %w[write edit],
+        "created" => %w[write edit],
         "delete" => %w[shell],
         "deleted" => %w[shell],
-        "remove" => %w[edit multi_edit shell write],
-        "removed" => %w[edit multi_edit shell write],
+        "remove" => %w[edit shell write],
+        "removed" => %w[edit shell write],
         "move" => %w[shell],
         "moved" => %w[shell],
-        "rename" => %w[shell edit multi_edit],
-        "renamed" => %w[shell edit multi_edit],
+        "rename" => %w[shell edit],
+        "renamed" => %w[shell edit],
         "install" => %w[shell],
         "installed" => %w[shell],
         "commit" => %w[shell],
@@ -132,23 +132,23 @@ module Rubino
       # maps to the write-family tool(s) that would actually carry it out, so the
       # claim is only challenged when rubino actually exposed a way to mutate.
       MUTATION_TOOLS = {
-        "edited" => %w[edit multi_edit write patch],
-        "wrote" => %w[write edit multi_edit patch],
-        "written" => %w[write edit multi_edit patch],
-        "updated" => %w[edit multi_edit write patch],
-        "created" => %w[write edit multi_edit],
-        "added" => %w[edit multi_edit write patch],
-        "removed" => %w[edit multi_edit write patch shell],
-        "saved" => %w[write edit multi_edit patch],
-        "modified" => %w[edit multi_edit write patch],
-        "renamed" => %w[shell edit multi_edit],
-        "deleted" => %w[shell edit multi_edit write],
-        "applied" => %w[patch edit multi_edit write],
-        "changed" => %w[edit multi_edit write patch],
-        "replaced" => %w[write edit multi_edit patch],
-        "inserted" => %w[edit multi_edit write patch],
-        "appended" => %w[edit multi_edit write patch],
-        "fixed" => %w[edit multi_edit write patch]
+        "edited" => %w[edit write],
+        "wrote" => %w[write edit],
+        "written" => %w[write edit],
+        "updated" => %w[edit write],
+        "created" => %w[write edit],
+        "added" => %w[edit write],
+        "removed" => %w[edit write shell],
+        "saved" => %w[write edit],
+        "modified" => %w[edit write],
+        "renamed" => %w[shell edit],
+        "deleted" => %w[shell edit write],
+        "applied" => %w[edit write],
+        "changed" => %w[edit write],
+        "replaced" => %w[write edit],
+        "inserted" => %w[edit write],
+        "appended" => %w[edit write],
+        "fixed" => %w[edit write]
       }.freeze
 
       # The assistant asserts a mutation as its OWN completed action — past-tense
@@ -247,7 +247,7 @@ module Rubino
       # The write-family tools any mutation/state-result claim needs on offer for
       # the guard to challenge it — no point challenging "the file now contains X"
       # if rubino has no way to write at all this turn.
-      WRITE_FAMILY = %w[write edit multi_edit patch].freeze
+      WRITE_FAMILY = %w[write edit].freeze
 
       # The VCS tools a fabricated git-mutation RESULT ("committed as <sha>")
       # needs on offer for the guard to challenge it. Git and GitHub operations
@@ -459,7 +459,7 @@ module Rubino
       # edits" claim is most misleading when these ran. Used only to label the
       # truthful harness note ("M edits"); the reconciliation itself fires on ANY
       # tool having run, since "I read nothing" is equally false when a read ran.
-      MUTATING_TOOLS = %w[edit multi_edit write patch].freeze
+      MUTATING_TOOLS = %w[edit write].freeze
 
       # Build a guard for one turn. `exposed_tool_names` is the set of tool names
       # the model actually had this turn (Loop's @turn_tools) — we only reflect a

@@ -79,7 +79,7 @@ module Rubino
         begin
           File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |f|
             # Write the bytes VERBATIM, regardless of the process's encoding
-            # environment. The edit/multi_edit read-modify-write builds +contents+
+            # environment. The edit read-modify-write builds +contents+
             # as a BINARY (ASCII-8BIT) buffer so untouched non-UTF-8 bytes survive
             # (#326). Without binmode, a process whose Encoding.default_internal is
             # UTF-8 (set by some locales / a `ruby -Eutf-8:utf-8`) makes IO#write

@@ -3,8 +3,8 @@
 module Rubino
   module Security
     # ONE "is this a secret/credential path?" predicate for the WRITE-side
-    # approval gate (Security::ApprovalPolicy#decide → :ask when a write/edit/
-    # multi_edit/apply_patch targets a secret). Writing/clobbering a secret
+    # approval gate (Security::ApprovalPolicy#decide → :ask when a write/edit
+    # targets a secret). Writing/clobbering a secret
     # requires explicit user approval; READING one is allowed unprompted (the
     # field norm, #480) and has no gate, so this predicate is no longer
     # consulted on the read path.

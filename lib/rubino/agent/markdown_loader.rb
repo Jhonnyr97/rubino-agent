@@ -59,7 +59,7 @@ module Rubino
         "Read" => "read",
         "Write" => "write",
         "Edit" => "edit",
-        "MultiEdit" => "multi_edit",
+        "MultiEdit" => "edit", # folded into edit's `edits` array form
         "WebSearch" => "web_search",
         "WebFetch" => "web_fetch",
         "Task" => "task",

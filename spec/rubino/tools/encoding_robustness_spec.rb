@@ -83,13 +83,13 @@ RSpec.describe Rubino::Tools::EditTool do
   end
 end
 
-RSpec.describe Rubino::Tools::MultiEditTool do
+RSpec.describe "#{Rubino::Tools::EditTool} (edits array form)" do # rubocop:disable RSpec/DescribeClass
   include EncodingRobustnessHelpers
 
   describe "encoding robustness (F1)" do
     it "edits a file with a stray non-UTF-8 byte" do
       path   = write_latin1_file
-      result = described_class.new.call(
+      result = Rubino::Tools::EditTool.new.call(
         "file_path" => path,
         "edits" => [{ "old_string" => 'VERSION="1.0"', "new_string" => 'VERSION="2.0"' }]
       )

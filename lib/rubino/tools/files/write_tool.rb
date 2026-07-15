@@ -7,7 +7,7 @@ module Rubino
     # Writes content to a file, creating parent directories if needed.
     # Overwrites existing files (the LLM is expected to Read first when in
     # doubt). Kept intentionally narrow — no append mode, no partial writes;
-    # those belong in `edit` / `multi_edit`.
+    # those belong in `edit`.
     class WriteTool < Rubino::Tool
       risk :medium, require_overwrite_guard: true
       redaction :none
@@ -19,7 +19,7 @@ module Rubino
 
       describe "Write content to a file, overwriting any existing content. " \
               "Creates parent directories if they do not exist. " \
-              "Use `edit` or `multi_edit` to modify an existing file in place."
+              "Use `edit` to modify an existing file in place."
 
       string :file_path, "Absolute or relative file path"
       string :content, "Full file content to write"

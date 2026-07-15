@@ -625,7 +625,7 @@ module Rubino
       # :always_tool label.
       def session_scope_noun(tool)
         case tool.to_s
-        when "edit", "multi_edit" then "all edits"
+        when "edit"               then "all edits"
         when "write"              then "all writes"
         when "shell"              then "all shell commands"
         when "", nil              then "this tool"

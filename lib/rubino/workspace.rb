@@ -74,8 +74,8 @@ module Rubino
       end
 
       # The SESSION current working directory — the single source of truth for
-      # "where am I right now". Relative file paths (read/write/edit/multi_edit/
-      # grep/glob/apply_patch, via Tools::Base#expand_workspace_path) and bare
+      # "where am I right now". Relative file paths (read/write/edit/
+      # grep/glob, via Tools::Base#expand_workspace_path) and bare
       # foreground shell commands all anchor here, so a `cd subdir` in the shell
       # is honoured by every subsequent tool, not just the next shell call
       # (#544/#545).

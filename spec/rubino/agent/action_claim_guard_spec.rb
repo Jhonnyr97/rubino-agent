@@ -6,7 +6,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
   # The full toolset the model normally has — verbs only fire when their backing
   # tool is on offer this turn.
   let(:all_tools) do
-    %w[shell ruby test write edit multi_edit patch git github read grep web_fetch]
+    %w[shell ruby test write edit git github read grep web_fetch]
   end
 
   def verdict(text, tool_count: 0, denied_count: 0, noninteractive: false, terminal: false)
@@ -61,7 +61,7 @@ RSpec.describe Rubino::Agent::ActionClaimGuard do
 
     it "flags a BUNDLED edit-claim + trailing future intent, on the EDIT (r5c B1)" do
       # Pre-fix the guard challenged only the trailing 'run the tests' sub-claim
-      # and let the fabricated multi_edit pass. Now the EDIT is what's flagged.
+      # and let the fabricated edit pass. Now the EDIT is what's flagged.
       text = "Updated both methods to use item instead of it. Running the tests now."
       kind, claim = verdict(text)
       expect(kind).to eq(:reflect)

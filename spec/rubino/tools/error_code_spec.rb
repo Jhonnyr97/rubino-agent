@@ -2,7 +2,7 @@
 
 # error_code is the structured failure-mode tag that lives next to the
 # human-facing output string. Today only a handful of error sites populate
-# it (shell deny-list, read on binary, edit/multi_edit read-gate), but the
+# it (shell deny-list, read on binary, edit read-gate), but the
 # plumbing must be in place end-to-end so future contract tests and UI
 # badges can branch on it without parsing strings.
 RSpec.describe Rubino::Tools::Result do

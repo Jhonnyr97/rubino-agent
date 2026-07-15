@@ -620,13 +620,13 @@ RSpec.describe Rubino::Agent::ToolExecutor do
       end
     end
 
-    # multi_edit carries an `edits` array; the generic renderer would dump an
+    # `edit` with an `edits` array; the generic renderer would dump an
     # unreadable escaped Ruby hash. It must preview as clean per-edit blocks.
-    describe "multi_edit preview" do
+    describe "edits-array preview" do
       let(:multi) do
         Class.new(Rubino::Tools::Base) do
-          def name = "multi_edit"
-          def description = "multi"
+          def name = "edit"
+          def description = "edit"
           def input_schema = { type: "object" }
           def risk_level = :medium
           def call(_args) = "ok"
@@ -663,7 +663,7 @@ RSpec.describe Rubino::Agent::ToolExecutor do
                                      { "old_string" => "def median(nums):\n  s = sorted(nums)",
                                        "new_string" => "def median(nums):\n  s = sorted(nums)\n  n = len(s)" }
                                    ] })
-        expect(question).to include("multi_edit wants to run: stats.py (1 edit)")
+        expect(question).to include("edit wants to run: stats.py (1 edit)")
         expect(question).to include("  - def median(nums):")
         expect(question).to include("  + def median(nums):")
         expect(question).to include("+   n = len(s)")

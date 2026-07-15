@@ -71,7 +71,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
     it "i tool di default vengono registrati nel Registry" do
       Rubino::Tools::Registry.register_defaults!
       nomi = Rubino::Tools::Registry.all.map(&:name)
-      expect(nomi).to include("read", "write", "edit", "multi_edit", "grep", "glob", "shell", "shell_output",
+      expect(nomi).to include("read", "write", "edit", "grep", "glob", "shell", "shell_output",
                               "shell_kill")
     end
 

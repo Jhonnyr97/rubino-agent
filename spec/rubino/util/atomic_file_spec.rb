@@ -100,7 +100,7 @@ RSpec.describe Rubino::Util::AtomicFile do
       expect(File.stat(path).mode & 0o777).to eq(0o640)
     end
 
-    # FINDING #65: the edit/multi_edit read-modify-write builds its contents as a
+    # FINDING #65: the edit read-modify-write builds its contents as a
     # BINARY (ASCII-8BIT) buffer so untouched non-UTF-8 bytes survive (#326).
     # When the process runs with Encoding.default_internal = UTF-8 (set by some
     # locales / `ruby -Eutf-8:utf-8`), a non-binmode IO#write TRANSCODES that

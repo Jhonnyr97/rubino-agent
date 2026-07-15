@@ -222,4 +222,174 @@ RSpec.describe Rubino::Tools::EditTool do
       expect(result).to include("not found")
     end
   end
+
+  # ── `edits` array form (folded-in multi_edit) ──
+  #
+  # The former multi_edit tool now lives here as an optional `edits:` array on
+  # `edit`. These are the meaningful multi_edit specs, ported so the atomicity /
+  # sequential / multi-match / fuzzy coverage isn't lost.
+  describe "edits array form (atomic multi-edit)" do
+    it "applies multiple sequential edits" do
+      path = write_file("f.txt", "alpha beta gamma\n")
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => "alpha", "new_string" => "ALPHA" },
+          { "old_string" => "gamma", "new_string" => "GAMMA" }
+        ]
+      )
+      expect(File.read(path)).to eq("ALPHA beta GAMMA\n")
+      expect(out[:output]).to include("Applied 2 edit(s)")
+    end
+
+    it "renders a per-edit red/green diff body on success" do
+      path = write_file("f.txt", "alpha beta gamma\n")
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => "alpha", "new_string" => "ALPHA" },
+          { "old_string" => "gamma", "new_string" => "GAMMA" }
+        ]
+      )
+      expect(out[:body_kind]).to eq(:diff)
+      expect(out[:body]).to include("- alpha").and include("+ ALPHA")
+      expect(out[:body]).to include("- gamma").and include("+ GAMMA")
+      expect(out[:metrics]).to include("2 edits").and include("2 replacements")
+    end
+
+    it "sees the result of prior edits inside the same call" do
+      path = write_file("f.txt", "old name\n")
+      tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => "old", "new_string" => "new" },
+          { "old_string" => "new name", "new_string" => "renamed" }
+        ]
+      )
+      expect(File.read(path)).to eq("renamed\n")
+    end
+
+    it "leaves the file untouched when any edit fails (atomic)" do
+      path = write_file("f.txt", "alpha\n")
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => "alpha", "new_string" => "ALPHA" },
+          { "old_string" => "zeta",  "new_string" => "ZETA" }
+        ]
+      )
+      expect(File.read(path)).to eq("alpha\n") # untouched
+      expect(out).to include("edit #2")
+      expect(out).to include("not found")
+    end
+
+    it "rejects ambiguous edits unless replace_all is set" do
+      path = write_file("f.txt", "x\nx\n")
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [{ "old_string" => "x", "new_string" => "y" }]
+      )
+      expect(out).to include("2 matches")
+      expect(File.read(path)).to eq("x\nx\n")
+    end
+
+    it "honours per-edit replace_all" do
+      path = write_file("f.txt", "x\nx\n")
+      tool.call(
+        "file_path" => path,
+        "edits" => [{ "old_string" => "x", "new_string" => "y", "replace_all" => true }]
+      )
+      expect(File.read(path)).to eq("y\ny\n")
+    end
+
+    it "errors on identical old/new in an edit" do
+      path = write_file("f.txt", "x\n")
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [{ "old_string" => "x", "new_string" => "x" }]
+      )
+      expect(out).to include("identical")
+    end
+
+    it "errors on an empty edits array" do
+      path = write_file("f.txt", "x\n")
+      out = tool.call("file_path" => path, "edits" => [])
+      expect(out).to include("non-empty array")
+    end
+
+    it "rejects a call that mixes scalar old_string with an edits array" do
+      path = write_file("f.txt", "x\n")
+      out = tool.call(
+        "file_path" => path,
+        "old_string" => "x", "new_string" => "y",
+        "edits" => [{ "old_string" => "x", "new_string" => "z" }]
+      )
+      expect(out).to be_a(String)
+      expect(out).to include("not both")
+      expect(File.read(path)).to eq("x\n") # untouched
+    end
+
+    # HIGH-1: the single final write goes through AtomicFile.write_atomic.
+    it "writes the staged result through Util::AtomicFile.write_atomic" do
+      path = write_file("f.txt", "alpha beta\n")
+      expect(Rubino::Util::AtomicFile).to receive(:write_atomic)
+        .with(path, "ALPHA beta\n").and_call_original
+      tool.call("file_path" => path,
+                "edits" => [{ "old_string" => "alpha", "new_string" => "ALPHA" }])
+      expect(File.read(path)).to eq("ALPHA beta\n")
+    end
+
+    # #326 — non-UTF-8 (Latin-1) bytes on untouched lines survive verbatim.
+    it "preserves Latin-1 bytes on untouched lines" do
+      path = File.join(tmp_dir, "enc.txt")
+      latin1 = +"name: André\ncity: Zürich\nport: 8080\n"
+      latin1.encode!("ISO-8859-1")
+      File.binwrite(path, latin1)
+
+      out = tool.call("file_path" => path,
+                      "edits" => [{ "old_string" => "8080", "new_string" => "9090" }])
+      expect(out).to be_a(Hash)
+
+      after = File.binread(path)
+      expect(after).to include("port: 9090".b)
+      expect(after.b).to include("Andr\xE9".b)
+      expect(after.b).to include("Z\xFCrich".b)
+    end
+
+    # #329a — an empty old_string in any edit is refused atomically (no write).
+    it "refuses the whole call when an edit has an empty old_string" do
+      path = write_file("f.txt", "hello world")
+      out = tool.call("file_path" => path,
+                      "edits" => [{ "old_string" => "", "new_string" => "X", "replace_all" => true }])
+      expect(out).to be_a(String)
+      expect(out).to include("empty")
+      expect(File.read(path)).to eq("hello world") # untouched
+    end
+
+    # FUZZY fallback: each edit tries byte-exact against the CURRENT buffer
+    # (reflecting prior edits), then a normalized fuzzy match on a miss.
+    it "applies a fuzzy (smart-quote) edit when the exact bytes don't match" do
+      path = write_file("f.txt", %(a = "x"\nb = "y"\n))
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [
+          { "old_string" => %(“x”), "new_string" => %("1") },
+          { "old_string" => %(“y”), "new_string" => %("2") }
+        ]
+      )
+      expect(out).to be_a(Hash)
+      expect(File.read(path)).to eq(%(a = "1"\nb = "2"\n))
+    end
+
+    it "fails the whole call atomically on an ambiguous fuzzy match" do
+      path = write_file("f.txt", %("a" "a"))
+      out = tool.call(
+        "file_path" => path,
+        "edits" => [{ "old_string" => %(“a”), "new_string" => %("b") }]
+      )
+      expect(out).to be_a(String)
+      expect(out).to include("matches")
+      expect(File.read(path)).to eq(%("a" "a")) # untouched
+    end
+  end
 end

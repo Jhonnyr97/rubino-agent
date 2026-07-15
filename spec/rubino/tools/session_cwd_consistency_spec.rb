@@ -5,8 +5,8 @@
 # There is ONE session-cwd source of truth (Workspace.current_cwd) and ONE
 # path-resolution seam (Tools::Base#expand_workspace_path) that anchors every
 # relative path there. A `cd subdir` done in the shell must therefore be
-# honoured by EVERY subsequent tool — read/write/edit/multi_edit/grep/glob/
-# apply_patch — not just the next shell call.
+# honoured by EVERY subsequent tool — read/write/edit/grep/glob — not just the
+# next shell call.
 RSpec.describe "session cwd consistency (#544/#545)" do # rubocop:disable RSpec/DescribeClass
   let(:workspace) { Dir.mktmpdir("cwd-root") }
   let(:subdir)    { File.join(workspace, "sub") }
@@ -15,10 +15,9 @@ RSpec.describe "session cwd consistency (#544/#545)" do # rubocop:disable RSpec/
   let(:write_tool) { Rubino::Tools::WriteTool.new }
   let(:read_tool)  { Rubino::Tools::ReadTool.new }
   let(:edit_tool)  { Rubino::Tools::EditTool.new }
-  let(:multi_tool) { Rubino::Tools::MultiEditTool.new }
+  let(:multi_tool) { Rubino::Tools::EditTool.new }
   let(:grep_tool)  { Rubino::Tools::GrepTool.new }
   let(:glob_tool)  { Rubino::Tools::GlobTool.new }
-  let(:patch_tool) { Rubino::Tools::PatchTool.new }
 
   before do
     Rubino.configuration.set("terminal", "cwd", workspace)
@@ -72,7 +71,7 @@ RSpec.describe "session cwd consistency (#544/#545)" do # rubocop:disable RSpec/
       end
     end
 
-    it "multi_edit modifies the subdir file" do
+    it "edit (edits array) modifies the subdir file" do
       on_fresh_thread do
         target = File.join(subdir, "multi.txt")
         File.write(target, "one two\n")
@@ -107,21 +106,6 @@ RSpec.describe "session cwd consistency (#544/#545)" do # rubocop:disable RSpec/
       end
     end
 
-    it "apply_patch creates a new file under subdir" do
-      on_fresh_thread do
-        shell.call("command" => "cd sub")
-        patch = <<~PATCH
-          --- /dev/null
-          +++ b/created.txt
-          @@ -0,0 +1,1 @@
-          +brand new
-        PATCH
-
-        patch_tool.call("patch" => patch)
-        expect(File.exist?(File.join(subdir, "created.txt"))).to be(true)
-        expect(File.exist?(File.join(workspace, "created.txt"))).to be(false)
-      end
-    end
   end
 
   describe "with no prior cd, a RELATIVE path anchors at the workspace root (regression)" do

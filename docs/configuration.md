@@ -338,7 +338,7 @@ tools:
 Each tool declares its own `tools.<key>` gate (`Tools::Base#config_key`). A key
 absent from config means the tool is enabled (opt-out model); only an explicit
 `false` disables it. So the keys above are the ones that ship a default — file
-tools (`read`/`write`/`edit`/`multi_edit`/`grep`/`glob`/`apply_patch`) and the
+tools (`read`/`write`/`edit`/`grep`/`glob`) and the
 rest are on by default and don't need a config entry. Note
 both web tools share a single gate: `tools.web` controls `web_fetch` **and**
 `web_search` (there is no `tools.web_fetch` / `tools.web_search`).

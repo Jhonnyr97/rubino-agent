@@ -24,11 +24,10 @@ module Rubino
       # #call, regardless of approval) are the boundary, not a per-edit prompt
       # (#427, mirrors Hermes file_safety + Claude Code acceptEdits / Codex
       # auto-edit / aider).
-      STRUCTURED_EDIT_TOOLS = %w[edit write multi_edit apply_patch].freeze
+      STRUCTURED_EDIT_TOOLS = %w[edit write].freeze
 
       # File tools whose WRITE TARGET path is run through the secret-file gate.
-      # WRITE side resolves the path from `file_path` (apply_patch from its patch
-      # text, see #secret_file_access?). The READ side (read/grep/glob) is NOT
+      # WRITE side resolves the path from `file_path`. The READ side (read/grep/glob) is NOT
       # gated: reading a secret is allowed unprompted, matching the field norm
       # (Claude Code / Codex / aider / Windsurf / LangChain all allow secret
       # reads; protection is on write/exec/network, #480). Only writing/editing
@@ -198,8 +197,8 @@ module Rubino
         #    `read /path/.env: allow` is honored.
         return pattern_result if pattern_result
 
-        # 5b. SECRET-FILE WRITE GATE. WRITING/editing (write/edit/multi_edit/
-        #     apply_patch) a SECRET path requires EXPLICIT user approval — the
+        # 5b. SECRET-FILE WRITE GATE. WRITING/editing (write/edit) a SECRET
+        #     path requires EXPLICIT user approval — the
         #     maintainer decision: not a silent allow, not a silent hard-block.
         #     Returns :ask, which the ToolExecutor turns into the approval
         #     dropdown when interactive (approved → the tool writes the secret;
@@ -287,7 +286,7 @@ module Rubino
         return shell_confirm_decision(command_str) if tool.name == "shell"
 
         # 8a. Out-of-workspace structured write → :ask (Claude-Code-aligned). A
-        #     write/edit/multi_edit/apply_patch whose target resolves OUTSIDE
+        #     write/edit whose target resolves OUTSIDE
         #     every allowed root (and is neither temp scratch nor the agent home)
         #     is NO LONGER hard-refused at the tool boundary with no recourse:
         #     it prompts, and on approval the ToolExecutor widens the workspace
@@ -311,7 +310,7 @@ module Rubino
 
         # 8b. Structured in-workspace edit symmetry (#427). Under dangerous_only,
         #    a safe `shell sed -i …` / `echo > file` runs UNPROMPTED (step 7-8),
-        #    but the structured edit/write/multi_edit/apply_patch tools are
+        #    but the structured edit/write tools are
         #    :medium and would fall through to step 9 -> :ask, which fails closed
         #    headless. That asymmetry pushes automation AWAY from the clean,
         #    read-tracked, diff-producing structured tools and TOWARD raw shell
@@ -452,10 +451,10 @@ module Rubino
 
         SecretPath.under_agent_home?(resolve_workspace_path(raw))
       end
+
       # True when this call WRITES a secret/credential path and so must be
-      # approval-gated. For write/edit/multi_edit the single target is resolved
-      # from file_path; for apply_patch every target file in the patch is
-      # checked, because one call can touch many files. Resolution is relative
+      # approval-gated. For write/edit the single target is resolved
+      # from file_path. Resolution is relative
       # to the workspace primary root so a relative `.env` resolves to the same
       # file the tool will open. (Reads are NOT gated — see #decide step 5b.)
       def secret_file_access?(tool, arguments)
@@ -478,8 +477,8 @@ module Rubino
       # land — one per target that resolves outside every allowed root, deduped;
       # empty for an in-workspace write. ToolExecutor adds them once the call is
       # cleared to run (after approval, or under yolo). Reuses #secret_targets so
-      # the SAME per-tool target resolution the secret gate uses (write/edit/
-      # multi_edit → file_path; apply_patch → every patched file) drives the
+      # the SAME per-tool target resolution the secret gate uses (write/edit →
+      # file_path) drives the
       # widen, and Tools::Base.boundary#widen_target_for applies the one shared
       # writability rule (strict-off / temp-scratch / agent-home all yield nil).
       def workspace_widen_dirs(tool, arguments)
@@ -488,34 +487,12 @@ module Rubino
         secret_targets(tool, arguments).filter_map { |t| Tools::Base.boundary.widen_target_for(t) }.uniq
       end
 
-      # The absolute path(s) a write tool will touch. apply_patch yields one per
-      # hunk target; every other gated tool yields its single file_path.
+      # The absolute path a write tool will touch — its single file_path.
       def secret_targets(tool, arguments)
-        args = arguments || {}
-        if tool.name == "apply_patch"
-          base = args[:base_path].to_s
-          base = Tools::Base.workspace_root if base.empty?
-          return patch_target_paths(args[:patch], base)
-        end
-
         raw = self.class.command_string(tool, arguments)
         return [] if raw.to_s.empty?
 
         [resolve_workspace_path(raw)]
-      end
-
-      # Extracts every destination file from a unified diff (`+++ b/<file>`, and
-      # `--- a/<file>` so a delete of a secret is gated too), absolutised against
-      # base_path. A `/dev/null` side carries no file and is skipped.
-      def patch_target_paths(patch, base_path)
-        return [] if patch.nil?
-
-        patch.to_s.each_line.filter_map do |line|
-          m = line.match(%r{^[-+]{3} [ab]/(.+)\s*$})
-          next if m.nil?
-
-          File.expand_path(m[1].strip, base_path)
-        end.uniq
       end
 
       # Anchors a relative path at the workspace primary root (matching
@@ -547,7 +524,7 @@ module Rubino
         case tool.name
         when "shell"
           args[:command].to_s
-        when "read", "write", "edit", "multi_edit", "attach_file"
+        when "read", "write", "edit", "attach_file"
           args[:file_path].to_s
         when "grep", "glob"
           # The SEARCH ROOT (a dir or a file) is what the secret gate resolves —

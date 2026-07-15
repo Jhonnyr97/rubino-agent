@@ -9,7 +9,7 @@ require "ruby_llm"
 
 # SECRET-FILE WRITE APPROVAL GATE (#480 — read gate removed).
 #
-# WRITING/editing (write/edit/multi_edit/apply_patch) a SECRET/credential path
+# WRITING/editing (write/edit) a SECRET/credential path
 # requires EXPLICIT user approval — not a silent allow, not a silent hard-block.
 # The gate lives in Security::ApprovalPolicy#decide (→ :ask) and is enforced by
 # ToolExecutor: interactive approve → the tool runs; deny → refused; headless
@@ -57,17 +57,16 @@ RSpec.describe "secret-file write approval gate (#480)" do
   describe "ApprovalPolicy#decide" do
     {
       "write" => { "file_path" => ".env", "content" => "x" },
-      "edit" => { "file_path" => ".env", "old_string" => "a", "new_string" => "b" },
-      "multi_edit" => { "file_path" => ".env", "edits" => [{ "old_string" => "a", "new_string" => "b" }] }
+      "edit" => { "file_path" => ".env", "old_string" => "a", "new_string" => "b" }
     }.each do |tool_name, args|
       it "ASKS for #{tool_name} of a secret path" do
         expect(policy.decide(make_tool(name: tool_name), arguments: args)).to eq(:ask)
       end
     end
 
-    it "ASKS for apply_patch that targets a secret file (multi-file aware)" do
-      patch = "--- /dev/null\n+++ b/.env\n@@ -0,0 +1,1 @@\n+API_KEY=leak\n"
-      expect(policy.decide(make_tool(name: "apply_patch"), arguments: { "patch" => patch })).to eq(:ask)
+    it "ASKS for an edit (edits array form) of a secret path" do
+      args = { "file_path" => ".env", "edits" => [{ "old_string" => "a", "new_string" => "b" }] }
+      expect(policy.decide(make_tool(name: "edit"), arguments: args)).to eq(:ask)
     end
 
     # The read-side APPROVAL gate stays removed (#480): reading a secret

@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **28 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **26 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `multi_edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `apply_patch`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **23 rows** (config groups), not 28: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **21 rows** (config groups), not 26: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -47,7 +47,7 @@ Parameters: file_path, offset, limit, compress
 
 ### write
 
-Write content to a file, overwriting any existing content. Creates parent directories if needed. Use `edit`/`multi_edit` to modify an existing file in place.
+Write content to a file, overwriting any existing content. Creates parent directories if needed. Use `edit` to modify an existing file in place.
 
 ```
 Risk: medium
@@ -58,18 +58,12 @@ Parameters: file_path, content
 
 Exact string replacement in a file. The old text must match exactly (including whitespace). More precise than full file writes.
 
-```
-Risk: medium
-Parameters: file_path, old_string, new_string, replace_all
-```
-
-### multi_edit
-
-Apply multiple exact string replacements to a single file atomically. Edits apply sequentially; if any edit fails, no changes are written.
+For a **single** replacement, pass `old_string`/`new_string` (and `replace_all` to replace every occurrence). For **multiple** replacements in one file, pass an `edits` array instead: the edits apply atomically (all-or-nothing) and sequentially (each later edit sees the result of earlier ones); if any edit fails, no changes are written. Use `old_string`/`new_string` **or** `edits`, not both.
 
 ```
 Risk: medium
-Parameters: file_path, edits[] (each with old_string, new_string, replace_all)
+Parameters: file_path, old_string, new_string, replace_all,
+            edits[] (each with old_string, new_string, replace_all)
 ```
 
 ### grep
@@ -148,15 +142,6 @@ Evaluate Ruby code and return the result. The snippet runs in a **separate Ruby 
 ```
 Risk: medium
 Parameters: code
-```
-
-### apply_patch
-
-Apply unified diff patches to files.
-
-```
-Risk: medium
-Parameters: patch, base_path
 ```
 
 ### web_fetch
@@ -472,7 +457,7 @@ end
 
 Receives the display label (e.g. `"edit"`, `"echo (mcp:chaos)"`) and the raw arguments
 hash. Returns a complete formatted string for the approval prompt, or `nil` to use the
-default. The `edit` and `multi_edit` tools ship with previews that show the diff/file
+default. The `edit` tool ships with a preview that shows the diff/file
 content inline at the approval prompt.
 
 When a tool does **not** provide a custom preview, the generic key-value formatter

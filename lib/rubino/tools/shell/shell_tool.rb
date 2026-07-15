@@ -377,7 +377,7 @@ module Rubino
 
       # The session current working directory for foreground shells — now the
       # ONE unified holder, Workspace.current_cwd, which is also where every
-      # relative file tool (read/write/edit/multi_edit/grep/glob/apply_patch)
+      # relative file tool (read/write/edit/grep/glob)
       # anchors. A `cd subdir` here is therefore honoured by the next file write
       # too, not just the next shell call (#544/#545). When carry-over is off,
       # foreground commands default to the workspace root, like the pre-#545

@@ -89,7 +89,7 @@ Everything after the closing `---` is the system prompt body.
 | `Read` | `read` |
 | `Write` | `write` |
 | `Edit` | `edit` |
-| `MultiEdit` | `multi_edit` |
+| `MultiEdit` | `edit` |
 | `WebSearch` | `web_search` |
 | `WebFetch` | `web_fetch` |
 | `Task` | `task` |

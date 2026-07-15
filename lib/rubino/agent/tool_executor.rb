@@ -735,7 +735,7 @@ module Rubino
         return "#{label} wants to run" if pairs.empty?
 
         # Delegate to the tool's own presentation layer for custom previews
-        # (edit → diff, multi_edit → per-edit blocks, etc.). Fall back to the
+        # (edit → diff or per-edit blocks, etc.). Fall back to the
         # generic key-value formatter when the tool doesn't provide one.
         if (preview = tool.presentation.preview_arguments(label, arguments))
           return preview

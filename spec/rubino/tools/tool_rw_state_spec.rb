@@ -32,7 +32,7 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
 
   def reader = Rubino::Tools::ReadTool.new.tap { |t| t.read_tracker = tracker }
   def editor = Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = tracker }
-  def multi  = Rubino::Tools::MultiEditTool.new.tap { |t| t.read_tracker = tracker }
+  def multi  = Rubino::Tools::EditTool.new.tap { |t| t.read_tracker = tracker }
   def writer = Rubino::Tools::WriteTool.new.tap { |t| t.read_tracker = tracker }
   def text(result) = result.is_a?(Hash) ? result[:output].to_s : result.to_s
 
@@ -115,7 +115,7 @@ RSpec.describe "r5 tool read/write state" do # rubocop:disable RSpec/DescribeCla
       expect(text(again)).to include("[DUPLICATE READ]")
     end
 
-    it "the same recovery works for a failed multi_edit" do
+    it "the same recovery works for a failed edits-array call" do
       path = write_file("x.rb", "real_name = 1\n")
       reader.call("file_path" => path)
       failed = multi.call("file_path" => path,

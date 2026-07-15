@@ -40,7 +40,6 @@ RSpec.describe Rubino::Tools::Registry do
       expect(described_class.find("read")).to        be_a(Rubino::Tools::ReadTool)
       expect(described_class.find("write")).to       be_a(Rubino::Tools::WriteTool)
       expect(described_class.find("edit")).to        be_a(Rubino::Tools::EditTool)
-      expect(described_class.find("multi_edit")).to  be_a(Rubino::Tools::MultiEditTool)
       expect(described_class.find("shell")).to       be_a(Rubino::Tools::ShellTool)
       expect(described_class.find("shell_output")).to be_a(Rubino::Tools::ShellOutputTool)
       expect(described_class.find("shell_input")).to be_a(Rubino::Tools::ShellInputTool)
