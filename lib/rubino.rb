@@ -102,7 +102,7 @@ module Rubino
         loader.ignore(File.expand_path("rubino/llm/stream_tool_call_recovery.rb", __dir__))
         # tools/ subdirectories are purely organisational — the files inside define
         # flat Rubino::Tools::XxxTool constants, NOT Rubino::Tools::Subdir::XxxTool.
-        # Eager-loading is handled by Tools::Registry#register_rubino_tools!.
+        # Eager-loading is handled by Tools::Registry#load_rubino_tool_files!.
         tools_root = File.expand_path("rubino/tools", __dir__)
         Dir.children(tools_root).each do |child|
           next unless File.directory?(File.join(tools_root, child))

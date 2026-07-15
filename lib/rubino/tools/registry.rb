@@ -87,9 +87,13 @@ module Rubino
           # Eager-load all tool files first so constants are defined regardless
           # of Zeitwerk's autoloading scope (tools live in flat Rubino::Tools::
           # but files are organised into subdirectories that Zeitwerk ignores).
-          register_rubino_tools!
+          # Loading does NOT register — this explicit list below is the single
+          # source of truth for the CANONICAL tool ORDER (must match docs/tools.md
+          # and stay static for the KV-cache prefix); finalize_registrations! runs
+          # last as a deterministic safety-net for anything not listed here.
+          load_rubino_tool_files!
 
-          # ── Legacy Tools::Base subclasses (explicit registration) ──
+          # ── Core tools, in canonical registration order ──
           register(Rubino::Tools::ReadTool.new)
           register(Rubino::Tools::WriteTool.new)
           register(Rubino::Tools::EditTool.new)
@@ -115,10 +119,12 @@ module Rubino
           # Markdown IN-PROCESS (Rubino::Documents) and frames it as untrusted
           # data, so attachment bytes enter context only when the model asks.
           register(Rubino::Tools::ReadAttachmentTool.new)
+          # Vision: describe/interpret an image via the auxiliary multimodal
+          # model. Hidden by the registry when no aux is configured
+          # (enabled_tools → aux_dependency_satisfied?), so listing it here is
+          # safe. Must be registered explicitly like every other tool.
+          register(Rubino::Tools::VisionTool.new)
 
-          # ── Rubino::Tool subclasses (auto-registered via inherited hook) ──
-          # Already loaded by register_rubino_tools! above — their inherited
-          # hook fired automatically. Still need explicit registration for:
           # Skills tool: loads a skill body (Level 2) and bundled files
           # (Level 3) on demand. Gated like any tool via `tools.skill`.
           register(Rubino::Skills::SkillTool.new)
@@ -145,6 +151,11 @@ module Rubino
           # spilled original back — deliberately NO cat-able path is printed, so
           # a small model can't shell-re-inflate the output compression shrank.
           register(Rubino::Tools::RetrieveOutputTool.new) if tool_output_compression_enabled_default?
+
+          # Safety-net: append (name-sorted, deterministically) any concrete tool
+          # not explicitly registered above — e.g. an out-of-tree custom tool.
+          # Built-ins are all listed above, so this normally registers nothing.
+          Rubino::Tool.finalize_registrations!
         end
 
         # True when compression is enabled in the resolved config, used to gate
@@ -180,25 +191,23 @@ module Rubino
 
         private
 
-        # Eager-loads every tool file under lib/rubino/tools/ so Rubino::Tool
-        # subclasses get their `inherited` hook fired → auto-registration.
-        # Legacy Tools::Base subclasses are loaded too but won't auto-register
-        # (they're registered explicitly above in register_defaults!).
-        # Safe to call after Zeitwerk is set up — requires the files directly.
-        def register_rubino_tools!
+        # Eager-loads every tool file under lib/rubino/tools/ so all tool
+        # subclasses (and their constants) are DEFINED. Does NOT register them:
+        # registration ORDER is owned by the curated explicit list in
+        # register_defaults!, and finalize_registrations! runs there (last) as a
+        # deterministic safety-net. Auto-registering here — in filesystem-glob
+        # order, before the curated list — is what made the runtime tool order
+        # non-deterministic across machines (#tools_doc_drift order). Safe to
+        # call after Zeitwerk is set up — requires the files directly.
+        def load_rubino_tool_files!
           tools_dir = ::File.join(__dir__)
           Dir[::File.join(tools_dir, "**/*.rb")].each do |file|
             require file
           end
         rescue StandardError => e
           # A single broken tool file must not crash the whole boot.
-          Rubino.logger&.warn(event: "registry.register_rubino_tools_failed",
+          Rubino.logger&.warn(event: "registry.load_rubino_tool_files_failed",
                               error: e.message, error_class: e.class.name)
-        ensure
-          # Deferred registration: inherited fires BEFORE the class body,
-          # so we collect subclasses and register them now — after all
-          # requires are done and every body is fully defined.
-          Rubino::Tool.finalize_registrations!
         end
 
         def tool_enabled_in_config?(tool, config)

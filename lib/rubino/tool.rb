@@ -94,12 +94,21 @@ module Rubino
       # replaying after a Registry.reset! just re-populates the
       # freshly-reset registry — no ObjectSpace, no divergence between
       # first boot and re-registration.
+      # Deterministic safety-net: registers every collected concrete subclass
+      # that a curated registrar hasn't ALREADY placed, in a stable name-sorted
+      # order (never filesystem-glob order). The canonical tool order is owned by
+      # Registry#register_defaults!'s explicit list, which runs first; this only
+      # appends genuinely-unlisted tools (e.g. an out-of-tree custom tool) so a
+      # new tool file can't silently vanish, while keeping the order reproducible
+      # across machines. Idempotent: an already-registered name is skipped.
       def finalize_registrations!
-        @_tool_subclasses.each do |sc|
-          next if sc.abstract_tool? || sc.manual_registration?
-
-          Tools::Registry.register(sc.new)
-        end
+        @_tool_subclasses
+          .reject { |sc| sc.abstract_tool? || sc.manual_registration? }
+          .map(&:new)
+          .sort_by(&:name)
+          .each do |tool|
+            Tools::Registry.register(tool) unless Tools::Registry.find(tool.name)
+          end
       end
 
       # Test-only: clear the append-only subclass list so test isolation
