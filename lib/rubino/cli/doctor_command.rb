@@ -486,7 +486,7 @@ module Rubino
       def check_document_converters
         ui = Rubino.ui
         ui.blank_line
-        ui.info("Optional (document converters, in-process via read_attachment):")
+        ui.info("Optional (document converters, in-process via the `read` tool):")
 
         Rubino::Documents::Registry.capabilities.each do |format, available|
           if available

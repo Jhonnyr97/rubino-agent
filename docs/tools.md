@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **26 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **25 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `read_attachment`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **21 rows** (config groups), not 26: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **20 rows** (config groups), not 25: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -38,7 +38,9 @@ below describe the shipped (uncompressed) behaviour.
 
 ### read
 
-Read a text file from the filesystem with line numbers (cat -n style). Long lines are truncated; the default window is the first chunk of lines.
+The unified reader. A **text/code file** is returned with line numbers (cat -n style); `offset`/`limit` page through it and long lines are truncated. A **rich document** (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML) is auto-detected and converted to Markdown **in-process** (no external `markitdown`/`pdftotext`), then returned framed as untrusted user data (nonce-delimited, defanged) — folding in the former standalone `read_attachment` tool.
+
+The document route is driven by the **detected file kind** (fail-closed classification: regular-file check, workspace confine, size cap, magic-bytes-wins MIME) plus the dedicated-converter set, so a text file merely *named* `report.docx` still reads as text while converted-document bytes never ride read's trusted output/`:code`-redaction path (a converted document escalates to the full `:shell` redaction). `offset`/`limit`/`compress` apply to text files only. A document too large to inline is spilled to a file you then page with `read`/`grep`; if a format has no in-process converter (its optional gem isn't installed) an actionable shell-extraction hint is returned instead of raising. Conversion is provided by the in-repo `Rubino::Documents` module, whose CORE converters lean on optional MIT gems (`roo`, `docx`, `pdf-reader`, `ruby_powerpoint`) that are lazily required — none is a hard dependency, and `rubino doctor` reports which formats are available in-process.
 
 ```
 Risk: low
@@ -146,7 +148,7 @@ Parameters: code
 
 ### web_fetch
 
-Fetch content from a URL and return it as text. Useful for reading documentation, API references, and web pages. Convertible documents (PDF, DOCX, XLSX, PPTX) are fetched, spilled to disk, and converted to Markdown in-process via `Rubino::Documents` (the same engine as `read_attachment`); opaque binaries (images, audio, video, archives) are still refused.
+Fetch content from a URL and return it as text. Useful for reading documentation, API references, and web pages. Convertible documents (PDF, DOCX, XLSX, PPTX) are fetched, spilled to disk, and converted to Markdown in-process via `Rubino::Documents` (the same engine the `read` tool uses for documents); opaque binaries (images, audio, video, archives) are still refused.
 
 ```
 Risk: low
@@ -185,7 +187,7 @@ When the response Content-Type is a convertible office format, `web_fetch` spill
 | XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `roo` |
 | PPTX | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `ruby_powerpoint` |
 
-The converted Markdown is framed as untrusted user data (same nonce-delimited preamble as `read_attachment`). When a format's optional gem isn't installed, the tool returns an actionable hint telling the user to run `rubino setup` (which interactively offers to install `pdf-reader`) or `gem install <name>`. `rubino doctor` reports which document formats are available in-process and names the exact gem for each missing one.
+The converted Markdown is framed as untrusted user data (same nonce-delimited preamble the `read` tool uses for documents). When a format's optional gem isn't installed, the tool returns an actionable hint telling the user to run `rubino setup` (which interactively offers to install `pdf-reader`) or `gem install <name>`. `rubino doctor` reports which document formats are available in-process and names the exact gem for each missing one.
 
 Large converted documents (over the inline text budget, ~100 KB) are written to a temp file with a pointer to read/search them with `read`/`grep`. Documents that exceed the 20 MB conversion cap are refused with a hint to narrow them first.
 
@@ -263,15 +265,6 @@ Attach a previously-written file to the current turn as a downloadable artifact 
 ```
 Risk: low
 Parameters: file_path, filename
-```
-
-### read_attachment
-
-Read an attached document on demand, converting it to Markdown **in-process** (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML, plain/code) and returning the text framed as untrusted user data (nonce-delimited, defanged). Prefer this over shelling out to `markitdown`/`pdftotext`. The path is classified by the fail-closed attachment safety pipeline (regular-file check, workspace confine, size cap, magic-bytes MIME) before any conversion. Oversized documents are routed through the `summarize` auxiliary model instead of flooding the conversation; if the format has no in-process converter (its optional extraction gem isn't installed), an actionable shell-extraction hint is returned instead of raising. The conversion is provided by the in-repo `Rubino::Documents` module; its CORE converters lean on optional MIT gems (`roo`, `docx`, `pdf-reader`, `ruby_powerpoint`) that are lazily required — none is a hard dependency, and `rubino doctor` reports which formats are available in-process.
-
-```
-Risk: low
-Parameters: file_path
 ```
 
 ### vision

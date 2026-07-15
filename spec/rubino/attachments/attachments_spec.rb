@@ -242,13 +242,13 @@ RSpec.describe Rubino::Attachments do
       expect(out).not_to include("PK")
     end
 
-    it "points a document at read_attachment when an in-process converter exists" do
+    it "points a document at the `read` tool when an in-process converter exists" do
       p = File.join(dir, "a.pdf")
       File.binwrite(p, "%PDF-1.4\n")
       allow(Rubino::Documents).to receive(:supported?).and_return(true)
       out = described_class::Preamble.for(classify(p))
       expect(out).to include("[Attached document:")
-      expect(out).to include("read_attachment")
+      expect(out).to include("`read` tool")
     end
 
     it "falls back to the shell-extraction hint when no in-process converter exists" do
@@ -285,7 +285,7 @@ RSpec.describe Rubino::Attachments do
     # A PDF/document that merely sniffed as visual still gets the document path.
     it "keeps the document fallback for a non-image visual attachment" do
       out = described_class::Preamble.no_multimodal_warning("/x/doc.pdf", "application/pdf")
-      expect(out).to include("read_attachment")
+      expect(out).to include("`read` tool")
       expect(out).to include("markitdown")
     end
   end

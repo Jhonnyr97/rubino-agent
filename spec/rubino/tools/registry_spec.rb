@@ -77,9 +77,9 @@ RSpec.describe Rubino::Tools::Registry do
     end
 
     it "does NOT mark an underscore-named built-in as MCP" do
-      described_class.register(Rubino::Tools::ReadAttachmentTool.new)
+      described_class.register(Rubino::Tools::SessionSearchTool.new)
       described_class.register(Rubino::Tools::ShellOutputTool.new)
-      expect(described_class.display_label("read_attachment")).to eq("read_attachment")
+      expect(described_class.display_label("session_search")).to eq("session_search")
       expect(described_class.display_label("shell_output")).to eq("shell_output")
     end
 

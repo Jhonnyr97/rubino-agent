@@ -42,20 +42,20 @@ module Rubino
         else
           "[Attachment #{path} (#{mime}) is visual and cannot be read: no multimodal " \
             "model is configured. Configure an auxiliary vision model, or -- if it is a " \
-            "PDF/document -- read its text with the `read_attachment` tool " \
+            "PDF/document -- read its text with the `read` tool " \
             "(fallback: extract with a shell tool such as `markitdown #{path}`).]"
         end
       end
 
       # Attached non-image document. With the in-process converter available for
-      # this format, instruct the model to use the `read_attachment` tool, which
-      # converts to Markdown in-process and frames the result as untrusted data.
-      # Fall back to the shell-extraction hint only when no in-process converter
-      # can handle the format (its optional gem isn't installed).
+      # this format, instruct the model to use the `read` tool, which converts to
+      # Markdown in-process and frames the result as untrusted data. Fall back to
+      # the shell-extraction hint only when no in-process converter can handle the
+      # format (its optional gem isn't installed).
       def document(c)
         if Documents.supported?(mime: c.mime, path: c.path)
           "[Attached document: #{c.path} (#{c.mime})]\n" \
-            "Not inlined. Read it with the `read_attachment` tool (file_path: #{c.path}); " \
+            "Not inlined. Read it with the `read` tool (file_path: #{c.path}); " \
             "it converts the document to Markdown in-process and frames the result as " \
             "untrusted data. Do not assume contents you have not read."
         else
@@ -115,9 +115,9 @@ module Rubino
 
       # The reusable nonce-framed untrusted envelope: defang +body+, wrap it in a
       # per-call high-entropy nonce delimiter the attacker can't forge, prefix
-      # +header+. Shared by #text (inline file content) and the read_attachment
-      # tool (converted-document Markdown) so there is exactly ONE framing of
-      # untrusted user data, never a second invented one.
+      # +header+. Shared by #text (inline file content) and the `read` tool's
+      # document route (converted-document Markdown) so there is exactly ONE
+      # framing of untrusted user data, never a second invented one.
       def frame_untrusted(header, body)
         nonce = SecureRandom.hex(8)
         clean = Defang.call(body)

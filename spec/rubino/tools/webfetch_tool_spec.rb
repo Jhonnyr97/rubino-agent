@@ -371,7 +371,7 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       result = tool.call("url" => "https://example.com/huge.pdf")
       expect(result).to start_with("Error: fetched")
       expect(result).to include("exceeds the #{max} bytes")
-      expect(result).to include("read_attachment")
+      expect(result).to include("`read` tool")
     end
   end
 

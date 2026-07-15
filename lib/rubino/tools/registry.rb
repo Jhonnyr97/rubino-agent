@@ -28,7 +28,7 @@ module Rubino
         # an MCP tool shows its `<bare> (mcp:<server>)` source while a built-in
         # renders unchanged. Detection is driven off the registered object being
         # an MCP wrapper (#mcp?), NEVER off the name's shape, so a built-in whose
-        # name legitimately contains an underscore (read_attachment, shell_output)
+        # name legitimately contains an underscore (session_search, shell_output)
         # is never mistaken for a `<server>_<tool>` MCP name. Falls back to the
         # bare name when the tool isn't registered (defensive — the model-facing
         # name is always a safe label).
@@ -113,10 +113,9 @@ module Rubino
           register(Rubino::Tools::MemoryTool.new)
           register(Rubino::Tools::SessionSearchTool.new)
           register(Rubino::Tools::AttachFileTool.new)
-          # Gated, on-demand attachment reader (#6): converts a document to
-          # Markdown IN-PROCESS (Rubino::Documents) and frames it as untrusted
-          # data, so attachment bytes enter context only when the model asks.
-          register(Rubino::Tools::ReadAttachmentTool.new)
+          # (read_attachment was folded into `read` (#6): the unified reader now
+          # detects a document and converts it to Markdown IN-PROCESS, framing it
+          # as untrusted data — one tool reads both text files and documents.)
           # Vision: describe/interpret an image via the auxiliary multimodal
           # model. Hidden by the registry when no aux is configured
           # (enabled_tools → aux_dependency_satisfied?), so listing it here is

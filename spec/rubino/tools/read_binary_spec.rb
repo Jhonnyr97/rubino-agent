@@ -68,12 +68,22 @@ RSpec.describe Rubino::Tools::ReadTool do
     # (xref tables, /Length operators) passed the NUL + non-printable
     # checks; the binary bytes that followed then crashed the run when
     # JSON.generate hit them at the event boundary.
-    it "refuses a PDF identified by the %PDF- magic header" do
+    #
+    # After the read_attachment fold-in (#6), a real PDF is no longer treated as
+    # an opaque binary: it is DETECTED as a document and routed to the in-process
+    # converter (or, if no converter/gem, the shell-extraction hint). Either way
+    # the raw binary bytes NEVER reach the cat -n path that crashed session 31 —
+    # so the safety concern is still met, via the document route instead of the
+    # binary refusal.
+    it "routes a %PDF- file to the document converter, not the binary refusal" do
       pdf_body = "%PDF-1.4\n" + ("%PDFcomment line\n" * 50) + "stream\n\xDE\xAD\xBE\xEF\nendstream\n"
       path = write_binary("doc.pdf", pdf_body)
       out  = tool.call("file_path" => path)
-      expect(out[:output]).to include("binary file")
-      expect(out[:error_code]).to eq(:binary_file)
+      payload = out.is_a?(Hash) ? out[:output] : out
+      # Not the opaque-binary refusal, and no raw binary bytes leaked into output.
+      expect(out.is_a?(Hash) ? out[:error_code] : nil).not_to eq(:binary_file)
+      expect(payload).not_to include("xxd")
+      expect(payload.b).not_to include("\xDE\xAD\xBE\xEF".b)
     end
 
     it "refuses a PNG identified by its magic header" do

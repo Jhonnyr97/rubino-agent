@@ -138,7 +138,7 @@ module Rubino
 
         ui.blank_line
         ui.info("In-process document conversion")
-        ui.status("  Read PDFs & Office docs inline (web_fetch and read_attachment")
+        ui.status("  Read PDFs & Office docs inline (the `read` and `web_fetch` tools")
         ui.status("  convert them to Markdown without shelling out).")
         unless prompt_enable?("Install pdf-reader to enable?")
           ui.status("Skipped — PDF conversion stays inert until `gem install pdf-reader`.")

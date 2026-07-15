@@ -45,9 +45,9 @@ RSpec.describe Rubino::Run::Executor do
         out = executor.send(:augment_input_with_attachments, "hi", [pdf])
         expect(out).to include("[Attached document: #{real}")
         # With the in-process converter available for PDF (pdf-reader), the
-        # document preamble points at read_attachment rather than the markitdown
+        # document preamble points at the `read` tool rather than the markitdown
         # shell-hint; the hint is the nil-fallback when no converter exists.
-        expect(out).to include("read_attachment")
+        expect(out).to include("`read` tool")
         expect(out).not_to include("- file:")
       end
     end

@@ -18,9 +18,9 @@ RSpec.describe Rubino::Context::EnvironmentInspector do
       end
     end
 
-    it "advertises the in-process read_attachment document capability + formats (#6)" do
+    it "advertises the in-process `read` document capability + formats (#6)" do
       rendered = described_class.new.render
-      expect(rendered).to include("read_attachment")
+      expect(rendered).to include("`read` tool")
       expect(rendered).to include("converts these formats to Markdown in-process")
       # at minimum the always-available pure-ruby formats are listed
       expect(rendered).to match(/csv|html|json/)

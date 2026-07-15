@@ -328,6 +328,11 @@ module Rubino
           artifact     = raw[:artifact]   || raw["artifact"]
           compress_hint = raw[:compress_hint] || raw["compress_hint"]
           label = raw[:label] || raw["label"]
+          # Per-result redaction override: a tool whose class profile is weaker
+          # than a SPECIFIC result needs (the unified `read`'s :code profile vs a
+          # converted DOCUMENT, which is untrusted and must get the full :shell
+          # pattern set) can escalate for that one result. Absent → class default.
+          redaction_override = raw[:redaction_profile] || raw["redaction_profile"]
         else
           text = raw
           metrics = nil
@@ -337,6 +342,7 @@ module Rubino
           artifact = nil
           compress_hint = nil
           label = nil
+          redaction_override = nil
         end
         # ── Redaction chokepoint (centralised here so no tool can leak secrets) ──
         # The resolved redactor instance reads the tool's redaction_profile and
@@ -344,7 +350,8 @@ module Rubino
         # they enter context, the compressor, or the UI. Shell streaming (below)
         # uses the same instance for live line-by-line redaction.
         redactor = Security::Redactor.resolve
-        profile  = tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell
+        profile  = redaction_override ||
+                   (tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell)
         # Body redaction runs early (never compressed — human-facing only).
         body = redactor.redact(body, profile: profile) if body && profile != :none
         # Skip the body block when the tool already streamed its output line by

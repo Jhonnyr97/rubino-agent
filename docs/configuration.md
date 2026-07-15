@@ -107,7 +107,7 @@ auxiliary:
     model: ""            # "auto-vision" lets an OpenAI-compatible gateway pick
     base_url: null
     timeout: 120
-  summarize:             # used by skill distillation and oversized-document reads (read_attachment)
+  summarize:             # used by skill distillation and oversized-document reads (the `read` tool)
     provider: "main"
     model: ""
     base_url: null

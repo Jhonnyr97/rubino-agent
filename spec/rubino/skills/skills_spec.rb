@@ -527,10 +527,10 @@ RSpec.describe "Skills (directory layout + disclosure)" do
           description: d
           metadata:
             hermes:
-              fallback_for_tools: [read_attachment, web_fetch]
+              fallback_for_tools: [session_search, web_fetch]
         YAML
         skill = skill_from_yaml(yaml)
-        expect(skill.fallback_for_tools).to contain_exactly("read_attachment", "web_fetch")
+        expect(skill.fallback_for_tools).to contain_exactly("session_search", "web_fetch")
       end
 
       it "returns empty array when metadata.hermes is absent entirely" do
@@ -1264,7 +1264,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
 
       it "hides a fallback_for skill when its primary tool IS present" do
         Dir.mktmpdir do |dir|
-          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[read_attachment])
+          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[session_search])
           write_gated(dir, "always-skill")
 
           reg = Rubino::Skills::Registry.new(
@@ -1272,8 +1272,8 @@ RSpec.describe "Skills (directory layout + disclosure)" do
             include_builtin: false
           )
 
-          # read_attachment IS available → fallback-reader is hidden.
-          idx = described_class.new(registry: reg, active_tools: %w[read_attachment shell])
+          # session_search IS available → fallback-reader is hidden.
+          idx = described_class.new(registry: reg, active_tools: %w[session_search shell])
           out = idx.render
           expect(out).not_to include("fallback-reader")
           expect(out).to include("always-skill")
@@ -1282,7 +1282,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
 
       it "shows a fallback_for skill when its primary tool is NOT present" do
         Dir.mktmpdir do |dir|
-          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[read_attachment])
+          write_gated(dir, "fallback-reader", "fallback_for_tools" => %w[session_search])
           write_gated(dir, "always-skill")
 
           reg = Rubino::Skills::Registry.new(
@@ -1290,7 +1290,7 @@ RSpec.describe "Skills (directory layout + disclosure)" do
             include_builtin: false
           )
 
-          # read_attachment is NOT available → fallback-reader should be shown.
+          # session_search is NOT available → fallback-reader should be shown.
           idx = described_class.new(registry: reg, active_tools: %w[shell])
           out = idx.render
           expect(out).to include("fallback-reader")

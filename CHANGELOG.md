@@ -2,16 +2,29 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`read_attachment` folded into `read` (one unified reader).** The standalone
+  `read_attachment` tool is removed; `read` now auto-detects a rich document
+  (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML) and converts it to Markdown
+  in-process via `Rubino::Documents`, framed as untrusted user data, while an
+  ordinary text/code file keeps its `cat -n` behaviour. The framing switch is
+  driven by the detected file kind (fail-closed magic-bytes classification), and
+  a converted document escalates to the full `:shell` secret redaction rather
+  than read's weaker `:code` profile — so untrusted document bytes never ride the
+  trusted-source path. Built-in tool count drops from 26 to 25. Mirrors Claude
+  Code's single unified `Read`.
+
 ### Added
 
 - **install.sh gains `INSTALL_DOCS` opt-in.** The installer now offers to install
-  `pdf-reader` (for in-process PDF reading in `web_fetch`/`read_attachment`),
+  `pdf-reader` (for in-process PDF reading in `web_fetch` and `read`),
   mirroring the existing `INSTALL_JS` pattern with env-var override
   (`RUBINO_INSTALL_DOCS`), interactive prompt (default no), and non-fatal failure.
 - **`web_fetch` converts documents to Markdown instead of refusing them.** PDF,
   DOCX, XLSX, and PPTX fetched via `web_fetch` are now spilled to disk and
-  converted to Markdown in-process via `Rubino::Documents` (the same engine as
-  `read_attachment`). Opaque binaries (images, audio, video, archives) are still
+  converted to Markdown in-process via `Rubino::Documents` (the same engine the
+  `read` tool uses for documents). Opaque binaries (images, audio, video, archives) are still
   refused. Each format needs an optional gem (`pdf-reader`, `docx`, `roo`,
   `ruby_powerpoint`); when a gem is missing, `web_fetch` returns an actionable
   hint instead of failing silently.

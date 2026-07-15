@@ -44,7 +44,7 @@ module Rubino
       }.freeze
 
       # Refuse to spill a converted document larger than this (20 MB).
-      # Mirror of ReadAttachmentTool's MAX_SPILL_BYTES.
+      # Mirror of ReadTool's MAX_SPILL_BYTES (document route).
       DOC_SPILL_BYTES = 20_000_000
 
       # Safety-fallback thresholds for readability extraction. If the main-content
@@ -251,7 +251,7 @@ module Rubino
         if raw_bytes.bytesize > max_bytes
           return "Error: fetched #{url} (#{content_type}, #{raw_bytes.bytesize} bytes) " \
                  "exceeds the #{max_bytes} bytes document size cap. Download it yourself " \
-                 "and pass it to read_attachment."
+                 "and read it with the `read` tool."
         end
 
         spill_path = spill_document(raw_bytes, content_type, url)

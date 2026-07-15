@@ -53,5 +53,21 @@ module Rubino
     def supported?(mime: nil, path: nil)
       !Registry.for(mime: mime, path: path).nil?
     end
+
+    # True when the (mime, path) names a RICH document handled by a DEDICATED
+    # converter (pdf/docx/xlsx/pptx/csv/json/xml/html) — i.e. anything but the
+    # plain-text/code passthrough. Availability-INDEPENDENT on purpose: a PDF on
+    # an install without `pdf-reader` is still a DOCUMENT (the caller then
+    # degrades to the shell-extraction hint), never mis-read as plain text. This
+    # is the switch the unified `read` tool consults to frame a converted
+    # document as UNTRUSTED data while ordinary text/code takes the normal cat -n
+    # path — so the framing follows the DETECTED kind, not the caller's guess.
+    def document_format?(mime: nil, path: nil)
+      Registry.converters.any? do |klass|
+        next false if klass == Converters::Plain
+
+        klass.new.accepts?(mime, path)
+      end
+    end
   end
 end
