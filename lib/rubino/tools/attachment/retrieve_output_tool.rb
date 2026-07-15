@@ -16,6 +16,12 @@ module Rubino
     # tool-results dir, sanitizing the id the SAME way ToolExecutor#spill_full_output
     # sanitizes the call_id, so a `../` in the id can't traverse out.
     class RetrieveOutputTool < Rubino::Tool
+      # Registered EXPLICITLY and conditionally by Tools::Registry#register_defaults!
+      # (only when tool_output_compression is enabled), so it must opt out of the
+      # unconditional finalize_registrations! auto-sweep — otherwise it lands in
+      # the registry even with compression off, inflating the tool count.
+      manual_registration!
+
       describe "Retrieve the full, uncompressed output of an earlier tool call by its id — " \
                   "use ONLY when a specific hidden line is needed; the compressed view already " \
                   "keeps the important content (errors/failures, summary, changes)."

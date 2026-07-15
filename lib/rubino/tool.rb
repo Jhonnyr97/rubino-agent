@@ -96,7 +96,7 @@ module Rubino
       # first boot and re-registration.
       def finalize_registrations!
         @_tool_subclasses.each do |sc|
-          next if sc.abstract_tool?
+          next if sc.abstract_tool? || sc.manual_registration?
 
           Tools::Registry.register(sc.new)
         end
@@ -114,6 +114,21 @@ module Rubino
 
       def abstract_tool?
         @abstract_tool == true
+      end
+
+      # Opt a CONCRETE tool out of the automatic finalize_registrations!
+      # sweep, so a registrar registers it explicitly and CONDITIONALLY
+      # (e.g. retrieve_output only when tool_output_compression is on — see
+      # Tools::Registry#register_defaults!). Without this, the `inherited`
+      # hook collects the subclass and finalize_registrations! would register
+      # it unconditionally, defeating the gate. Checked in finalize (not in
+      # `inherited`, which fires before the class body sets this).
+      def manual_registration!
+        @manual_registration = true
+      end
+
+      def manual_registration?
+        @manual_registration == true
       end
 
       # ── ONE param spelling (unified positional-desc) ──
