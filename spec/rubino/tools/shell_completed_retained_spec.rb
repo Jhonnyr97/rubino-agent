@@ -9,9 +9,13 @@
 # buffer + exit status stay retrievable and `any?` keeps the tools exposed,
 # bounded by RETIRED_TTL / MAX_RETIRED.
 RSpec.describe "Completed background shell output stays reachable (#78)" do # rubocop:disable RSpec/DescribeClass
-  let(:shell)        { Rubino::Tools::ShellTool.new }
-  let(:shell_output) { Rubino::Tools::ShellOutputTool.new }
-  let(:registry)     { Rubino::Tools::ShellRegistry.instance }
+  let(:shell)    { Rubino::Tools::ShellTool.new }
+  let(:manage)   { Rubino::Tools::ShellManageTool.new }
+  let(:registry) { Rubino::Tools::ShellRegistry.instance }
+
+  def read_output(run_id, mode: "all")
+    manage.call("run_id" => run_id, "action" => "output", "mode" => mode)
+  end
 
   before { Rubino::Tools::ShellRegistry.reset! }
   after  { Rubino::Tools::ShellRegistry.reset! }
@@ -32,20 +36,20 @@ RSpec.describe "Completed background shell output stays reachable (#78)" do # ru
 
     # TURN 1: read the output. The shell is already finished — the entry is
     # retired here (not dropped), so it remains retrievable.
-    first = shell_output.call("run_id" => run_id, "mode" => "all")
+    first = read_output(run_id)
     expect(first).to include("short_bg_out")
     expect(first).to match(/status=(completed|failed) exit=\d+/)
 
     # TURN 2 (next turn): the model can STILL fetch the captured output + exit
     # status — pre-fix this errored "no background shell" because the entry was
     # dropped the moment turn 1 saw it non-running.
-    second = shell_output.call("run_id" => run_id, "mode" => "all")
+    second = read_output(run_id)
     expect(second).not_to include("no background shell")
     expect(second).to include("short_bg_out")
     expect(second).to match(/status=(completed|failed) exit=\d+/)
   end
 
-  it "keeps shell_output exposed in the situational gate after a completed bg shell is read" do
+  it "keeps shell_manage exposed in the situational gate after a completed bg shell is read" do
     Rubino.loader.eager_load
     Rubino::Tools::Registry.register_defaults!
 
@@ -56,13 +60,13 @@ RSpec.describe "Completed background shell output stays reachable (#78)" do # ru
     # Reading the finished shell once is what USED to drop it from the registry
     # (pre-fix `registry.remove`), collapsing `any?` to false and hiding the
     # shell-management tools next turn. Now the read RETIRES it, so it lingers.
-    shell_output.call("run_id" => run_id, "mode" => "all")
+    read_output(run_id)
 
-    # `any?` must stay true so shell_output remains in the schema next turn,
+    # `any?` must stay true so shell_manage remains in the schema next turn,
     # letting the model fetch the output again. Pre-fix this was false here.
     expect(registry.any?).to be(true)
     names = Rubino::Tools::Registry.enabled_tools.map(&:name)
-    expect(names).to include("shell_output")
+    expect(names).to include("shell_manage")
   end
 
   it "bounds the retained-completed set (TTL + MAX_RETIRED) so the registry never grows unbounded" do

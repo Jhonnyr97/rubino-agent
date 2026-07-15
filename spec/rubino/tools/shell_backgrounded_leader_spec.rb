@@ -48,10 +48,10 @@ RSpec.describe Rubino::Tools::ShellRegistry do
     end
   end
 
-  describe "shell_output retires a leader-exited shell so output stays reachable (#78)" do
+  describe "shell_manage output retires a leader-exited shell so output stays reachable (#78)" do
     it "retires the entry (stamps retired_at) on read, keeping output retrievable" do
       entry = spawn_self_backgrounding
-      Rubino::Tools::ShellOutputTool.new.call("run_id" => entry.id)
+      Rubino::Tools::ShellManageTool.new.call("run_id" => entry.id, "action" => "output")
       expect(entry.retired_at).not_to be_nil # retired so output stays reachable
       expect(registry.find(entry.id)).to eq(entry) # still tracked, not dropped
     ensure
@@ -59,15 +59,15 @@ RSpec.describe Rubino::Tools::ShellRegistry do
     end
   end
 
-  describe "shell_kill on a leader-exited entry" do
+  describe "shell_manage kill on a leader-exited entry" do
     it "reports already-exited (leader is gone; orphan reaped by teardown)" do
       entry = spawn_self_backgrounding
       pgid  = entry.pgid
 
-      # shell_kill gates on running? — which is false because the leader exited.
-      # The orphan sleep 30 is still alive in the process group but is no longer
-      # tracked as running; it gets reaped by kill_all_groups on teardown.
-      result = Rubino::Tools::ShellKillTool.new.call("run_id" => entry.id)
+      # shell_manage kill gates on running? — which is false because the leader
+      # exited. The orphan sleep 30 is still alive in the process group but is no
+      # longer tracked as running; it gets reaped by kill_all_groups on teardown.
+      result = Rubino::Tools::ShellManageTool.new.call("run_id" => entry.id, "action" => "kill")
       expect(result).to include("already exited")
 
       # The orphan IS still alive — but the entry is retired so it drops from

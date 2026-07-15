@@ -285,6 +285,18 @@ module Rubino
         #      ran, so dangerous_only NEVER weakens the non-bypassable floor.
         return shell_confirm_decision(command_str) if tool.name == "shell"
 
+        # 8-shell_manage. Per-ACTION gate for the merged background-shell
+        #    management tool, reproducing the four tools it replaced EXACTLY:
+        #      output / tail — read-only observation → :low, run UNPROMPTED
+        #                      (as shell_output / shell_tail did).
+        #      input / kill  — mutate a running process → :medium, routed through
+        #                      the SAME mode gate shell_input / shell_kill used.
+        #    Below yolo (step 3, auto-allowed) and the doom guard (step 4);
+        #    hardline (step 1) and permissions:deny (step 2) already ran, so a
+        #    kill/input can still be denied by a rule. A single static tool risk
+        #    can't express this split, so it lives here (see ShellManageTool).
+        return shell_manage_decision(arguments) if tool.name == "shell_manage"
+
         # 8a. Out-of-workspace structured write → :ask (Claude-Code-aligned). A
         #     write/edit whose target resolves OUTSIDE
         #     every allowed root (and is neither temp scratch nor the agent home)
@@ -530,8 +542,11 @@ module Rubino
           # The SEARCH ROOT (a dir or a file) is what the secret gate resolves —
           # `pattern` is the regex/glob, not a path. (Default "." like the tools.)
           (args[:path] || ".").to_s
-        when "shell_output", "shell_kill", "shell_input"
-          args[:run_id].to_s
+        when "shell_manage"
+          # "<action> <run_id>" so the approval scope distinguishes a kill from
+          # an input and one background shell from another — approving
+          # `shell_manage kill bg_x` never auto-approves `… kill bg_y`.
+          [args[:action], args[:run_id]].compact.join(" ").strip
         when "skill"
           # "<action> <name>" so the approval scope distinguishes a create from
           # a load and one skill name from another (granularity parity, #405).
@@ -580,21 +595,34 @@ module Rubino
       end
 
       def mode_based_decision(tool)
+        decision_for_risk(tool.risk_level)
+      end
+
+      # The mode → decision table for a given risk level, shared by the
+      # tool-driven fallback (#mode_based_decision) and the shell_manage
+      # per-action gate. config approvals.mode: "skip" is NOT a headless yolo
+      # (#260): it stays permissive for non-risky tools (reads) but routes a
+      # risky action (write/edit/shell, and shell_manage input/kill) to :ask so
+      # the headless fail-closed floor can block it — only runtime --yolo
+      # (step 3) auto-runs those headless. Interactive sessions still prompt.
+      def decision_for_risk(risk_level)
+        risky = %i[medium high].include?(risk_level)
         case @mode
-        # config approvals.mode: "skip" is NOT a headless yolo (#260). It stays
-        # permissive for non-risky tools (reads), but a risky tool (write/edit/
-        # shell) routes to :ask so the headless fail-closed floor can block it
-        # when there is no interactive session — only runtime --yolo (step 3)
-        # may auto-run those headless. Interactive sessions still get a prompt.
-        when "skip"
-          tool.risky? ? :ask : :allow
         when "auto"
-          tool.risk_level == :high ? :ask : :allow
-        when "manual"
-          tool.risky? ? :ask : :allow
-        else
-          tool.risky? ? :ask : :allow
+          risk_level == :high ? :ask : :allow
+        else # "skip", "manual", and the default
+          risky ? :ask : :allow
         end
+      end
+
+      # Per-action approval for shell_manage. output/tail are read-only → never
+      # prompt (:low). input/kill mutate the process → decided exactly as the
+      # :medium shell_input/shell_kill tools were, across every mode.
+      def shell_manage_decision(arguments)
+        action = (arguments[:action] || arguments["action"]).to_s
+        return :allow unless %w[input kill].include?(action)
+
+        decision_for_risk(:medium)
       end
 
       def load_permission_rules(agent_overrides)

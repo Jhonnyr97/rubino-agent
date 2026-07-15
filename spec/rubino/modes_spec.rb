@@ -59,7 +59,7 @@ RSpec.describe Rubino::Modes do
       end
 
       it "blocks mutating tools" do
-        %w[edit write shell ruby git github shell_kill].each do |tool|
+        %w[edit write shell ruby git github shell_manage].each do |tool|
           expect(described_class.allows_tool?(tool)).to be(false), "expected #{tool.inspect} blocked in plan"
         end
       end

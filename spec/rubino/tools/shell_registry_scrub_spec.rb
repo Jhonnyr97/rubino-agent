@@ -3,7 +3,7 @@
 # R3C-1 / STRM-R2-1 — the background shell drain scrubs its ring buffer at the
 # capture seam, mirroring the FOREGROUND shell (ShellTool drains through
 # Util::Output.scrub_utf8). Without this a binary / latin-1 background process
-# leaves invalid UTF-8 (and NUL) in the buffer; when `shell_output` returns it,
+# leaves invalid UTF-8 (and NUL) in the buffer; when `shell_manage` returns it,
 # JSON.generate (the LLM request) and the SQLite driver raise and the tool row
 # never persists — the model loses the record on --resume.
 RSpec.describe Rubino::Tools::ShellRegistry do

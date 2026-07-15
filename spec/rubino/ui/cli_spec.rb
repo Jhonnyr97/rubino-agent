@@ -949,9 +949,9 @@ RSpec.describe Rubino::UI::CLI do
       end
 
       it "leaves a built-in with an underscore name unchanged (no MCP marker)" do
-        Rubino::Tools::Registry.register(Rubino::Tools::ShellOutputTool.new)
-        out = capture_stdout { ui.tool_started("shell_output", arguments: nil) }
-        expect(out).to include("● shell_output")
+        Rubino::Tools::Registry.register(Rubino::Tools::ShellManageTool.new)
+        out = capture_stdout { ui.tool_started("shell_manage", arguments: nil) }
+        expect(out).to include("● shell_manage")
         expect(out).not_to include("mcp:")
       end
     end

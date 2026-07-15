@@ -831,7 +831,7 @@ module Rubino
           # passwords, JWTs…) from tool output before it enters context, the
           # transcript, or the aux model. ON by default (secure default,
           # Hermes #17691). Applied to read (text AND converted documents) /
-          # grep / shell / shell_output / shell_tail content via
+          # grep / shell / shell_manage content via
           # Security::Redactor. Set
           # false ONLY when you need raw credential values in tool output
           # (e.g. working on the redactor itself). NOT a security boundary —

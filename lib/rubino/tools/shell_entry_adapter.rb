@@ -55,7 +55,7 @@ module Rubino
 
       # Stop from the UI (/stop / picker): SIGTERM→grace→SIGKILL the process group,
       # then retire so the captured output stays retrievable. Reuses the one
-      # ShellRegistry kill seam (also used by shell_kill).
+      # ShellRegistry kill seam (also used by shell_manage's kill action).
       def stop = @registry.terminate(@shell)
 
       # Attach/focus input: the user's keystrokes/line go straight to the PTY (or

@@ -40,11 +40,9 @@ RSpec.describe Rubino::Tools::Registry do
       expect(described_class.find("read")).to        be_a(Rubino::Tools::ReadTool)
       expect(described_class.find("write")).to       be_a(Rubino::Tools::WriteTool)
       expect(described_class.find("edit")).to        be_a(Rubino::Tools::EditTool)
-      expect(described_class.find("shell")).to       be_a(Rubino::Tools::ShellTool)
-      expect(described_class.find("shell_output")).to be_a(Rubino::Tools::ShellOutputTool)
-      expect(described_class.find("shell_input")).to be_a(Rubino::Tools::ShellInputTool)
-      expect(described_class.find("shell_kill")).to  be_a(Rubino::Tools::ShellKillTool)
-      expect(described_class.find("ruby")).to        be_a(Rubino::Tools::RubyTool)
+      expect(described_class.find("shell")).to        be_a(Rubino::Tools::ShellTool)
+      expect(described_class.find("shell_manage")).to be_a(Rubino::Tools::ShellManageTool)
+      expect(described_class.find("ruby")).to         be_a(Rubino::Tools::RubyTool)
       expect(described_class.find("web_search")).to     be_a(Rubino::Tools::WebSearchTool)
       expect(described_class.find("web_fetch")).to      be_a(Rubino::Tools::WebFetchTool)
 
@@ -78,9 +76,9 @@ RSpec.describe Rubino::Tools::Registry do
 
     it "does NOT mark an underscore-named built-in as MCP" do
       described_class.register(Rubino::Tools::SessionSearchTool.new)
-      described_class.register(Rubino::Tools::ShellOutputTool.new)
+      described_class.register(Rubino::Tools::ShellManageTool.new)
       expect(described_class.display_label("session_search")).to eq("session_search")
-      expect(described_class.display_label("shell_output")).to eq("shell_output")
+      expect(described_class.display_label("shell_manage")).to eq("shell_manage")
     end
 
     it "marks an MCP tool with its `<bare> (mcp:<server>)` source" do

@@ -719,7 +719,7 @@ module Rubino
         # it raw would continue flush-left and unstyled on the next lines —
         # inline it into the ONE styled row instead.
         #
-        # The metric is UNTRUSTED: for a String-returning tool (e.g. shell_output
+        # The metric is UNTRUSTED: for a String-returning tool (e.g. shell_manage
         # reading a background buffer) it is the tool's truncated_preview — the
         # raw bytes the shell emitted. A `\e]0;…\a` there would set the window
         # title / a `\e[2J` clear the screen straight from this close row

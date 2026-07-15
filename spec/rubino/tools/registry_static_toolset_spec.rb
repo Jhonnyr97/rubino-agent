@@ -20,17 +20,15 @@ RSpec.describe Rubino::Tools::Registry do
     described_class.enabled_tools.map(&:name)
   end
 
-  describe "shell-management tools are always exposed" do
-    it "exposes shell_input/output/tail/kill even with NO background shell" do
+  describe "the shell-management tool is always exposed" do
+    it "exposes shell_manage even with NO background shell" do
       allow(Rubino::Tools::ShellRegistry.instance).to receive(:any?).and_return(false)
-      %w[shell_input shell_output shell_tail shell_kill].each do |t|
-        expect(enabled_names).to include(t)
-      end
+      expect(enabled_names).to include("shell_manage")
     end
 
     it "keeps the exact same shell tools once a background shell exists" do
       allow(Rubino::Tools::ShellRegistry.instance).to receive(:any?).and_return(true)
-      %w[shell shell_input shell_output shell_tail shell_kill].each do |t|
+      %w[shell shell_manage].each do |t|
         expect(enabled_names).to include(t)
       end
     end

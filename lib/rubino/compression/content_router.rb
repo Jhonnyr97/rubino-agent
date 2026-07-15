@@ -52,7 +52,7 @@ module Rubino
       # Tools whose default output is command/log text — the LogCompressor
       # channel. Anything not listed (and not matching a more specific shape)
       # is :other and passes through.
-      LOG_TOOLS = %w[shell test shell_output shell_tail].freeze
+      LOG_TOOLS = %w[shell test shell_manage].freeze
 
       Result = Data.define(:applied, :text, :content_type, :strategy, :saved_tokens_est) do
         def applied? = applied

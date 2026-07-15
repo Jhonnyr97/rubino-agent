@@ -10,8 +10,8 @@ module Rubino
     #   - foreground (default): blocks until exit or `timeout` seconds, then
     #     SIGTERMs the process group and returns whatever was captured.
     #   - background (`run_in_background: true`): registers the process with
-    #     Tools::ShellRegistry, returns a run_id immediately. Read its output later
-    #     with `shell_output`, terminate it with `shell_kill`.
+    #     Tools::ShellRegistry, returns a run_id immediately. Read its output,
+    #     follow it, send it input, or terminate it later with `shell_manage`.
     #
     # Gatekeeping (allowlist, deny rules, approval prompts) lives in
     # Security::ApprovalPolicy and is enforced by the ToolExecutor before we
@@ -127,9 +127,10 @@ module Rubino
                "Background: pass `run_in_background: true` to fire-and-forget; the tool " \
                "returns a run_id AND a log file path on disk where all stdout/stderr is " \
                "captured (the file persists even if the process crashes). " \
-               "Use the `shell_output` tool to read its stdout/stderr, " \
-               "`shell_input` to answer an interactive prompt it emits (Y/N, menu), " \
-               "and `shell_kill` to terminate it. " \
+               "Use the `shell_manage` tool to read its stdout/stderr " \
+               "(action: 'output'), follow it (action: 'tail'), answer an interactive " \
+               "prompt it emits (action: 'input', e.g. Y/N or a menu), or terminate it " \
+               "(action: 'kill'). " \
                "For a LONG-LIVED process (a dev/web server, a watcher) ALWAYS use " \
                "`run_in_background: true` — do NOT start it in the foreground with a " \
                "trailing `&`: the foreground call would block until the timeout."
@@ -451,9 +452,9 @@ module Rubino
           "#{log_line}  " \
           "command: #{command}\n  " \
           "cwd:     #{cwd}\n" \
-          "Read output:  shell_output run_id=#{entry.id}\n" \
-          "Send input:   shell_input  run_id=#{entry.id} text=...\n" \
-          "Terminate:    shell_kill   run_id=#{entry.id}"
+          "Read output:  shell_manage run_id=#{entry.id} action=output\n" \
+          "Send input:   shell_manage run_id=#{entry.id} action=input input=...\n" \
+          "Terminate:    shell_manage run_id=#{entry.id} action=kill"
       rescue StandardError => e
         "Error starting background shell: #{e.message}"
       end

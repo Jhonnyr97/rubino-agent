@@ -1,12 +1,19 @@
 # frozen_string_literal: true
 
 RSpec.describe "Shell background tools" do
-  let(:shell)        { Rubino::Tools::ShellTool.new }
-  let(:shell_output) { Rubino::Tools::ShellOutputTool.new }
-  let(:shell_kill)   { Rubino::Tools::ShellKillTool.new }
-  let(:registry)     { Rubino::Tools::ShellRegistry.instance }
+  let(:shell)    { Rubino::Tools::ShellTool.new }
+  let(:manage)   { Rubino::Tools::ShellManageTool.new }
+  let(:registry) { Rubino::Tools::ShellRegistry.instance }
 
   def payload(result) = result.is_a?(Hash) ? result[:output] : result
+
+  def read_output(run_id, mode: "new")
+    manage.call("run_id" => run_id, "action" => "output", "mode" => mode)
+  end
+
+  def kill_shell(run_id)
+    manage.call("run_id" => run_id, "action" => "kill")
+  end
 
   describe "shell foreground" do
     it "runs a short command and captures stdout" do
@@ -34,22 +41,22 @@ RSpec.describe "Shell background tools" do
       # wait for the first chunks to arrive
       sleep 0.5
 
-      first = shell_output.call("run_id" => run_id)
+      first = read_output(run_id)
       expect(first).to include("status=running")
       expect(first).to match(/step\d/)
 
       # next read should be incremental (no repeat of already-seen lines)
       sleep 0.4
-      second = shell_output.call("run_id" => run_id)
+      second = read_output(run_id)
       expect(second).to include("status=running")
 
-      killed = shell_kill.call("run_id" => run_id)
+      killed = kill_shell(run_id)
       expect(killed).to include("terminated")
 
       # after the kill the entry is RETIRED, not dropped (#78): its captured
       # output stays retrievable on a later turn with a terminal status, rather
       # than the entry vanishing as "no background shell".
-      after_kill = shell_output.call("run_id" => run_id, "mode" => "all")
+      after_kill = read_output(run_id, mode: "all")
       expect(after_kill).not_to include("no background shell")
       expect(after_kill).to match(/status=(failed|completed)/)
     end
@@ -65,7 +72,7 @@ RSpec.describe "Shell background tools" do
         sleep 0.1
       end
 
-      out = shell_output.call("run_id" => run_id, "mode" => "all")
+      out = read_output(run_id, mode: "all")
       expect(out).to include("done_bg")
       expect(out).to match(/status=(completed|failed) exit=\d/)
     end
@@ -81,13 +88,13 @@ RSpec.describe "Shell background tools" do
         sleep 0.1
       end
 
-      out = shell_output.call("run_id" => run_id, "mode" => "all")
+      out = read_output(run_id, mode: "all")
       expect(out).to include("status=failed exit=1")
     end
 
     it "errors out on unknown run_id" do
-      expect(shell_output.call("run_id" => "bg_deadbeef")).to include("no background shell")
-      expect(shell_kill.call("run_id"   => "bg_deadbeef")).to include("no background shell")
+      expect(read_output("bg_deadbeef")).to include("no background shell")
+      expect(kill_shell("bg_deadbeef")).to include("no background shell")
     end
   end
 end

@@ -36,7 +36,7 @@ RSpec.describe "Background shell completion notification (US-5)" do
     expect(notice).to include("[background-shell]")
     expect(notice).to include(run_id)
     expect(notice).to include("completed")
-    expect(notice).to include("shell_output run_id=#{run_id}")
+    expect(notice).to include("shell_manage run_id=#{run_id} action=output")
   end
 
   it "reports a non-zero exit in the completion notice" do

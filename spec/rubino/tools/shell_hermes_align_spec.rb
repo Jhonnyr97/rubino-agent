@@ -29,12 +29,12 @@ RSpec.describe Rubino::Tools::ShellTool do
       registry.terminate(entry) if entry
     end
 
-    it "shell_output still returns the final output after completion" do
+    it "shell_manage output still returns the final output after completion" do
       entry = registry.spawn(command: "echo marker_fix1", cwd: Dir.pwd)
       entry.wait_thr.join # leader done
       sleep 0.15 # drain grace + reader flush
 
-      result = Rubino::Tools::ShellOutputTool.new.call("run_id" => entry.id, "mode" => "all")
+      result = Rubino::Tools::ShellManageTool.new.call("run_id" => entry.id, "action" => "output", "mode" => "all")
       expect(result).to include("marker_fix1")
       expect(result).to include("status=completed")
     ensure
@@ -62,7 +62,7 @@ RSpec.describe Rubino::Tools::ShellTool do
       registry.terminate(entry) if entry
     end
 
-    it "drain_tail ensures shell_output sees the tail right after completion" do
+    it "drain_tail ensures shell_manage output sees the tail right after completion" do
       entry = registry.spawn(command: "echo tail_marker", cwd: Dir.pwd)
       entry.wait_thr.join # leader done — status will call drain_tail internally
 

@@ -24,12 +24,12 @@ module Rubino
       LOG_READ_MAX_BYTES = 50 * 1024 * 1024 # 50 MB
 
       # A backgrounded command that FINISHES before the next turn used to be
-      # dropped from the registry the moment a reader (shell_output/tail/kill)
+      # dropped from the registry the moment a reader (shell_manage output/tail/kill)
       # saw it non-running — which also collapsed `any?` to false, so the
       # shell-management tools vanished from the schema next turn and the
       # model could never fetch a short bg command's captured output (#78).
       # Instead a finished entry is RETIRED: it stays in the registry (its
-      # buffer + exit status intact, retrievable by shell_output) and `any?`
+      # buffer + exit status intact, retrievable by shell_manage) and `any?`
       # keeps the tools exposed, until it is read again OR these bounds reap
       # it. RETIRED_TTL caps how long a finished-but-unread entry lingers;
       # MAX_RETIRED caps how many we keep at once (oldest-retired evicted
@@ -170,13 +170,13 @@ module Rubino
       end
 
       # Pipe-backed spawn (default): a writable stdin pipe lets the agent feed
-      # answers to line-oriented prompts (Y/N, apt-style) via `shell_input`;
+      # answers to line-oriented prompts (Y/N, apt-style) via `shell_manage` (action: input);
       # stdout+stderr merge into one read pipe. Full-screen TTY programs (vim,
       # REPLs that require `[ -t 0 ]`, getpass on /dev/tty) are out of scope for
       # a plain pipe — those want PTY mode (#spawn_pty). Returns [reader, stdin, pid].
       #
       # pgroup: true → the child leads a new process group (pgid == child pid),
-      # so shell_kill SIGTERMs the whole tree. bash -o pipefail mirrors the
+      # so shell_manage (action: kill) SIGTERMs the whole tree. bash -o pipefail mirrors the
       # foreground shell (a mid-pipeline crash surfaces as the exit status, #156).
       # OS write-jail (#290/#544): the argv+env go through the SAME
       # ShellTool.sandboxed_bash_argv the foreground uses, so a backgrounded
@@ -227,8 +227,8 @@ module Rubino
       # still retained (retired, unread, within TTL — see #retire). The
       # session-stable signal #313 gates the shell-management tools on this: a
       # normal turn with no background shell never ships
-      # shell_input/shell_output/shell_tail/shell_kill, but a SHORT bg command
-      # that finished before the next turn keeps shell_output exposed so the
+      # shell_manage, but a SHORT bg command
+      # that finished before the next turn keeps shell_manage exposed so the
       # model can still fetch its captured output (#78). Prunes stale retired
       # entries first so the gate closes once nothing is reachable.
       def any?
@@ -253,7 +253,7 @@ module Rubino
 
       # Retires a FINISHED background shell instead of dropping it (#78): the
       # entry stays in the registry — its captured output + exit status intact
-      # and retrievable by a later shell_output — and `any?` keeps the
+      # and retrievable by a later shell_manage — and `any?` keeps the
       # shell-management tools exposed, so a short bg command's output is still
       # reachable on the next turn. The process is already dead, so its pgid is
       # cleared from the teardown snapshot and its stdin closed. Bounded by
@@ -351,7 +351,7 @@ module Rubino
 
       # Short grace after the leader exits to let the reader thread flush the
       # final buffered chunk to the log file — mirroring the foreground's
-      # DETACHED_DRAIN_GRACE. A shell_output right after completion must still
+      # DETACHED_DRAIN_GRACE. A shell_manage output right after completion must still
       # return the tail.
       DRAIN_GRACE = 0.1
 
@@ -392,7 +392,7 @@ module Rubino
       end
 
       # Give the reader thread a short window to flush the final readpartial
-      # chunk to the log file after the leader has exited, so a shell_output
+      # chunk to the log file after the leader has exited, so a shell_manage output
       # call right after status flips to :completed still sees the tail.
       def drain_tail(entry)
         entry.reader_thr&.join(DRAIN_GRACE) if entry.reader_thr&.alive?
@@ -426,7 +426,7 @@ module Rubino
       end
 
       # SIGTERM→grace→SIGKILL the process group, then retire so the captured
-      # output stays retrievable (shares the kill contract with shell_kill). The
+      # output stays retrievable (shares the kill contract with shell_manage). The
       # single per-shell stop seam the UI (/stop, picker) routes through.
       def terminate(entry, grace: 2)
         entry.stopped = true # a UI /stop ⇒ #status reports :stopped, not :failed
@@ -554,12 +554,12 @@ module Rubino
       end
 
       # Single-reader pattern: only this thread writes to entry.buffer AND the
-      # log file. The mutex protects against concurrent reads from shell_output_tool.
+      # log file. The mutex protects against concurrent reads from shell_manage_tool.
       #
       # Drains with readpartial (NOT each_line), mirroring the foreground shell
       # drain (shell_tool.rb ~522). each_line only yields on \n/EOF, so \r-progress
       # bars, spinners, and un-terminated prompts were buffered and never teed to
-      # the log until a newline or exit — shell_tail/shell_output falsely reported
+      # the log until a newline or exit — shell_manage (tail/output) falsely reported
       # "no new output". readpartial emits every chunk immediately.
       def drain_into(entry, rd)
         loop do
@@ -569,7 +569,7 @@ module Rubino
           # latin-1 background process (`head -c … /dev/urandom &`, `cat *.png &`)
           # writes bytes tagged UTF-8 but invalid; left raw in the ring buffer
           # they blow up JSON.generate (the LLM request) + the SQLite driver when
-          # `shell_output` returns them, and the tool row never persists — the
+          # `shell_manage` returns them, and the tool row never persists — the
           # model loses the record on --resume. Cleaning here means the buffer is
           # already safe for every reader (read_new / read_all). Terminal-escape
           # neutralization for what reaches the screen is a separate render-seam
@@ -597,7 +597,7 @@ module Rubino
         # Close the writer handle so the file is complete on disk.
         close_log_file(entry)
         # The reader thread ends exactly when the pipe closes = the process
-        # exited (normal, crash, or shell_kill). Push a completion notice to the
+        # exited (normal, crash, or shell_manage kill). Push a completion notice to the
         # parent so a finished background SHELL auto-wakes the model the same way
         # a finished background SUBAGENT does — without this, a finished bg shell
         # surfaced NOTHING (US-5 lost notification). Fire-once.
@@ -624,7 +624,7 @@ module Rubino
         status = code.nil? || code.zero? ? "completed" : "exited (code #{code})"
         entry.sink.push_notice(
           "[background-shell] Shell #{entry.id} (`#{entry.command}`) #{status}. " \
-          "Read its output with `shell_output run_id=#{entry.id}`."
+          "Read its output with `shell_manage run_id=#{entry.id} action=output`."
         )
       rescue StandardError
         # Notification is best-effort — never let it crash the reader thread.

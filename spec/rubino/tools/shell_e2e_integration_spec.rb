@@ -9,12 +9,15 @@
 # fixed sleeps.
 
 RSpec.describe "E2E Shell Integration" do
-  let(:registry)     { Rubino::Tools::ShellRegistry.instance }
-  let(:shell)        { Rubino::Tools::ShellTool.new }
-  let(:shell_output) { Rubino::Tools::ShellOutputTool.new }
-  let(:shell_kill)   { Rubino::Tools::ShellKillTool.new }
+  let(:registry) { Rubino::Tools::ShellRegistry.instance }
+  let(:shell)    { Rubino::Tools::ShellTool.new }
+  let(:manage)   { Rubino::Tools::ShellManageTool.new }
 
   before { Rubino::Tools::ShellRegistry.reset! }
+
+  def read_output(run_id, mode: "new")
+    manage.call("run_id" => run_id, "action" => "output", "mode" => mode)
+  end
 
   # Helper: block until status is not :running, with a timeout
   def wait_for_completion(entry, timeout: 10)
@@ -27,11 +30,11 @@ RSpec.describe "E2E Shell Integration" do
     end
   end
 
-  # Helper: poll shell_output until it contains a string or timeout
+  # Helper: poll shell_manage output until it contains a string or timeout
   def poll_output_contains(run_id, substring, timeout: 10)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     loop do
-      out = shell_output.call("run_id" => run_id)
+      out = read_output(run_id)
       break if out.to_s.include?(substring)
       if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
         raise "Timed out waiting for '#{substring}' in output of #{run_id}"
@@ -62,11 +65,11 @@ RSpec.describe "E2E Shell Integration" do
       registry.terminate(entry) if entry
     end
 
-    it "shell_output right after completion returns the captured output" do
+    it "shell_manage output right after completion returns the captured output" do
       entry = registry.spawn(command: "echo marker_linger", cwd: Dir.pwd)
       wait_for_completion(entry, timeout: 5)
 
-      result = shell_output.call("run_id" => entry.id, "mode" => "all")
+      result = read_output(entry.id, mode: "all")
       expect(result).to include("marker_linger")
       expect(result).to include("status=completed")
     ensure
@@ -110,7 +113,7 @@ RSpec.describe "E2E Shell Integration" do
 
       # Now wait for completion and verify full output
       wait_for_completion(entry, timeout: 5)
-      result = shell_output.call("run_id" => entry.id, "mode" => "all")
+      result = read_output(entry.id, mode: "all")
       expect(result).to include("working_start")
       expect(result).to include("working_done")
     ensure
@@ -122,7 +125,7 @@ RSpec.describe "E2E Shell Integration" do
       entry = registry.spawn(command: "printf 'progress 50%%\r'; sleep 0.5; printf 'progress 100%%\n'", cwd: Dir.pwd)
       wait_for_completion(entry, timeout: 5)
 
-      result = shell_output.call("run_id" => entry.id, "mode" => "all")
+      result = read_output(entry.id, mode: "all")
       # The sanitizer converts bare CR → newline, so both lines should appear
       expect(result).to include("progress")
     ensure
@@ -143,7 +146,7 @@ RSpec.describe "E2E Shell Integration" do
       wait_for_completion(entry, timeout: 3)
 
       # Read all — the trailing line must be present
-      result = shell_output.call("run_id" => entry.id, "mode" => "all")
+      result = read_output(entry.id, mode: "all")
       expect(result).to include("trailing_data")
     ensure
       registry.terminate(entry) if entry
@@ -179,7 +182,7 @@ RSpec.describe "E2E Shell Integration" do
       expect(registry.exit_code(entry)).to eq(0)
       expect(elapsed).to be < 5
       # The immediate echo is captured
-      result = shell_output.call("run_id" => entry.id, "mode" => "all")
+      result = read_output(entry.id, mode: "all")
       expect(result).to include("immediate")
     ensure
       registry.terminate(entry) if entry

@@ -4,6 +4,18 @@
 
 ### Changed
 
+- **Background-shell management collapsed into one `shell_manage` tool.** The
+  four tools `shell_output` / `shell_tail` / `shell_input` / `shell_kill` are
+  replaced by a single `shell_manage(run_id:, action:)` with `action` ∈
+  `output` | `tail` | `input` | `kill` (`output` keeps the `mode: new|all`
+  behaviour; `input` keeps `enter`/`eof`; `tail` keeps `timeout`) — mirroring
+  Hermes' single `process(action:)`. Approval is **per-action**: `output`/`tail`
+  are read-only and run unprompted, while `input`/`kill` are gated exactly as
+  the old medium-risk tools were. `shell`'s background-launch message and the
+  completion notice now point at `shell_manage`. Built-in tool count drops from
+  25 to 22 (config-group rows 20 → 17). Plan mode no longer whitelists the
+  background-shell reader (`shell_manage` can also kill/input, so it is not
+  read-only; plan mode can't start a background shell to manage anyway).
 - **`read_attachment` folded into `read` (one unified reader).** The standalone
   `read_attachment` tool is removed; `read` now auto-detects a rich document
   (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML) and converts it to Markdown

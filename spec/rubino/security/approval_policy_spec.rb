@@ -381,9 +381,9 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(described_class.command_string(tool, { "file_path" => "a.rb" })).to eq("a.rb")
     end
 
-    it "extracts the run_id for shell_output / shell_kill" do
-      tool = make_tool(name: "shell_kill", risk_level: :medium, risky: true)
-      expect(described_class.command_string(tool, { "run_id" => "r1" })).to eq("r1")
+    it "builds '<action> <run_id>' scope for shell_manage" do
+      tool = make_tool(name: "shell_manage", risk_level: :medium, risky: true)
+      expect(described_class.command_string(tool, { "action" => "kill", "run_id" => "r1" })).to eq("kill r1")
     end
 
     it "falls back to the first argument value for other tools" do

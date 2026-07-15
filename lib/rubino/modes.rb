@@ -31,7 +31,12 @@ module Rubino
     # in the Registry — see Tools::Registry.enabled_tools. Keep this list
     # in sync with the actual tool names registered in
     # Tools::Registry.register_defaults!; the spec pins both sides.
-    READ_ONLY_TOOLS = %w[read grep glob web_fetch web_search todowrite question shell_output skill].freeze
+    # NB: `shell_manage` (the merged background-shell manager) is deliberately
+    # NOT here — it can `input`/`kill` a running process, so it is not read-only.
+    # Plan mode also can't START a background shell (`shell` is absent), so there
+    # is nothing for it to manage. Its predecessor `shell_output` used to be
+    # whitelisted; dropping it keeps plan mode strictly observation-only.
+    READ_ONLY_TOOLS = %w[read grep glob web_fetch web_search todowrite question skill].freeze
 
     DESCRIPTIONS = {
       DEFAULT => "all tools, approvals from config",

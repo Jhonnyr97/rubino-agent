@@ -124,7 +124,7 @@ RSpec.describe Rubino::UI::CLI do
 
   describe "#activity_finished sanitizes the metric / close row (R3C-1)" do
     it "neutralizes escapes carried in a success metric" do
-      out = capture_stdout { ui.activity_finished("shell_output", metric: pwn) }
+      out = capture_stdout { ui.activity_finished("shell_manage", metric: pwn) }
       expect_neutralized(out)
     end
 
@@ -135,16 +135,16 @@ RSpec.describe Rubino::UI::CLI do
   end
 
   describe "#tool_finished routes a tool's truncated_preview through #safe (R3C-1)" do
-    # The proof path: a background shell emits escapes, shell_output returns
+    # The proof path: a background shell emits escapes, shell_manage returns
     # them as a plain String, the executor's Result#truncated_preview becomes
     # the close-row metric. Without sanitization the window title changes from
     # the close row.
     it "neutralizes escapes in a String tool's preview" do
       result = Rubino::Tools::Result.success(
-        name: "shell_output", call_id: "c1",
+        name: "shell_manage", call_id: "c1",
         output: "[bg_x] status=completed\n#{pwn}"
       )
-      out = capture_stdout { ui.tool_finished("shell_output", result: result) }
+      out = capture_stdout { ui.tool_finished("shell_manage", result: result) }
       expect(out).not_to include("\e]0;")
       expect(out).not_to include("\e[2J")
       expect(out).to include("PWN")

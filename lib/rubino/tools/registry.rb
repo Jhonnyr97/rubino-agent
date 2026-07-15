@@ -28,7 +28,7 @@ module Rubino
         # an MCP tool shows its `<bare> (mcp:<server>)` source while a built-in
         # renders unchanged. Detection is driven off the registered object being
         # an MCP wrapper (#mcp?), NEVER off the name's shape, so a built-in whose
-        # name legitimately contains an underscore (session_search, shell_output)
+        # name legitimately contains an underscore (session_search, shell_manage)
         # is never mistaken for a `<server>_<tool>` MCP name. Falls back to the
         # bare name when the tool isn't registered (defensive — the model-facing
         # name is always a safe label).
@@ -100,10 +100,7 @@ module Rubino
           register(Rubino::Tools::GrepTool.new)
           register(Rubino::Tools::GlobTool.new)
           register(Rubino::Tools::ShellTool.new)
-          register(Rubino::Tools::ShellOutputTool.new)
-          register(Rubino::Tools::ShellTailTool.new)
-          register(Rubino::Tools::ShellInputTool.new)
-          register(Rubino::Tools::ShellKillTool.new)
+          register(Rubino::Tools::ShellManageTool.new)
           register(Rubino::Tools::RubyTool.new)
           register(Rubino::Tools::WebFetchTool.new)
           register(Rubino::Tools::WebSearchTool.new)
@@ -131,7 +128,7 @@ module Rubino
           # bounded by the depth / fan-out / global caps in BackgroundTasks#reserve.
           register(Rubino::Tools::TaskTool.new)
           # Companion poll/stop tools for background subagents (the default
-          # path of `task`). Mirror the shell_output/shell_kill trio. Gated by
+          # path of `task`). Mirror shell_manage's output/kill actions. Gated by
           # the same tools.task key — disabling delegation disables these too.
           register(Rubino::Tools::TaskResultTool.new)
           register(Rubino::Tools::TaskStopTool.new)
@@ -166,8 +163,9 @@ module Rubino
         end
 
         # The whole tool set is STATIC for the life of a session. We used to
-        # situationally hide the shell-management tools (shell_input/output/tail/
-        # kill) until a background shell existed, and `steer` until a subagent
+        # situationally hide the shell-management tool (shell_manage, formerly the
+        # shell_input/output/tail/kill quartet) until a background shell existed,
+        # and `steer` until a subagent
         # existed (#313, a ~2k-token saving on the common turn). That mutated the
         # `tools` block MID-SESSION, and on a local single-slot inference server
         # (openai-compatible, no Anthropic cache_control breakpoint) the tools

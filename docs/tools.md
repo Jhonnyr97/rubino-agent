@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **25 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **22 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_output`, `shell_tail`, `shell_input`, `shell_kill`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_manage`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
 
-Several tools share one config gate, so `rubino tools` shows **20 rows** (config groups), not 25: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **17 rows** (config groups), not 22: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
 
 ## How tools are gated
 
@@ -101,40 +101,20 @@ Risk: high (always requires approval unless in allowlist or provably read-only)
 Parameters: command, cwd, timeout, run_in_background, disable_sandbox, compress
 ```
 
-### shell_output
+### shell_manage
 
-Read output from a background shell started via `shell` with `run_in_background: true`. Returns only new bytes by default; pass `mode: "all"` for the full buffer.
+Manage a background shell started by `shell` (`run_in_background: true`), addressed by its `bg_…` `run_id`. One `action` parameter selects what to do:
 
-```
-Risk: low
-Parameters: run_id, mode
-```
+- `output` — read stdout/stderr (`mode: "new"` default = bytes since last read; `mode: "all"` = full buffer)
+- `tail` — block until new bytes arrive, the process exits, or `timeout` seconds elapse (default 30, max 300)
+- `input` — write `input` text to the process's stdin to answer an interactive prompt (Y/N, menu); a newline is appended unless `enter: false`, and `eof: true` closes stdin
+- `kill` — terminate the process group (SIGTERM, then SIGKILL if still alive)
 
-### shell_tail
-
-Follow a background shell — block until new bytes arrive on its `run_id`, the process exits, or `timeout` elapses. Use for `tail -F`-style following.
+Replaces the former `shell_output` / `shell_tail` / `shell_input` / `shell_kill` quartet (mirrors Hermes' single `process(action:)`). Approval is **per-action**: `output`/`tail` are read-only and run unprompted; `input`/`kill` are gated like any medium-risk mutation.
 
 ```
-Risk: low
-Parameters: run_id, timeout
-```
-
-### shell_input
-
-Send input to a background shell's stdin — answer an interactive prompt (Y/N, menu selection, password) of a running command. A newline is appended by default (like pressing Enter); pass `enter: false` for raw bytes, or `eof: true` to close stdin (EOF).
-
-```
-Risk: medium
-Parameters: run_id, text, enter, eof
-```
-
-### shell_kill
-
-Terminate a background shell started via `shell`. Sends SIGTERM to the process group, then SIGKILL if still alive.
-
-```
-Risk: medium
-Parameters: run_id
+Risk: per-action — output/tail run unprompted (read-only); input/kill are medium (approval-gated)
+Parameters: run_id, action, input, mode, enter, eof, timeout
 ```
 
 ### ruby
@@ -296,7 +276,7 @@ Parameters: subagent, prompt, background (boolean, optional; default false)
 
 ### task_result
 
-Poll a background subagent for its output (companion to `task`, mirrors `shell_output`). Gated by `tools.task`.
+Poll a background subagent for its output (companion to `task`, mirrors `shell_manage` action `output`). Gated by `tools.task`.
 
 ```
 Risk: low
@@ -305,7 +285,7 @@ Parameters: task_id
 
 ### task_stop
 
-Stop a running background subagent (companion to `task`, mirrors `shell_kill`). Gated by `tools.task`.
+Stop a running background subagent (companion to `task`, mirrors `shell_manage` action `kill`). Gated by `tools.task`.
 
 ```
 Risk: medium
