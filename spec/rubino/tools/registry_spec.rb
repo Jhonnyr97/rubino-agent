@@ -49,8 +49,7 @@ RSpec.describe Rubino::Tools::Registry do
       expect(described_class.find("todowrite")).to   be_a(Rubino::Tools::TodoTool)
       expect(described_class.find("skill")).to       be_a(Rubino::Skills::SkillTool)
       expect(described_class.find("task")).to        be_a(Rubino::Tools::TaskTool)
-      expect(described_class.find("task_result")).to be_a(Rubino::Tools::TaskResultTool)
-      expect(described_class.find("task_stop")).to   be_a(Rubino::Tools::TaskStopTool)
+      expect(described_class.find("task_manage")).to be_a(Rubino::Tools::TaskManageTool)
     end
 
     # #536/#553: the dedicated `git` tool was removed. It was risk_level :low

@@ -4,6 +4,21 @@
 
 ### Changed
 
+- **Subagent management collapsed into one `task_manage` tool.** The four tools
+  `task_result` / `task_stop` / `steer` / `probe` are replaced by a single
+  `task_manage(id:, action:, note:, question:, live:)` with `action` ∈ `result` |
+  `stop` | `steer` | `probe` (`result` keeps the list-all-when-no-id behaviour;
+  `steer` takes the `note`; `probe` keeps both paths — the free non-disturbing
+  snapshot and, with `live:true`, the billed one-shot `question` peek budgeted per
+  child) — mirroring the
+  `shell_manage` collapse and Hermes' single delegate + manage surface. Approval
+  is **per-action**: `result`/`steer`/`probe` run unprompted, while `stop` is
+  gated exactly as the old medium-risk `task_stop` was. The `stop`/`steer`/`probe`
+  actions are ownership-scoped (you can only manage your own direct children);
+  `result` stays unscoped (its list-all is the `/tasks` view). `task`'s
+  background-launch message and completion notice now point at `task_manage`.
+  Built-in tool count drops from 22 to 19 (config-group rows stay 17 — the whole
+  delegation family already shared `tools.task`).
 - **Background-shell management collapsed into one `shell_manage` tool.** The
   four tools `shell_output` / `shell_tail` / `shell_input` / `shell_kill` are
   replaced by a single `shell_manage(run_id:, action:)` with `action` ∈

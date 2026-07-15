@@ -93,8 +93,8 @@ Everything after the closing `---` is the system prompt body.
 | `WebSearch` | `web_search` |
 | `WebFetch` | `web_fetch` |
 | `Task` | `task` |
-| `TaskOutput` | `task_result` |
-| `TaskStop` | `task_stop` |
+| `TaskOutput` | `task_manage` (action `result`) |
+| `TaskStop` | `task_manage` (action `stop`) |
 | `AskUserQuestion` | `question` |
 | `TodoWrite` | `todo` |
 | `NotepadEdit` | `memory` |

@@ -370,6 +370,30 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
   end
 
+  describe "#decide per-action gate for task_manage" do
+    let(:manual_cfg) { test_configuration("approvals" => { "mode" => "manual" }) }
+    let(:pol) { described_class.new(config: manual_cfg) }
+    # The tool's STATIC risk is irrelevant — the task_manage branch decides
+    # per-action, exactly as the four tools it replaced behaved.
+    let(:tool) { make_tool(name: "task_manage", risk_level: :low, risky: false) }
+
+    it "runs result unprompted (task_result was :low)" do
+      expect(pol.decide(tool, arguments: { "action" => "result", "id" => "sa_1" })).to eq(:allow)
+    end
+
+    it "runs steer unprompted (steer was :low)" do
+      expect(pol.decide(tool, arguments: { "action" => "steer", "id" => "sa_1" })).to eq(:allow)
+    end
+
+    it "runs probe unprompted (probe was :low)" do
+      expect(pol.decide(tool, arguments: { "action" => "probe", "id" => "sa_1" })).to eq(:allow)
+    end
+
+    it "gates stop as medium (task_stop was :medium) — asks under manual mode" do
+      expect(pol.decide(tool, arguments: { "action" => "stop", "id" => "sa_1" })).to eq(:ask)
+    end
+  end
+
   describe ".command_string" do
     it "extracts the shell command" do
       tool = make_tool(name: "shell", risk_level: :high, risky: true)
@@ -384,6 +408,11 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     it "builds '<action> <run_id>' scope for shell_manage" do
       tool = make_tool(name: "shell_manage", risk_level: :medium, risky: true)
       expect(described_class.command_string(tool, { "action" => "kill", "run_id" => "r1" })).to eq("kill r1")
+    end
+
+    it "builds '<action> <id>' scope for task_manage" do
+      tool = make_tool(name: "task_manage", risk_level: :low, risky: false)
+      expect(described_class.command_string(tool, { "action" => "stop", "id" => "sa_1" })).to eq("stop sa_1")
     end
 
     it "falls back to the first argument value for other tools" do

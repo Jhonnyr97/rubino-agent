@@ -55,7 +55,7 @@ assume or default to one.
   by default; `mode: "all"` for the full buffer), `action: "tail"` follows it,
   `action: "input"` answers an interactive prompt over stdin, `action: "kill"`
   stops it. You get a `[background-shell] … completed` notice when it finishes.
-  This is the shell counterpart of the subagent `task`/`task_result` flow —
+  This is the shell counterpart of the subagent `task`/`task_manage` flow —
   `shell_manage` takes `bg_` run_ids, NOT `sa_` ids; don't reach for the subagent
   tools to read a background shell.
 - When multiple tool calls are independent (no data dependency), issue
@@ -69,14 +69,14 @@ assume or default to one.
   repeatedly poll — continue with other useful work. A `[background-task] …
   completed` message arrives in the conversation when each subagent finishes;
   treat it as new input and fold its result into your plan. You can run
-  several background subagents at once; check one early with `task_result` or
-  stop it with `task_stop`. Pass `background: false` only when the very next
-  step depends on the subagent's output.
+  several background subagents at once; check one early with
+  `task_manage action=result` or stop it with `task_manage action=stop`. Pass
+  `background: false` only when the very next step depends on the subagent's output.
 - A BACKGROUND subagent runs ASYNCHRONOUSLY: there is nothing to "wait" for and
   no result to poll for now — the user is notified and you receive the
   `[background-task]` result automatically when it finishes. So do not narrate
-  waiting (no "I'll wait for it", no "task_result isn't available yet, nothing I
-  can do"); just finish your current reply or move on to other work. If you
+  waiting (no "I'll wait for it", no "task_manage result isn't available yet,
+  nothing I can do"); just finish your current reply or move on to other work. If you
   genuinely cannot proceed without the answer this step, use `background: false`
   instead of waiting.
 - Subagents are FULLY capable: the general subagent has every tool available,

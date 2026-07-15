@@ -127,17 +127,16 @@ module Rubino
           # it (scoped nesting, S1) — a subagent can spawn its own subagents,
           # bounded by the depth / fan-out / global caps in BackgroundTasks#reserve.
           register(Rubino::Tools::TaskTool.new)
-          # Companion poll/stop tools for background subagents (the default
-          # path of `task`). Mirror shell_manage's output/kill actions. Gated by
-          # the same tools.task key — disabling delegation disables these too.
-          register(Rubino::Tools::TaskResultTool.new)
-          register(Rubino::Tools::TaskStopTool.new)
-          # steer / probe (S2/S3): the MODEL-callable parent->child channels,
-          # registered for ALL agents and AUTHORIZED by ownership at call time
-          # (a node with no children just gets a "not your child" error). NOT on
-          # any strip list — scoping happens inside the tool, not in the registry.
-          register(Rubino::Tools::SteerTool.new)
-          register(Rubino::Tools::ProbeTool.new)
+          # Single management surface for a background subagent (the default path
+          # of `task`): result / stop / steer / probe, selected by `action` —
+          # collapsing the former task_result / task_stop / steer / probe quartet
+          # into one tool (mirrors shell_manage and Hermes' one manage tool).
+          # Gated by the same tools.task key — disabling delegation disables it.
+          # Registered for ALL agents; the mutating/inspecting actions
+          # (stop/steer/probe) are AUTHORIZED by ownership at call time (a node
+          # with no children just gets a "not your child" error), so scoping
+          # happens inside the tool, not in the registry.
+          register(Rubino::Tools::TaskManageTool.new)
           # retrieve_output: the ONLY recovery path for compressed tool output.
           # Registered solely when tool_output_compression is enabled (the
           # default is OFF), so the shipped registry count is unchanged. When on,

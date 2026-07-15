@@ -35,18 +35,18 @@ RSpec.describe Rubino::Tools::Registry do
   end
 
   describe "subagent-comm tools are always exposed" do
-    it "exposes steer (and the poll tools) even with NO child task" do
+    it "exposes task_manage even with NO child task" do
       allow(Rubino::Tools::BackgroundTasks.instance).to receive(:list).and_return([])
-      %w[task task_result task_stop steer probe].each do |t|
+      %w[task task_manage].each do |t|
         expect(enabled_names).to include(t)
       end
     end
 
-    it "still drops task AND its poll tools when tools.task is disabled (config gate intact)" do
+    it "still drops task AND its management tool when tools.task is disabled (config gate intact)" do
       cfg = Marshal.load(Marshal.dump(Rubino.configuration))
       cfg.set("tools", "task", false)
       allow(Rubino).to receive(:configuration).and_return(cfg)
-      %w[task task_result task_stop probe].each do |t|
+      %w[task task_manage].each do |t|
         expect(enabled_names).not_to include(t)
       end
     end

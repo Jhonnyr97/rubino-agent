@@ -30,7 +30,8 @@ agent delegates. By default a `task` call runs in the **background**: it returns
 immediately with a task id (`sa_…`) and the subagent works on its own thread
 while the parent keeps going. When it finishes, the parent is notified with a
 `[background-task] <id> completed` message folded into its turn; the parent can
-also poll with `task_result(<id>)` or cancel with `task_stop(<id>)`.
+also poll with `task_manage id=<id> action=result` or cancel with
+`task_manage id=<id> action=stop`.
 `background: false` runs the child inline instead (the parent blocks); it goes
 through the same nesting caps and ownership stamping as a background spawn.
 

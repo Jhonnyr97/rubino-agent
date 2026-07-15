@@ -19,8 +19,9 @@ module Rubino
     #     parent keeps going. On completion the parent is NOTIFIED — a
     #     `[background-task]` message is injected into its live turn (via the
     #     parent's InputQueue, the same channel mid-turn steering uses) — and the
-    #     result is also fetchable with `task_result(<id>)` or stoppable with
-    #     `task_stop(<id>)`. For callers with OTHER useful work to do meanwhile.
+    #     result is also fetchable with `task_manage id=<id> action=result` or
+    #     stoppable with `task_manage id=<id> action=stop`. For callers with OTHER
+    #     useful work to do meanwhile.
     #
     # Isolation contract (unchanged, both paths):
     #   - the nested run gets a FRESH session seeded with ONLY the `prompt`
@@ -112,8 +113,9 @@ module Rubino
           "persists even if the process crashes, so you can read it for post-mortem " \
           "debugging. The subagent keeps working, and when it " \
           "finishes you automatically receive a `[background-task] <id> completed` " \
-          "message (also fetchable with `task_result(<id>)`, stoppable with " \
-          "`task_stop(<id>)`). The subagent runs in an isolated fresh context (it does " \
+          "message (also fetchable with `task_manage id=<id> action=result`, stoppable " \
+          "with `task_manage id=<id> action=stop`). The subagent runs in an isolated " \
+          "fresh context (it does " \
           "NOT see this conversation) and returns only its final message — put every " \
           "file path / error / detail it needs into `prompt`. NEVER claim a task was " \
           "started unless THIS call just returned its id in the current turn — `sa_…` " \
@@ -481,7 +483,7 @@ module Rubino
         body = banner ? "#{banner}\n\nResult:" : "Result:"
         notice = "[background-task] Task #{entry.id} (subagent '#{entry.subagent}') #{headline}.\n" \
                  "#{body}\n#{Rubino::Util::Output.elide(text, 4000)}\n" \
-                 "(full result via task_result(\"#{entry.id}\"))"
+                 "(full result via task_manage id=#{entry.id} action=result)"
         return notice if undelivered.empty?
 
         notice + "\nNote: a steer note was NOT delivered (the task completed first): " \
@@ -514,7 +516,8 @@ module Rubino
         "Started background subagent '#{definition.name}' as task #{entry.id}. " \
           "It is running now — keep working on other things. You'll receive a " \
           "`[background-task]` message when it finishes; or call " \
-          "task_result(\"#{entry.id}\") to check on it, task_stop(\"#{entry.id}\") to cancel." \
+          "task_manage id=#{entry.id} action=result to check on it, " \
+          "task_manage id=#{entry.id} action=stop to cancel." \
           "#{log_line}"
       end
 

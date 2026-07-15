@@ -297,6 +297,18 @@ module Rubino
         #    can't express this split, so it lives here (see ShellManageTool).
         return shell_manage_decision(arguments) if tool.name == "shell_manage"
 
+        # 8-task_manage. Per-ACTION gate for the merged subagent-management tool,
+        #    reproducing the four tools it replaced EXACTLY:
+        #      result / steer / probe — observation or a :low-risk parked note that
+        #                      ran UNPROMPTED (task_result / steer / probe were all
+        #                      default :low) → :allow.
+        #      stop         — cancels a running subagent → :medium, routed through
+        #                      the SAME mode gate the old task_stop (:medium) used.
+        #    Below yolo (step 3) and the doom guard (step 4); hardline (step 1) and
+        #    permissions:deny (step 2) already ran, so a stop can still be denied by
+        #    a rule. Mirrors shell_manage_decision (see TaskManageTool).
+        return task_manage_decision(arguments) if tool.name == "task_manage"
+
         # 8a. Out-of-workspace structured write → :ask (Claude-Code-aligned). A
         #     write/edit whose target resolves OUTSIDE
         #     every allowed root (and is neither temp scratch nor the agent home)
@@ -547,6 +559,11 @@ module Rubino
           # an input and one background shell from another — approving
           # `shell_manage kill bg_x` never auto-approves `… kill bg_y`.
           [args[:action], args[:run_id]].compact.join(" ").strip
+        when "task_manage"
+          # "<action> <id>" so the approval scope distinguishes a stop of one
+          # subagent from another — approving `task_manage stop sa_x` never
+          # auto-approves `… stop sa_y`.
+          [args[:action], args[:id]].compact.join(" ").strip
         when "skill"
           # "<action> <name>" so the approval scope distinguishes a create from
           # a load and one skill name from another (granularity parity, #405).
@@ -621,6 +638,17 @@ module Rubino
       def shell_manage_decision(arguments)
         action = (arguments[:action] || arguments["action"]).to_s
         return :allow unless %w[input kill].include?(action)
+
+        decision_for_risk(:medium)
+      end
+
+      # Per-action approval for task_manage. result/steer/probe ran UNPROMPTED
+      # (the old task_result / steer / probe tools were all default :low) → :allow.
+      # stop cancels a running subagent → decided exactly as the :medium task_stop
+      # tool was, across every mode.
+      def task_manage_decision(arguments)
+        action = (arguments[:action] || arguments["action"]).to_s
+        return :allow unless action == "stop"
 
         decision_for_risk(:medium)
       end

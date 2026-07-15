@@ -247,11 +247,12 @@ RSpec.describe "parent <-> subagent communication" do
 
   # --- S2/S3: MODEL-callable steer + probe, scoped to own children -----------
   #
-  # Exercises the REAL tools (Tools::SteerTool / Tools::ProbeTool) against the
-  # REAL Agent::Loop + FakeLLMAdapter, the way the BH-1 lesson asks: a parent
-  # node (the human/top-level here, caller_id nil) spawns a child, steers it via
-  # the real `steer` tool, and the note lands in the child's NEXT-turn context;
-  # then it probes the child cheaply (no adapter call) without disturbing it.
+  # Exercises the REAL merged tool (Tools::TaskManageTool actions steer/probe)
+  # against the REAL Agent::Loop + FakeLLMAdapter, the way the BH-1 lesson asks: a
+  # parent node (the human/top-level here, caller_id nil) spawns a child, steers
+  # it via `task_manage action=steer`, and the note lands in the child's
+  # NEXT-turn context; then it probes the child cheaply (no adapter call) without
+  # disturbing it.
   describe "model-callable steer (S2) on a real child Loop" do
     let(:tool_executor) do
       Rubino::Agent::ToolExecutor.new(
@@ -262,7 +263,7 @@ RSpec.describe "parent <-> subagent communication" do
     end
     let(:budget) { Rubino::Agent::IterationBudget.new(config: config) }
 
-    it "a parent's real `steer` tool call lands in the child's next-turn context" do
+    it "a parent's real `task_manage action=steer` call lands in the child's next-turn context" do
       # A real child entry with its own steer_queue (the wire the child Loop reads).
       child = Rubino::Tools::BackgroundTasks.instance.reserve(
         subagent: "explore", prompt: "task", owner_subagent_id: nil
@@ -280,15 +281,16 @@ RSpec.describe "parent <-> subagent communication" do
         def call(_args) = "ok"
       end)
       Rubino::Tools::Registry.register(NoopTool.new)
-      Rubino::Tools::Registry.register(Rubino::Tools::SteerTool.new)
+      Rubino::Tools::Registry.register(Rubino::Tools::TaskManageTool.new)
 
       note = "also keep backward-compat with v1 config"
       # When the child starts turn 1, the PARENT (caller_id nil) calls the REAL
-      # steer tool against its own child — exactly the model-driven path.
+      # task_manage steer action against its own child — the model-driven path.
       event_bus.on(Rubino::Interaction::Events::MODEL_CALL_STARTED) do |payload|
         if payload[:iteration] == 1
           out = Rubino.with_current_subagent_id(nil) do
-            Rubino::Tools::Registry.find("steer").call("task_id" => child.id, "note" => note)
+            Rubino::Tools::Registry.find("task_manage")
+                                   .call("action" => "steer", "id" => child.id, "note" => note)
           end
           expect(out).to include("steer ▸ #{child.id}")
         end
@@ -310,7 +312,7 @@ RSpec.describe "parent <-> subagent communication" do
   end
 
   describe "model-callable probe (S3) — cheap path does NO inference" do
-    it "the real `probe` tool returns the snapshot without calling the adapter; child undisturbed" do
+    it "the real `task_manage action=probe` returns the snapshot without calling the adapter; child undisturbed" do
       allow(Rubino).to receive(:database).and_return(db)
       Rubino::Tools::Registry.register_defaults!
 
@@ -328,12 +330,12 @@ RSpec.describe "parent <-> subagent communication" do
 
       # A live adapter that MUST NOT be touched by the cheap probe.
       spy_adapter = instance_double("adapter")
-      probe_tool  = Rubino::Tools::ProbeTool.new(
+      cheap_tool  = Rubino::Tools::TaskManageTool.new(
         probe: Rubino::Tools::SubagentProbe.new(adapter_factory: ->(_m) { spy_adapter }, message_store: store)
       )
 
       out = Rubino.with_current_subagent_id(nil) do
-        probe_tool.call("task_id" => child.id, "question" => "how far along?")
+        cheap_tool.call("action" => "probe", "id" => child.id, "question" => "how far along?")
       end
 
       expect(out).to include("probe #{child.id} · explore · running · 1 tools")
@@ -347,11 +349,11 @@ RSpec.describe "parent <-> subagent communication" do
       # still leaving the persisted session untouched.
       fake = FakeLLMAdapter.new
       fake.enqueue_text("on lib/auth.rb")
-      live_tool = Rubino::Tools::ProbeTool.new(
+      live_tool = Rubino::Tools::TaskManageTool.new(
         probe: Rubino::Tools::SubagentProbe.new(adapter_factory: ->(_m) { fake }, message_store: store)
       )
       live_out = Rubino.with_current_subagent_id(nil) do
-        live_tool.call("task_id" => child.id, "question" => "which file?", "live" => true)
+        live_tool.call("action" => "probe", "id" => child.id, "question" => "which file?", "live" => true)
       end
       expect(live_out).to eq("probe #{child.id} (live) ⟵ on lib/auth.rb")
       expect(fake.calls.size).to eq(1)

@@ -1,10 +1,10 @@
 # Tools Reference
 
-rubino ships **22 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
+rubino ships **19 built-in tools** plus dynamic MCP tools (started at boot when `mcp.servers` is configured — see [mcp.md](mcp.md); being server-dependent they are excluded from the drift-checked list below) and custom user-defined tools. Each tool is gated by a `tools.<key>` config flag (opt-out: absent key = enabled, only an explicit `false` disables) and the approval model. The count and list below are drift-checked against the live registry by `spec/docs/tools_doc_drift_spec.rb`.
 
-The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_manage`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_result`, `task_stop`, `steer`, `probe`.
+The full list (registration order): `read`, `write`, `edit`, `grep`, `glob`, `shell`, `shell_manage`, `ruby`, `web_fetch`, `web_search`, `question`, `todowrite`, `memory`, `session_search`, `attach_file`, `vision`, `skill`, `task`, `task_manage`.
 
-Several tools share one config gate, so `rubino tools` shows **17 rows** (config groups), not 22: `web_fetch` + `web_search` share `tools.web`, and the whole delegation family (`task`, `task_result`, `task_stop`, `steer`, `probe`) rides on `tools.task` — disabling delegation disables them all.
+Several tools share one config gate, so `rubino tools` shows **17 rows** (config groups), not 19: `web_fetch` + `web_search` share `tools.web`, and the delegation family (`task`, `task_manage`) rides on `tools.task` — disabling delegation disables them both.
 
 ## How tools are gated
 
@@ -274,40 +274,20 @@ Risk: low (the nested run's tools carry their own approval/risk gates)
 Parameters: subagent, prompt, background (boolean, optional; default false)
 ```
 
-### task_result
+### task_manage
 
-Poll a background subagent for its output (companion to `task`, mirrors `shell_manage` action `output`). Gated by `tools.task`.
+Manage a background subagent started by `task`, addressed by its `sa_…` `id`. One `action` parameter selects what to do (mirrors `shell_manage` and Hermes' single manage tool — it collapses the former `task_result` / `task_stop` / `steer` / `probe` quartet):
 
-```
-Risk: low
-Parameters: task_id
-```
+- `result` — the subagent's status/output (`running` / `completed` — full result / `failed`). Omit `id` to **list every** background subagent (the `/tasks` view). Read-only; unscoped.
+- `stop` — cancel a running subagent, including one parked on an approval (flips its cancel token; its `result` then reports stopped/failed).
+- `steer` — park a short `note` folded into the child's context at its **next** turn boundary; it persists and changes the child's trajectory. The model counterpart of the human `/agents <id> steer "…"`.
+- `probe` — check on the child **without disturbing it** (read-only — nothing is saved to the child). `live: false` (default) returns a free registry snapshot (status, tool count, last activity, recent lines) with no model call; `live: true` runs a billed one-shot model peek that answers `question` from the child's transcript, budgeted per child (`tasks.max_live_probes_per_child`, default 5). The model counterpart of the human `/agents <id> probe "…"`.
 
-### task_stop
-
-Stop a running background subagent (companion to `task`, mirrors `shell_manage` action `kill`). Gated by `tools.task`.
+`stop`/`steer`/`probe` are **ownership-scoped** at call time — you can only manage subagents YOU started (your direct children); a non-owned target returns a "not your child" error. `result` is unscoped (its list-all is the `/tasks` view). Approval is **per-action**: `result`/`steer`/`probe` run unprompted; `stop` is medium-risk (approval-gated), exactly as the old tools were. Gated by `tools.task`.
 
 ```
-Risk: medium
-Parameters: task_id
-```
-
-### steer
-
-Parent→child steering note: park a short note on one of YOUR OWN running subagents; it is folded into the child's context at its next turn boundary and persists (it changes the child's trajectory). Ownership-scoped at call time — only your direct children. The model counterpart of the human `/agents <id> steer "…"`. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: task_id, note
-```
-
-### probe
-
-Parent→child ephemeral peek: check on one of YOUR OWN running subagents without disturbing it (read-only — nothing is saved to the child). `live: false` (default) returns a free registry snapshot (status, tool count, last activity, recent lines); `live: true` runs a billed one-shot model peek over the child's transcript, budgeted per child (`tasks.max_live_probes_per_child`, default 5). The model counterpart of the human `/agents <id> probe "…"`. Gated by `tools.task`.
-
-```
-Risk: low
-Parameters: task_id, question, live
+Risk: per-action — result/steer/probe run unprompted; stop is medium (approval-gated)
+Parameters: id, action, note, question, live
 ```
 
 ---

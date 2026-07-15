@@ -171,8 +171,8 @@ RSpec.describe Rubino::Tools::TaskTool do
       entry = Rubino::Tools::BackgroundTasks.instance.find(task_id)
       expect(entry.stop_reason).to eq(:max_iterations)
 
-      # task_result surfaces the same truth on a later poll.
-      result = Rubino::Tools::TaskResultTool.new.call("task_id" => task_id)
+      # task_manage action=result surfaces the same truth on a later poll.
+      result = Rubino::Tools::TaskManageTool.new.call("action" => "result", "id" => task_id)
       expect(result).to include("PARTIAL")
     end
   end
@@ -1142,8 +1142,8 @@ RSpec.describe Rubino::Tools::TaskTool do
       out    = tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
 
-      result_tool = Rubino::Tools::TaskResultTool.new
-      running = result_tool.call("task_id" => task_id)
+      result_tool = Rubino::Tools::TaskManageTool.new
+      running = result_tool.call("action" => "result", "id" => task_id)
       expect(running).to be_a(Rubino::Tools::Result)
       expect(running.output).to include("status=running")
       expect(running.output).to include("Do NOT poll again now")
@@ -1153,13 +1153,13 @@ RSpec.describe Rubino::Tools::TaskTool do
       latch << :go
       wait_until { Rubino::Tools::BackgroundTasks.instance.find(task_id).status == :completed }
 
-      done = result_tool.call("task_id" => task_id)
+      done = result_tool.call("action" => "result", "id" => task_id)
       expect(done).to include("completed")
       expect(done).to include("FINAL DETAIL")
     end
 
     it "errors on an unknown task id" do
-      expect(Rubino::Tools::TaskResultTool.new.call("task_id" => "sa_nope"))
+      expect(Rubino::Tools::TaskManageTool.new.call("action" => "result", "id" => "sa_nope"))
         .to include("no background subagent")
     end
   end
@@ -1295,7 +1295,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       out     = tool.call("subagent" => "explore", "prompt" => "x", "background" => true)
       task_id = out[/sa_[0-9a-f]+/]
 
-      stop_out = Rubino::Tools::TaskStopTool.new.call("task_id" => task_id)
+      stop_out = Rubino::Tools::TaskManageTool.new.call("action" => "stop", "id" => task_id)
       expect(stop_out).to include("stop requested")
       expect(cancelled).to eq([true])
 
@@ -1343,7 +1343,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       task_id = out[/sa_[0-9a-f]+/]
       wait_until { registry.find(task_id).status == :needs_approval }
 
-      stop_out = Rubino::Tools::TaskStopTool.new.call("task_id" => task_id)
+      stop_out = Rubino::Tools::TaskManageTool.new.call("action" => "stop", "id" => task_id)
       expect(stop_out).to include("stop requested")
       expect(stop_out).not_to include("nothing to stop")
 
@@ -1358,7 +1358,7 @@ RSpec.describe Rubino::Tools::TaskTool do
       entry    = registry.reserve(subagent: "explore", prompt: "x")
       registry.complete(entry, status: :completed, result: "done")
 
-      out = Rubino::Tools::TaskStopTool.new.call("task_id" => entry.id)
+      out = Rubino::Tools::TaskManageTool.new.call("action" => "stop", "id" => entry.id)
       expect(out).to eq("[#{entry.id}] already completed — nothing to stop.")
     end
   end
