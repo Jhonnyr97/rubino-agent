@@ -7,7 +7,7 @@ Which provider, which model, which key — answered in 60 seconds. The fastest p
 | Provider | When | Default model the wizard writes |
 |---|---|---|
 | **OpenAI** | Recommended default; GPT models | `gpt-4.1` |
-| **MiniMax** | Anthropic-compatible | `MiniMax-M2.7` |
+| **MiniMax** | Anthropic-compatible | `MiniMax-M3` |
 | **Anthropic** | Claude models | `claude-sonnet-4-5` |
 | **Google (Gemini)** | Gemini models | `gemini-2.5-pro` |
 | **OpenAI-compatible gateway** | A gateway picks the upstream | `auto` |
@@ -62,7 +62,7 @@ MiniMax speaks the Anthropic API, so it routes through the anthropic-compatible 
 
 ```yaml
 model:
-  default: "MiniMax-M2.7"
+  default: "MiniMax-M3"
   provider: "minimax"
 
 providers:
@@ -77,7 +77,7 @@ providers:
 MINIMAX_API_KEY=...
 ```
 
-> MiniMax M2 ignores tool definitions and roleplays bash in markdown; use **MiniMax-M2.7** for working tool use.
+> MiniMax M2 ignores tool definitions and roleplays bash in markdown; use **MiniMax-M3** (the wizard default) for working tool use.
 
 ### OpenAI (GPT) (recommended default)
 

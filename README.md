@@ -153,11 +153,11 @@ Configuration lives in `~/.rubino/config.yml` (created by `rubino setup`); secre
 model:
   default: "openai/gpt-4.1"   # the shipped default — see the note below
   provider: "auto"            # auto | openai | anthropic | bedrock | gemini | minimax | gateway
-  temperature: 0.3
+  temperature: null           # inherit the provider default (no temperature is sent)
 
 agent:
   max_turns: 90
-  max_tool_iterations: 25
+  max_tool_iterations: 90
 
 memory:
   enabled: true
@@ -173,7 +173,6 @@ jobs:
 
 tools:
   workspace_strict: true      # sandbox write/edit/delete to the workspace
-  git: true
   shell: true                 # ON by default; every command is still approval-gated
   ruby: true
   web: true                   # ON by default (keyless DuckDuckGo backend); gates BOTH web_fetch and web_search
@@ -240,8 +239,9 @@ Full request/response shapes, the error envelope, and SSE replay are in **[docs/
 
 These are designed-in but not fully wired yet — don't depend on them in production:
 
-- **MCP Support** — connect to Model Context Protocol servers via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) ([docs/mcp.md](docs/mcp.md)).
-- **Multi-Agent** — Build / Plan / Explore agents with `@mention` routing ([docs/agents.md](docs/agents.md)).
+- **MCP Support** — connect to Model Context Protocol servers via [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp). Experimental: stdio servers are wired end-to-end; `sse`/`streamable` are less battle-tested and OAuth isn't implemented on the rubino side ([docs/mcp.md](docs/mcp.md)).
+
+Multi-agent already ships (background subagents via the `task` tool + primary-agent switching via `/agent`, a bare `/<name>`, and Tab); agents are reached on the `/` channel — there is no `@mention` agent routing (`@` is the workspace file picker). See [docs/agents.md](docs/agents.md).
 
 ## Development
 

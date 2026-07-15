@@ -23,10 +23,11 @@ Infrastructure Layer   →  LLM Adapter, Database, MCP, OAuth
 ## Module Map
 
 ### `agent/`
-Multiple agent types and @mention routing exist as a design surface; the
-rubino runs a single agent by default and multi-agent routing is dormant.
+Multi-agent ships: the model delegates to background subagents via the `task`
+tool, and the user switches the primary agent on the `/` slash channel (`/agent`,
+a bare `/<name>`, or Tab). There is no `@mention` agent routing — `@` is the
+workspace file picker. See [agents.md](agents.md).
 - `AgentRegistry` — Defines all agent types (build, plan, explore, general, utility)
-- `Router` — Routes input to appropriate agent via @mention
 - `Definition` — Agent type with model, tools, permissions, MCP scoping
 - `Runner` — Top-level orchestrator for a user interaction
 - `Loop` — Core LLM call + tool execution cycle

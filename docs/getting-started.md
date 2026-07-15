@@ -70,7 +70,7 @@ The defaults written per provider:
 | Choice | provider | default model | key var |
 |---|---|---|---|
 | OpenAI (default) | `openai` | `gpt-4.1` | `OPENAI_API_KEY` |
-| MiniMax | `minimax` | `MiniMax-M2.7` | `MINIMAX_API_KEY` |
+| MiniMax | `minimax` | `MiniMax-M3` | `MINIMAX_API_KEY` |
 | Anthropic | `anthropic` | `claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
 | Google | `google` | `gemini-2.5-pro` | `GEMINI_API_KEY` |
 | OpenAI-compatible gateway | `gateway` | `auto` | `OPENAI_API_KEY` |

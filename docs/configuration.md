@@ -35,7 +35,7 @@ model:
   default: "openai/gpt-4.1"     # Model identifier (NOTE: resolves to OpenRouter — see models-and-keys.md)
   provider: "auto"              # auto | openai | anthropic | bedrock | gemini | minimax | gateway
   context_length: null          # Override context window (null = use model default)
-  temperature: 0.3              # Generation temperature
+  temperature: null             # null = inherit the provider default (no temperature is sent)
   max_tokens: null              # Max output tokens (anthropic-family path); null = adapter default (16384)
   thinking_budget: null         # LEGACY — superseded by thinking.effort (below); null = adapter default (8000), 0 disables
   max_tokens_text_headroom: 4096  # Visible-output headroom reserved on top of the thinking budget
@@ -107,12 +107,17 @@ auxiliary:
     model: ""            # "auto-vision" lets an OpenAI-compatible gateway pick
     base_url: null
     timeout: 120
-  summarize:             # `summarize_file` tool map-reduces big files out-of-context here
+  summarize:             # used by skill distillation and oversized-document reads (read_attachment)
     provider: "main"
     model: ""
     base_url: null
     timeout: 300
-  embedding:              # memory vector-recall endpoint (local-first, off by default)
+  title:                 # session titling; deterministic unless a concrete non-"main" backend is set here
+    provider: "main"
+    model: ""
+    base_url: null
+    timeout: 30
+  embedding:              # memory vector-recall endpoint (local-first, off by default; no shipped default block)
     provider: "main"      # "main" reuses primary provider; set to "openai"/"ollama" for local
     model: ""             # e.g. "bge-m3", "nomic-embed-text", "text-embedding-3-small"
     base_url: null        # local endpoint URL (e.g. "http://localhost:8080/v1")
@@ -131,13 +136,14 @@ model — at the defaults it is the primary model (e.g. MiniMax-M3), unchanged; 
 
 ```yaml
 agent:
-  max_turns: 90                              # Max turns per session
-  max_tool_iterations: 25                    # Max per-turn model<->tool round-trips (cap)
+  max_turns: 90                              # Outer rail on tool iterations per turn
+  max_tool_iterations: 90                    # Max per-turn model<->tool round-trips (cap; --max-turns overrides)
   budget_extension_prompt: true              # At the cap, prompt continue/summarize/abort (interactive only)
   budget_extension_step: null                # "+N" per extension (null = max_tool_iterations)
-  max_turn_seconds: 120                      # Timeout per turn (outer rail; extensions never raise it)
+  max_turn_seconds: null                     # Safety-net wall clock per turn; null = disabled (iteration budget is the guard)
   api_max_retries: 5                         # LLM API retry count (exp backoff)
   api_retry_backoff_cap_seconds: 16          # Max per-retry backoff draw
+  api_retry_total_timeout_seconds: 30        # Total wall-time budget across error-path retries (null = no total cap)
   api_retry_backoff_overload_cap_seconds: 60 # Higher cap used only for overload (529/503)
   empty_response_max_retries: 2              # In-turn retries for a 200-OK-but-empty response
   fallback_models: []                        # Ordered provider/model fallback chain (empty = none)
@@ -267,7 +273,6 @@ context:
 compression:
   enabled: true
   threshold: 0.50              # Trigger at 50% of context window
-  gateway_threshold: 0.85      # Critical threshold
   target_ratio: 0.20           # Compress to 20% of window
   protect_first_n: 3           # Keep first N messages
   protect_last_n: 20           # Keep last N messages
@@ -323,7 +328,6 @@ tasks:
 ```yaml
 tools:
   workspace_strict: true  # Sandbox write/edit/delete to workspace_root; false = any reachable path
-  git: true
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
                           # dangerous commands are still gated by security.confirm_policy
   ruby: true
@@ -334,8 +338,8 @@ tools:
 Each tool declares its own `tools.<key>` gate (`Tools::Base#config_key`). A key
 absent from config means the tool is enabled (opt-out model); only an explicit
 `false` disables it. So the keys above are the ones that ship a default — file
-tools (`read`/`write`/`edit`/`multi_edit`/`grep`/`glob`/`apply_patch`),
-`github`, and the rest are on by default and don't need a config entry. Note
+tools (`read`/`write`/`edit`/`multi_edit`/`grep`/`glob`/`apply_patch`) and the
+rest are on by default and don't need a config entry. Note
 both web tools share a single gate: `tools.web` controls `web_fetch` **and**
 `web_search` (there is no `tools.web_fetch` / `tools.web_search`).
 
@@ -555,11 +559,11 @@ external host (#579).
 security:
   confirm_policy: "dangerous_only"      # dangerous_only (default) | confirm_all
                                         # (the old require_confirmation_for_shell key was removed)
-  command_allowlist:                    # pre-approved commands (read-only intent only; empty = approve nothing)
-    - "git status"
-    - "git diff"
-    # Test/build runners (bundle exec rspec, rake, npm test) are NOT shipped here:
-    # they load and run arbitrary project code, so add one only if you accept that.
+  command_allowlist: []                 # EMPTY by default — pre-approval is opt-in (empty = approve nothing).
+                                        # Read-only commands (git status/diff, ls, grep, ...) already run
+                                        # unprompted via the read-only auto-allow, so nothing needs seeding here.
+                                        # Test/build runners (bundle exec rspec, rake, npm test) are deliberately
+                                        # NOT auto-approvable: they load and run arbitrary project code.
   website_blocklist:
     enabled: false
     domains: []
@@ -662,7 +666,7 @@ prompts:
 
 ```yaml
 clarify:
-  timeout: 120          # seconds to wait for a clarification answer
+  timeout: 600          # seconds to wait for a clarification answer before proceeding with best judgement
 
 worktree:
   enabled: false        # run in a git worktree
@@ -772,9 +776,9 @@ startup. When you opt in, enable TLS (`RUBINO_TLS=1`) and a strong
 
 | Variable | Purpose |
 |----------|---------|
-| `GITHUB_TOKEN` | GitHub access token for the `github` tool |
-| `TAVILY_API_KEY` | Tavily search key for `websearch` |
-| `SEARXNG_URL` | SearXNG instance URL for `websearch` |
+| `GITHUB_TOKEN` | GitHub token inherited by the `shell` tool's environment (used by `git`/`gh`); there is no dedicated `github` tool |
+| `TAVILY_API_KEY` | Tavily search key for the `web_search` tool |
+| `SEARXNG_URL` | SearXNG instance URL for the `web_search` tool |
 | `ALLOWED_FILE_URL_HOSTS` | Comma-separated extra hosts for URL attachments (merged with `attachments.allowed_hosts`) |
 | `SUDO_PASSWORD` | When set, relaxes the `sudo -S` hardline guard |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Standard network proxy (full HTTP/HTTPS/SOCKS support) |
