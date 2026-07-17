@@ -865,6 +865,33 @@ module Rubino
         "privacy" => {
           "redact_pii" => false
         },
+        # Opt-in OpenTelemetry tracing (Rubino::Telemetry). When enabled — and
+        # the optional `opentelemetry-sdk` + `opentelemetry-exporter-otlp` gems
+        # are installed — rubino exports spans following the OTel GenAI
+        # semantic conventions over OTLP http/protobuf: `invoke_agent` per
+        # turn, `chat <model>` per model call (gen_ai.usage.* token counts,
+        # prompt-cache reads included) and `execute_tool <name>` per tool call.
+        #   endpoint — collector base URL or full /v1/traces URL. nil ⇒ the
+        #     standard OTEL_EXPORTER_OTLP_* env vars, then the SDK default
+        #     (http://localhost:4318).
+        #   headers — extra exporter headers (e.g. an auth token; supports
+        #     ${ENV_VAR} expansion like every config value).
+        #   environment — stamped as deployment.environment.name on the
+        #     resource (dev/staging/prod).
+        #   capture_content — PRIVACY GATE, default OFF: message/tool text is
+        #     NEVER exported unless this (or the standard
+        #     OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true env var)
+        #     opts in; even then payloads pass Logger.redact and are truncated.
+        #   resource_attributes — extra key/value resource attributes attached
+        #     to every span (team, host role, …).
+        "otel" => {
+          "enabled" => false,
+          "endpoint" => nil,
+          "headers" => {},
+          "environment" => nil,
+          "capture_content" => false,
+          "resource_attributes" => {}
+        },
         # #552: how long an interactive `question`/clarify waits for the human
         # before it EXPIRES CLEANLY (the agent proceeds with its best judgement),
         # mirroring Hermes' agent.clarify_timeout.

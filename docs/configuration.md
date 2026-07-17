@@ -677,6 +677,20 @@ privacy:
 quick_commands: {}      # named one-line shortcuts
 ```
 
+### otel
+
+Opt-in OpenTelemetry tracing. Requires the optional `opentelemetry-sdk` and `opentelemetry-exporter-otlp` gems — see [observability.md](observability.md) for the span catalog, privacy model, and a quick-start with a local collector.
+
+```yaml
+otel:
+  enabled: false             # master switch (needs the optional OTel gems installed)
+  endpoint: null             # collector base URL or full /v1/traces URL; null = OTEL_EXPORTER_OTLP_* env vars, then http://localhost:4318
+  headers: {}                # extra exporter headers, e.g. Authorization: "Bearer ${OTEL_TOKEN}"
+  environment: null          # stamped as deployment.environment.name (dev/staging/prod)
+  capture_content: false     # PRIVACY GATE: export message/tool text (redacted + truncated) — default OFF
+  resource_attributes: {}    # extra key/value resource attributes on every span
+```
+
 ### formatters
 
 ```yaml

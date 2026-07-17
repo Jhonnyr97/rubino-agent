@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in OpenTelemetry tracing** (`otel:` config, default OFF). With the
+  optional `opentelemetry-sdk` + `opentelemetry-exporter-otlp` gems installed,
+  rubino exports one trace per turn over OTLP http/protobuf following the OTel
+  GenAI semantic conventions: `invoke_agent <agent>` per turn (subagent turns
+  nest under their `task` call), `chat <model>` per model call — the whole
+  retry/recovery/fallback envelope, with `gen_ai.usage.*` token counts
+  including prompt-cache reads — and `execute_tool <name>` per tool call,
+  approval gate included (`rubino.tool.status: success|error|denied`). Privacy
+  by default: no message/tool text is exported unless `otel.capture_content`
+  (or the standard `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)
+  opts in, and even then payloads pass `Logger.redact` and are truncated.
+  Zero-cost no-op when disabled; fail-open (a missing gem or broken exporter
+  config logs one warning and disables itself). See `docs/observability.md`.
+
 ### Changed
 
 - **Subagent management collapsed into one `task_manage` tool.** The four tools

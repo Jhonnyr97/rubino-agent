@@ -64,7 +64,40 @@ module Rubino
       end
 
       # Executes a single tool call, returns a Tools::Result.
+      #
+      # The whole gate + run pipeline runs inside ONE `execute_tool` span (OTel
+      # GenAI semconv, no-op unless otel.enabled) — approval decisions included,
+      # so a denied call still shows up as a span with rubino.tool.status:denied
+      # instead of silently vanishing from the trace. Arguments/output text ride
+      # on the span only under the capture_content opt-in, redacted + truncated.
       def execute(name:, arguments:, call_id:)
+        Telemetry.span("execute_tool #{name}",
+                       attributes: { "gen_ai.operation.name" => "execute_tool",
+                                     "gen_ai.tool.name" => name.to_s,
+                                     "gen_ai.tool.call.id" => call_id.to_s }) do |span|
+          span.set_attribute("gen_ai.tool.call.arguments", Telemetry.content(arguments)) if Telemetry.capture_content?
+          result = dispatch(name: name, arguments: arguments, call_id: call_id)
+          record_result_on(span, result)
+          result
+        end
+      end
+
+      private
+
+      # Span-facing outcome of a finished tool call. Only Tools::Result carries
+      # a status (a raw String from a bare-tool path does not — skip it).
+      def record_result_on(span, result)
+        return unless result.respond_to?(:denied?)
+
+        status = if result.denied? then "denied"
+                 elsif result.errorish? then "error"
+                 else "success"
+                 end
+        span.set_attribute("rubino.tool.status", status)
+        span.set_attribute("gen_ai.tool.call.result", Telemetry.content(result.output)) if Telemetry.capture_content?
+      end
+
+      def dispatch(name:, arguments:, call_id:)
         # Normalize arguments to symbol keys ONCE, before any downstream consumer
         # (live_card_header, preview_arguments, tool.call, SkillTool#call) reads
         # them. RubyLLM::Tool#call does the same transform_keys(&:to_sym), so

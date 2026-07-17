@@ -137,6 +137,19 @@ Gem::Specification.new do |spec|
   # ships precompiled grammars (no compile toolchain needed at install).
   spec.add_development_dependency "tree_sitter_language_pack", "~> 1.10"
 
+  # Optional OpenTelemetry tracing (Rubino::Telemetry, config `otel:`). NOT
+  # hard runtime dependencies: the telemetry module `require`s them lazily
+  # inside begin/rescue LoadError and stays a zero-cost no-op when they are
+  # absent or otel.enabled is false, so a default install carries no OTel
+  # weight. Declared as development dependencies so CI/specs exercise the real
+  # SDK (in-memory exporter); an end user who wants tracing installs them
+  # (`gem install opentelemetry-sdk opentelemetry-exporter-otlp`).
+  # Apache-2.0 licensed. The OTLP exporter speaks http/protobuf — the only
+  # transport the Ruby OTel project ships as stable (no gRPC gem published) —
+  # and adds google-protobuf, the one native-extension dep of the pair.
+  spec.add_development_dependency "opentelemetry-exporter-otlp", "~> 0.30"
+  spec.add_development_dependency "opentelemetry-sdk", "~> 1.8"
+
   # Development dependencies
   spec.add_development_dependency "parallel_tests", "~> 4.7"
   spec.add_development_dependency "rack-test", "~> 2.1"

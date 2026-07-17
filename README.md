@@ -194,6 +194,7 @@ Full reference (every key, env vars, precedence): **[docs/configuration.md](docs
 - **[Memory](docs/memory.md)** — the SQLite memory backend
 - **[Markdown extensions](docs/markdown-extensions.md)** — file-based agents, skills, commands, and rules (portable `.md` packs; also reads `~/.claude/…`)
 - **[Security](docs/security.md)** — approval model, hardline floor, TLS
+- **[Observability](docs/observability.md)** — opt-in OpenTelemetry tracing (GenAI-semconv spans, content off by default)
 - **[Troubleshooting](docs/troubleshooting.md)** — keyed on the exact error strings
 - **[HTTP API](docs/api/v1.md)** · **[Jobs & cron](docs/jobs.md)** · **[OAuth providers](docs/oauth-providers.md)** · **[Architecture](docs/architecture.md)**
 - **[Contributing](CONTRIBUTING.md)** · **[Changelog](CHANGELOG.md)**

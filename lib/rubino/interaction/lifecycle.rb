@@ -73,7 +73,32 @@ module Rubino
       # the user typed while it was working and folds it into the turn at a safe
       # iteration boundary. Nil for the API/server path and for nested SUBAGENT
       # runs, which stay isolated — no user injection, exactly as before.
+      #
+      # The whole turn runs inside ONE `invoke_agent` span (Rubino::Telemetry,
+      # no-op unless otel.enabled): every `chat`/`execute_tool` span it emits —
+      # and, for a foreground `task` delegation, the child Lifecycle's own
+      # `invoke_agent` span — nests under it, so a trace reads as the turn tree.
       def execute(input, image_paths: [], input_queue: nil, paste_expansions: [])
+        Telemetry.span("invoke_agent #{agent_name}",
+                       attributes: { "gen_ai.operation.name" => "invoke_agent",
+                                     "gen_ai.agent.name" => agent_name,
+                                     "gen_ai.conversation.id" => @session[:id].to_s }) do |span|
+          response = run_interaction(input, image_paths: image_paths, input_queue: input_queue,
+                                            paste_expansions: paste_expansions)
+          span.set_attribute("rubino.turn.stop_reason", @last_stop_reason.to_s) if @last_stop_reason
+          response
+        end
+      end
+
+      private
+
+      # The span-facing agent identity: the subagent definition's name for a
+      # `task` delegation, else the top-level agent.
+      def agent_name
+        @agent_definition&.name || "rubino"
+      end
+
+      def run_interaction(input, image_paths:, input_queue:, paste_expansions:)
         @event_bus.emit(Events::INTERACTION_STARTED, input: input)
 
         # 1. Persist user message
@@ -114,8 +139,6 @@ module Rubino
         @event_bus.emit(Events::INTERACTION_FAILED, error: e.message)
         raise
       end
-
-      private
 
       def persist_user_message(input, paste_expansions: [])
         # Lazily insert the session row on the first real message (#144). A
