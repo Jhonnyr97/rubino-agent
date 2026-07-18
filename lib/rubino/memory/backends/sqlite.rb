@@ -167,16 +167,32 @@ module Rubino
           ranked = rank(query: query, k: k)
           budget = @config.dig("memory", "memory_char_limit")
           selected = []
+          injected_ids = []
           total = 0
+          cut = false
           ranked.each do |row|
             len = row[:text].to_s.length
-            break if budget&.positive? && total + len > budget
+            # Greedy prefix pack: once one candidate would blow the injection
+            # budget, none after it are injected either (unchanged behaviour) —
+            # but we keep iterating so the DROPPED tail is still recorded for the
+            # explain trace ("retrieved but budget-dropped").
+            cut ||= budget&.positive? && total + len > budget
+            next if cut
 
             selected << present(row)
+            injected_ids << row[:id]
             total += len
           end
+          record_retrieval_explain(ranked, injected_ids) if Telemetry.enabled?
           selected
         end
+
+        # Explainability side-channel for the last #retrieve: the recall span
+        # (Lifecycle#load_memory) reads this to expose WHY each fact was (or was
+        # not) recalled — per-candidate score/source/injected plus the aggregate
+        # signal hit-counts. nil until a retrieve runs under otel; never consumed
+        # by the prompt path, so retrieval behaviour is unchanged.
+        attr_reader :last_retrieval
 
         # -- admin --
 
@@ -221,8 +237,11 @@ module Rubino
           # DIRECT relevance first: FTS/BM25 (+ vector KNN when wired) fused by
           # weighted RRF. These are the only signals that match the query's
           # CONTENT, so the fact a keyword probe ranks #1 must stay #1.
-          lists = [[fts_match(query, k * 3), FTS_WEIGHT]]
-          lists << [vector_match(query, k * 3), VECTOR_WEIGHT] if vector? && query
+          fts_ids = fts_match(query, k * 3)
+          vector_ids = vector? && query ? vector_match(query, k * 3) : []
+
+          lists = [[fts_ids, FTS_WEIGHT]]
+          lists << [vector_ids, VECTOR_WEIGHT] if vector? && query
 
           scores = Hash.new(0.0)
           lists.each do |ids, weight|
@@ -244,24 +263,32 @@ module Rubino
           # connected fact a keyword probe missed), then recency (so a no-match
           # query still surfaces the freshest live facts). Neither can outrank a
           # direct relevance hit.
-          ranked.first(k) + tail_backfill(ranked, k, query)
+          backfill_rows, graph_ids, recency_ids = tail_backfill(ranked, k, query)
+
+          # Stash the per-candidate provenance (which signal surfaced each id +
+          # its fused score) so #retrieve can hand a fully explainable recall to
+          # the telemetry span. Only when otel is on — zero-cost otherwise.
+          stash_rank_provenance(scores, fts_ids, vector_ids, graph_ids, recency_ids) if Telemetry.enabled?
+
+          ranked.first(k) + backfill_rows
         end
 
         # Fill the remaining budget (k − direct hits) with supplementary facts
         # NOT already ranked: 1-hop graph neighbours of the query first, then
-        # recency. Returns [] when direct relevance already covers k.
+        # recency. Returns [rows, graph_ids, recency_ids] — the extra id lists let
+        # #rank attribute each backfilled candidate to its signal for telemetry;
+        # rows is [] (and the id lists their raw hits) when nothing backfills.
         def tail_backfill(ranked, k, query)
-          return [] if ranked.size >= k
+          return [[], [], []] if ranked.size >= k
 
           have = ranked.map { |r| r[:id] }.to_set
-          ids = []
-          ids.concat(graph_neighbors(query, k * 2)) if query && graph?
-          ids.concat(recency(k * 2))
-          ids = ids.reject { |id| have.include?(id) }.uniq.first(k - ranked.size)
-          return [] if ids.empty?
+          graph_ids = query && graph? ? graph_neighbors(query, k * 2) : []
+          recency_ids = recency(k * 2)
+          ids = (graph_ids + recency_ids).reject { |id| have.include?(id) }.uniq.first(k - ranked.size)
+          return [[], graph_ids, recency_ids] if ids.empty?
 
           by_id = live_dataset.where(id: ids).all.each_with_object({}) { |r, h| h[r[:id]] = r }
-          ids.map { |id| by_id[id] }.compact
+          [ids.map { |id| by_id[id] }.compact, graph_ids, recency_ids]
         end
 
         # BM25 ranking over live facts. FTS5's MATCH needs a sanitized query
@@ -502,7 +529,15 @@ module Rubino
           # Honour the configured model (or keep the global default).
           llm_config.default_embedding_model = model unless model.empty?
 
-          RubyLLM.embed(text.to_s, context: RubyLLM::Context.new(llm_config))
+          # A local/custom embedding model (the advertised local-first use case)
+          # is NOT in RubyLLM's static registry, so a bare embed raises
+          # ModelNotFoundError and vector recall silently falls back to FTS-only.
+          # When the user explicitly names a model + provider, tell RubyLLM to
+          # trust it — mirroring the provider's `assume_model_exists` for the main
+          # model. Without a model we keep the registry-validated default path.
+          opts = { context: RubyLLM::Context.new(llm_config) }
+          opts.merge!(model: model, provider: resolved_provider.to_sym, assume_model_exists: true) unless model.empty?
+          RubyLLM.embed(text.to_s, **opts)
         end
 
         def resolve_embedding_provider(cfg)
@@ -591,6 +626,53 @@ module Rubino
         end
 
         # ---- telemetry (best-effort, no-op unless otel.enabled) ----
+
+        # Record which signal(s) surfaced each candidate id and its fused RRF
+        # score, captured by #rank for the current retrieval. A candidate can
+        # carry several sources (e.g. fts + vector); graph/recency are the tail
+        # backfill signals. Kept per-id so #record_retrieval_explain can join it
+        # against the ordered/budget-cut result. Never raises.
+        def stash_rank_provenance(scores, fts_ids, vector_ids, graph_ids, recency_ids)
+          sources = Hash.new { |h, id| h[id] = [] }
+          fts_ids.each { |id| sources[id] << "fts" }
+          vector_ids.each { |id| sources[id] << "vector" }
+          graph_ids.each { |id| sources[id] << "graph" }
+          recency_ids.each { |id| sources[id] << "recency" }
+          @rank_provenance = {
+            scores: scores, sources: sources,
+            fts_hits: fts_ids.size, vector_hits: vector_ids.size,
+            graph_hits: graph_ids.size, recency_hits: recency_ids.size
+          }
+        rescue StandardError
+          @rank_provenance = nil
+        end
+
+        # Build the explainable retrieval record consumed by the recall span:
+        # aggregate signal hit-counts (always-on, pure counts) plus a per-
+        # candidate list — score, source signals, and whether each fact was
+        # INJECTED into the prompt or retrieved-but-budget-dropped. Candidate
+        # CONTENT rides here too; the span gates its export on capture_content.
+        def record_retrieval_explain(ranked, injected_ids)
+          prov = @rank_provenance || {}
+          scores = prov[:scores] || {}
+          sources = prov[:sources] || {}
+          injected = injected_ids.to_set
+          candidates = ranked.map do |row|
+            id = row[:id]
+            { id: id, kind: row[:kind], content: row[:text],
+              score: (scores[id] * KIND_WEIGHT[row[:kind]]).round(6),
+              sources: sources[id] || [], injected: injected.include?(id) }
+          end
+          @last_retrieval = {
+            vector_enabled: vector?,
+            fts_hits: prov[:fts_hits].to_i, vector_hits: prov[:vector_hits].to_i,
+            graph_hits: prov[:graph_hits].to_i, recency_hits: prov[:recency_hits].to_i,
+            retrieved_count: ranked.size, injected_count: injected_ids.size,
+            candidates: candidates
+          }
+        rescue StandardError
+          @last_retrieval = nil
+        end
 
         # Save-decision telemetry for one persisted fact, riding the proven OTLP
         # trace pipeline (Telemetry.span). A short `memory.fact_saved` span

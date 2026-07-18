@@ -301,6 +301,95 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
     end
   end
 
+  describe "Sqlite backend → retrieval explain (last_retrieval)" do
+    let(:db) { test_database.db }
+    let(:config) do
+      test_configuration("memory" => { "enabled" => true, "backend" => "sqlite",
+                                       "memory_char_limit" => 4000,
+                                       "sqlite" => { "vector" => false, "graph" => true } })
+    end
+    let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db) }
+
+    it "tags each candidate with its fused score, source signals and injected flag" do
+      backend.store(kind: "fact", content: "The suite runs with pytest and the xdist plugin.")
+      backend.store(kind: "fact", content: "Unrelated note about lunch.")
+      backend.retrieve(session_id: "s1", query: "which pytest plugin runs the suite")
+
+      explain = backend.last_retrieval
+      expect(explain[:vector_enabled]).to be(false)
+      expect(explain[:fts_hits]).to be_positive
+      top = explain[:candidates].first
+      expect(top[:content]).to include("pytest")
+      expect(top[:sources]).to include("fts")
+      expect(top[:score]).to be_positive
+      expect(top[:injected]).to be(true)
+    end
+
+    it "records budget-dropped candidates as injected:false so 'found but dropped' is visible" do
+      # Small injection budget sized so exactly ONE ~27-char candidate fits; the
+      # rest are retrieved-but-dropped and must still surface in the explain.
+      tight = test_configuration("memory" => { "enabled" => true, "backend" => "sqlite",
+                                               "memory_char_limit" => 30,
+                                               "sqlite" => { "vector" => false, "graph" => true } })
+      b = Rubino::Memory::Backends::Sqlite.new(config: tight, db: db)
+      3.times { |i| b.store(kind: "fact", content: "pytest plugin suite note #{i}.") }
+      b.retrieve(session_id: "s1", query: "pytest plugin suite")
+
+      explain = b.last_retrieval
+      expect(explain[:retrieved_count]).to be > explain[:injected_count]
+      expect(explain[:candidates].map { |c| c[:injected] }).to include(true, false)
+    end
+  end
+
+  describe "Lifecycle → recall explain on the search_memory span" do
+    let(:explain) do
+      { vector_enabled: true, fts_hits: 4, vector_hits: 6, graph_hits: 2, recency_hits: 5,
+        retrieved_count: 3, injected_count: 2,
+        candidates: [
+          { id: "a", kind: "project", content: "runs on Incus VMs", score: 0.12, sources: %w[fts vector],
+            injected: true },
+          { id: "b", kind: "fact", content: "uses Kamal", score: 0.05, sources: %w[vector], injected: true },
+          { id: "c", kind: "fact", content: "dropped by budget", score: 0.0, sources: %w[recency], injected: false }
+        ] }
+    end
+    let(:backend) do
+      double("MemoryBackend", user_profile: nil, project_context: nil,
+                              retrieve: [{ id: "a", kind: "project", content: "runs on Incus VMs" }],
+                              last_retrieval: explain)
+    end
+
+    before { allow(Rubino::Memory::Backends).to receive(:build).and_return(backend) }
+
+    def run_recall(capture: false)
+      allow(Rubino::Telemetry).to receive(:capture_content?).and_return(capture)
+      config = test_configuration("memory" => { "enabled" => true })
+      Rubino::Interaction::Lifecycle.new(
+        session: { id: "sess-x" }, event_bus: Rubino::Interaction::EventBus.new,
+        ui: Rubino::UI::Null.new, config: config
+      ).send(:load_memory, "deploy env?")
+    end
+
+    it "always emits the aggregate signal counts (no content) on the span" do
+      run_recall(capture: false)
+      expect(finished_span.attributes).to include(
+        "rubino.memory.vector.enabled" => true,
+        "rubino.memory.fts.hits" => 4,
+        "rubino.memory.vector.hits" => 6,
+        "rubino.memory.graph.hits" => 2,
+        "rubino.memory.retrieved_count" => 3,
+        "rubino.memory.injected_count" => 2
+      )
+    end
+
+    it "enriches the gen_ai.retrieval.documents event with score/source/injected under capture_content" do
+      run_recall(capture: true)
+      event = finished_span.events.find { |e| e.name == "gen_ai.retrieval.documents" }
+      payload = event.attributes["gen_ai.retrieval.documents"]
+      expect(payload).to include('"sources":["fts","vector"]', '"injected":true')
+      expect(payload).to include('"injected":false', '"content":"dropped by budget"') # dropped candidate present
+    end
+  end
+
   describe "Lifecycle → invoke_agent span" do
     let(:lifecycle) do
       Rubino::Interaction::Lifecycle.new(

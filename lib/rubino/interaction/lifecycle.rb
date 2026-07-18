@@ -271,15 +271,48 @@ module Rubino
           # (Custom rubino.memory.* — GenAI-semconv defines no recall-count/hit.)
           span.set_attribute("rubino.memory.relevant_count", relevant_count)
           span.set_attribute("rubino.memory.recall.hit", relevant_count.positive?)
+          # ALWAYS-ON recall explainability: which signals fired and how many
+          # facts survived the budget cut. Pure counts/booleans (no content), so
+          # they ride unconditionally; the per-candidate detail (with content)
+          # goes on the content-gated event below. Backend-specific — the default
+          # backend exposes no #last_retrieval, so this is a no-op there.
+          explain = recall_explain(backend)
+          record_recall_signals(span, explain) if explain
           # The standard GenAI-semconv `gen_ai.retrieval.documents` payload rides
           # a span EVENT, and only under the SAME capture_content privacy gate as
-          # the query text — the retrieved facts are content, never exported by
-          # default.
-          record_retrieval_documents(span, recalled) if Telemetry.capture_content?
+          # the query text — the retrieved facts (content, scores, sources) are
+          # never exported by default. The enriched per-candidate explain is used
+          # when available, else a plain {id,kind,content} of the injected facts.
+          record_retrieval_documents(span, recalled, explain) if Telemetry.capture_content?
           context
         end
       rescue StandardError
         {} # Don't fail the interaction if memory loading fails
+      end
+
+      # The backend's per-retrieval explain record (Sqlite backend only), or nil
+      # when the backend doesn't provide one (default backend) or otel is off.
+      def recall_explain(backend)
+        backend.respond_to?(:last_retrieval) ? backend.last_retrieval : nil
+      rescue StandardError
+        nil
+      end
+
+      # ALWAYS-ON recall signal counts on the span (no content): which signals
+      # fired (fts/vector/graph) and how many facts made the char-budget cut vs
+      # were retrieved-but-dropped. Lets "was X even retrieved?" be answered from
+      # the span attributes alone. Best-effort — never breaks the turn.
+      def record_recall_signals(span, explain)
+        span.add_attributes(
+          "rubino.memory.vector.enabled" => explain[:vector_enabled] == true,
+          "rubino.memory.fts.hits" => explain[:fts_hits].to_i,
+          "rubino.memory.vector.hits" => explain[:vector_hits].to_i,
+          "rubino.memory.graph.hits" => explain[:graph_hits].to_i,
+          "rubino.memory.retrieved_count" => explain[:retrieved_count].to_i,
+          "rubino.memory.injected_count" => explain[:injected_count].to_i
+        )
+      rescue StandardError
+        nil
       end
 
       # Record the recalled facts as the standard GenAI-semconv
@@ -288,16 +321,33 @@ module Rubino
       # redacted + truncated by Telemetry.content, exactly like the query text
       # and the chat message payloads. Best-effort — an event must never break
       # the turn.
-      def record_retrieval_documents(span, recalled)
-        return unless recalled.is_a?(Array) && !recalled.empty?
+      #
+      # When the backend supplied an +explain+ record, each document carries the
+      # full per-candidate provenance — `score`, `sources` (fts/vector/graph/
+      # recency) and `injected` — AND includes candidates that were retrieved but
+      # budget-dropped, so "found but dropped" is reconstructable. Otherwise it
+      # falls back to a plain {id,kind,content} of the injected facts.
+      def record_retrieval_documents(span, recalled, explain = nil)
+        documents = retrieval_documents(recalled, explain)
+        return if documents.empty?
 
-        documents = recalled.map do |m|
-          { "id" => m[:id], "kind" => m[:kind], "content" => m[:content] }
-        end
         span.add_event("gen_ai.retrieval.documents",
                        attributes: { "gen_ai.retrieval.documents" => Telemetry.content(documents) })
       rescue StandardError
         nil
+      end
+
+      def retrieval_documents(recalled, explain)
+        if explain && explain[:candidates].is_a?(Array)
+          explain[:candidates].map do |c|
+            { "id" => c[:id], "kind" => c[:kind], "content" => c[:content],
+              "score" => c[:score], "sources" => c[:sources], "injected" => c[:injected] }
+          end
+        elsif recalled.is_a?(Array)
+          recalled.map { |m| { "id" => m[:id], "kind" => m[:kind], "content" => m[:content] } }
+        else
+          []
+        end
       end
 
       def build_messages(_input, memory_context)
