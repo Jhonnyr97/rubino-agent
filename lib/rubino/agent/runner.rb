@@ -349,7 +349,14 @@ module Rubino
         surfaces << "memory" if @config.memory_auto_extract?
         return if surfaces.empty?
 
-        payload = { session_id: @session[:id], surfaces: surfaces }
+        # Thread the LIVE runtime provider (the CLI --provider override) so the
+        # session-end review runs on the SAME provider as the turn. Without it the
+        # job fell back to config.model.provider and IGNORED --provider: in a
+        # `--provider gateway --model <local>` one-shot the INLINE review (headless
+        # branch below) misrouted to the native default (e.g. deepseek), failed the
+        # retry/backoff ladder, and HUNG process exit. nil ⇒ no override → config.
+        payload = { session_id: @session[:id], surfaces: surfaces,
+                    provider: @provider_override }
         if @interactive
           Jobs::Queue.new.enqueue("BackgroundReviewJob", payload, drain_inline: false)
         else

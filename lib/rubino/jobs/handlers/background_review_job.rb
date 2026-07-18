@@ -205,6 +205,11 @@ module Rubino
           # "memory"). Intersected with the config-enabled surfaces in #run_review.
           surfaces = payload[:surfaces] || payload["surfaces"]
 
+          # The LIVE runtime provider the parent turn ran on (the CLI --provider
+          # override), threaded from Lifecycle#enqueue_post_turn_jobs. nil ⇒ no
+          # override was in effect, so the config default applies (see #run_review).
+          provider = payload[:provider] || payload["provider"]
+
           parent = Session::Repository.new.find(session_id)
           return unless parent
 
@@ -218,7 +223,7 @@ module Rubino
           system_prompt = Context::PromptAssembler.system_prompt_for(session_id)
           return unless system_prompt
 
-          run_review(parent, system_prompt, surfaces)
+          run_review(parent, system_prompt, surfaces, provider)
         rescue StandardError => e
           Rubino.logger.warn(event: "jobs.background_review.error",
                              error_class: e.class.name, message: e.message)
@@ -234,7 +239,7 @@ module Rubino
           messages.reverse.any? { |m| m.role == "assistant" && !m.content.to_s.strip.empty? }
         end
 
-        def run_review(parent, system_prompt, requested_surfaces = nil)
+        def run_review(parent, system_prompt, requested_surfaces = nil, live_provider = nil)
           # Intersect the config-enabled surfaces with what the caller asked for.
           # A nil request means "whatever config enables" (the queue/polishing
           # path); an explicit array narrows it (the inline callers). Each half
@@ -258,16 +263,18 @@ module Rubino
           runner = Agent::Runner.new(
             session_id: child[:id],
             model_override: parent[:model],
-            # Inherit the parent's LIVE runtime provider (Hermes'
-            # _current_main_runtime), i.e. the CONFIGURED provider the live
-            # conversation actually runs on — the openai-compatible "gateway"
-            # here — NOT the cosmetic model-name-inferred label the session row
-            # stores (e.g. "deepseek"), which routes to a native provider with
-            # no credentials configured and fails with "Missing <x>_api_key".
-            # Using the config provider also guarantees the review hits the SAME
-            # server slot as the live turn, which is the whole point of the
-            # byte-identical prefix (shared warm KV cache).
-            provider_override: Rubino.configuration.dig("model", "provider"),
+            # Inherit the parent turn's LIVE runtime provider (Hermes'
+            # _current_main_runtime): the CLI `--provider` override when the live
+            # conversation had one, else the config default. `live_provider` is
+            # that override, threaded from Lifecycle#enqueue_post_turn_jobs; the
+            # config `model.provider` is the fallback. We must NOT use only the
+            # config default (it IGNORES --provider, so a `--provider gateway`
+            # turn misrouted the review to the native default e.g. "deepseek",
+            # which has no gateway credentials and fails "Missing <x>_api_key" —
+            # then the whole retry/backoff ladder ran and, inline, HUNG shutdown).
+            # Matching the live provider also keeps the review on the SAME server
+            # slot as the live turn — the point of the byte-identical warm prefix.
+            provider_override: live_provider || Rubino.configuration.dig("model", "provider"),
             ui: UI::Null.new,
             interactive: false,
             announce_session: false,

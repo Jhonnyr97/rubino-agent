@@ -368,8 +368,12 @@ RSpec.describe Rubino::Agent::Runner do
       expect(Rubino::Jobs::Handlers::BackgroundReviewJob).not_to receive(:new)
       queue = instance_double(Rubino::Jobs::Queue)
       allow(Rubino::Jobs::Queue).to receive(:new).and_return(queue)
+      # The payload also carries the live runtime provider (nil here — no
+      # --provider override in this spec) so the review runs on the same provider.
       expect(queue).to receive(:enqueue)
-        .with("BackgroundReviewJob", { session_id: parent[:id], surfaces: ["skill"] }, drain_inline: false)
+        .with("BackgroundReviewJob",
+              { session_id: parent[:id], surfaces: ["skill"], provider: nil },
+              drain_inline: false)
 
       runner.end_session!(handoff: true)
     end

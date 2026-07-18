@@ -501,8 +501,16 @@ module Rubino
         surfaces << "memory" if memory_due
         return if surfaces.empty?
 
+        # Thread the LIVE runtime provider into the job so the review fork runs
+        # on the SAME provider as the just-finished turn — i.e. the CLI
+        # `--provider` override when present, else the config default. Without
+        # this the job fell back to `config.model.provider` and IGNORED
+        # `--provider`, so a `--provider gateway --model <local>` turn misrouted
+        # the review to the native default (e.g. deepseek): it failed the whole
+        # retry/backoff ladder and, running inline, hung process shutdown.
         queue.enqueue("BackgroundReviewJob",
-                      { session_id: @session[:id], surfaces: surfaces },
+                      { session_id: @session[:id], surfaces: surfaces,
+                        provider: @provider_override },
                       drain_inline: drain_inline)
         @event_bus.emit(Events::JOB_ENQUEUED, type: "BackgroundReviewJob")
         enqueued = true

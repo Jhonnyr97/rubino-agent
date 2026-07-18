@@ -88,6 +88,45 @@ RSpec.describe Rubino::Jobs::Handlers::BackgroundReviewJob do
     expect(Rubino.review_toolset).to be_nil
   end
 
+  it "uses the LIVE provider from the payload (CLI --provider) over the config default" do
+    # Regression: a `--provider gateway --model <local>` turn must run the review
+    # on "gateway", NOT the config default. Threading the live provider through
+    # the payload is what stops the review misrouting to the native default
+    # (e.g. deepseek), failing the retry ladder, and hanging inline shutdown.
+    session = parent_with_answer
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    seen_provider = nil
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!)
+    allow(Rubino::Agent::Runner).to receive(:new) do |**kwargs|
+      seen_provider = kwargs[:provider_override]
+      runner
+    end
+
+    described_class.new.perform({ session_id: session[:id], provider: "gateway" })
+
+    expect(seen_provider).to eq("gateway")
+    expect(seen_provider).not_to eq(config.dig("model", "provider"))
+  end
+
+  it "falls back to the config provider when no live provider is in the payload" do
+    session = parent_with_answer
+    allow(Rubino::Context::PromptAssembler).to receive(:system_prompt_for).and_return("SYS")
+
+    seen_provider = nil
+    runner = instance_double(Rubino::Agent::Runner)
+    allow(runner).to receive(:run!)
+    allow(Rubino::Agent::Runner).to receive(:new) do |**kwargs|
+      seen_provider = kwargs[:provider_override]
+      runner
+    end
+
+    described_class.new.perform({ session_id: session[:id] })
+
+    expect(seen_provider).to eq(config.dig("model", "provider"))
+  end
+
   it "runs ONE combined turn (skill + memory in a single prompt) when both surfaces are enabled" do
     session = parent_with_answer
     allow(Rubino).to receive(:configuration).and_return(config_with(memory: true, skills: true))
