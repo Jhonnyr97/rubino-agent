@@ -356,22 +356,34 @@ module Rubino
       # realpath fully expands symlinks and "../"; returns nil if the directory
       # does not exist or is unreadable.
       def resolve_cwd(cwd)
-        base = session_cwd
-        candidate = if cwd.nil? || cwd.to_s.empty?
-                      base
-                    else
-                      File.expand_path(cwd.to_s, base)
-                    end
-        path = File.realpath(candidate)
-        return nil unless File.directory?(path)
+        # No cwd param → run in the session cwd (workspace root, or a carried cd).
+        return existing_dir(session_cwd) if cwd.nil? || cwd.to_s.empty?
 
+        s = cwd.to_s
+        # Absolute path: resolve as given.
+        return existing_dir(File.expand_path(s)) if s.start_with?("/")
+
+        # Relative cwd: try it against the session cwd FIRST (so it honours a
+        # carried `cd`), then fall back to the WORKSPACE ROOT. The fallback makes
+        # an explicit relative `cwd:` robust to the model ALSO having `cd`'d there
+        # on a prior call: without it, `cwd: "sub"` after a `cd sub` expands to
+        # sub/sub and errors spuriously (the next identical retry then "works" —
+        # an intermittent, confusing failure). It only fires when the session-cwd
+        # resolution would ITSELF fail, so it can never change a working case,
+        # only rescue one that would otherwise error.
+        existing_dir(File.expand_path(s, session_cwd)) ||
+          existing_dir(File.expand_path(s, workspace_root_real))
         # NB: we deliberately do NOT update the session cwd here. The new cwd is
-        # persisted post-run from the command's ACTUAL final $PWD (which equals
-        # this dir unless the command cd'd further) by #persist_session_cwd, and
-        # only after the workspace-confinement check. That way a `cwd:` outside
-        # the workspace doesn't leak into the next call even if the command
-        # `exit`s before the sentinel prints — the prior (in-workspace) cwd holds.
-        path
+        # persisted post-run from the command's ACTUAL final $PWD by
+        # #persist_session_cwd, and only after the workspace-confinement check, so
+        # a `cwd:` outside the workspace can't leak into the next call.
+      end
+
+      # realpath a candidate path, returning it only when it is an existing
+      # directory; nil (not an exception) for anything unresolvable.
+      def existing_dir(candidate)
+        path = File.realpath(candidate)
+        File.directory?(path) ? path : nil
       rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
         nil
       end

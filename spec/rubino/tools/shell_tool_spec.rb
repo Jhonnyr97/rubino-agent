@@ -323,6 +323,18 @@ RSpec.describe Rubino::Tools::ShellTool do
       end
     end
 
+    it "falls back to the workspace root for a relative cwd: already reached via `cd`" do
+      # Regression: after `cd subdir`, a model that ALSO passes cwd:"subdir" used
+      # to hit subdir/subdir and error spuriously (only the identical retry then
+      # worked). The root fallback resolves it to the workspace's subdir instead.
+      on_fresh_thread do
+        tool.call("command" => "cd cwd_persist_subdir") # session cwd -> subdir
+        res = tool.call("command" => "pwd", "cwd" => "cwd_persist_subdir")
+        expect(res[:error_code]).to be_nil
+        expect(payload(res).strip).to end_with("cwd_persist_subdir")
+      end
+    end
+
     it "does NOT leak the sentinel into a normal command's output" do
       on_fresh_thread do
         out = payload(tool.call("command" => "echo plain_output_xyz"))
