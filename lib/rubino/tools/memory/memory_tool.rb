@@ -43,9 +43,16 @@ module Rubino
                         description: "memory (general), user (user profile), or project (durable project/codebase fact)"
         string :content, description: "New content (required for add and replace)"
         string :old_text, description: "Substring of existing memory to match (required for replace and remove)"
+        array :entities, description: "Optional: key entity names mentioned in this fact " \
+                        "(people, projects, tools, systems), used to build the memory graph. " \
+                        "Only consulted when memory.sqlite.graph_extraction is 'supplied'; " \
+                        "otherwise entities are derived automatically and this can be omitted.",
+                        required: false do
+          string
+        end
       end
 
-      def execute(action:, target:, content: nil, old_text: nil)
+      def execute(action:, target:, content: nil, old_text: nil, entities: [])
         return error("invalid action '#{action}'; expected one of #{VALID_ACTIONS.join(", ")}") \
           unless VALID_ACTIONS.include?(action)
         return error("invalid target '#{target}'; expected one of #{VALID_TARGETS.join(", ")}") \
@@ -54,7 +61,7 @@ module Rubino
         kind = TARGET_TO_KIND.fetch(target)
 
         case action
-        when "add"     then do_add(kind, content)
+        when "add"     then do_add(kind, content, entities)
         when "replace" then do_replace(kind, old_text, content)
         when "remove"  then do_remove(kind, old_text)
         end
@@ -66,13 +73,14 @@ module Rubino
         @backend ||= ::Rubino::Memory::Backends.build
       end
 
-      def do_add(kind, content)
+      def do_add(kind, content, entities = [])
         return error("content is required for add") if blank?(content)
 
         memory = backend.store(
           kind: kind,
           content: content,
-          source_session_id: Rubino.memory_source_session_id
+          source_session_id: Rubino.memory_source_session_id,
+          metadata: { entities: Array(entities) }
         )
         "Memory added (id=#{memory[:id][0, 8]}, kind=#{kind})."
       rescue ::Rubino::Memory::Store::ThreatDetectedError => e

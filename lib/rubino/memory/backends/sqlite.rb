@@ -96,7 +96,7 @@ module Rubino
           insert_fact(
             text: content,
             kind: k,
-            entities: Array(metadata[:entities]),
+            entities: graph_entities(content, metadata[:entities]),
             source_session_id: source_session_id,
             confidence: confidence,
             valid_from: metadata[:valid_from]
@@ -415,6 +415,32 @@ module Rubino
           return @graph unless @graph.nil?
 
           @graph = @config.dig("memory", "sqlite", "graph") != false
+        end
+
+        # Entity names to index into the co_occurs graph for a fact, per
+        # memory.sqlite.graph_extraction:
+        #   "deterministic" (default) → caller-supplied ∪ a pure-Ruby heuristic
+        #        over the fact text (option 1 — feeds the graph for free, no LLM)
+        #   "supplied" → only caller-supplied entities (option 2 — the memory
+        #        tool's `entities` param, filled by the model; no heuristic)
+        #   "off" → none (graph stays empty; bring-your-own / disable)
+        # Always [] when the graph blend itself is disabled (graph:false), so a
+        # supplied-entities call can't secretly repopulate a disabled graph.
+        def graph_entities(text, supplied)
+          return [] unless graph?
+
+          supplied = Array(supplied).map { |e| e.to_s.strip }.reject(&:empty?)
+          case graph_extraction
+          when "off"      then []
+          when "supplied" then supplied.uniq { |e| e.downcase }
+          else # "deterministic" (default) and any unrecognised value
+            (supplied + Rubino::Memory::EntityExtractor.extract(text)).uniq { |e| e.downcase }
+          end
+        end
+
+        def graph_extraction
+          @graph_extraction ||=
+            (@config.dig("memory", "sqlite", "graph_extraction") || "deterministic").to_s
         end
 
         def maybe_embed(text)

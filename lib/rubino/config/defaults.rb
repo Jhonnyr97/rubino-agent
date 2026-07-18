@@ -422,7 +422,17 @@ module Rubino
           # is the graph-lite 1-hop entity/edge blend (on by default).
           "sqlite" => {
             "vector" => false,
-            "graph" => true
+            "graph" => true,
+            # How the co_occurs entity graph is FED (it was inert before — the
+            # memory tool stored facts with no entities, so nodes/edges never
+            # grew). Options:
+            #   "deterministic" (default) — a pure-Ruby heuristic extracts
+            #      proper-noun / identifier entities from each fact's text (no
+            #      LLM, sub-ms). Feeds the graph for free.
+            #   "supplied" — only entities the memory tool call carries (the
+            #      model fills the tool's `entities` param). No heuristic.
+            #   "off" — never feed the graph (FTS-only recall; bring your own).
+            "graph_extraction" => "deterministic"
           }
         },
         "jobs" => {
