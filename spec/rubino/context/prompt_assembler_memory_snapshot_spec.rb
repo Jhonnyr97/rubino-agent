@@ -154,12 +154,11 @@ RSpec.describe Rubino::Context::PromptAssembler, "memory snapshot" do
       expect(content).not_to include("## Memory")
     end
 
-    it "frames memory as authoritative ground truth to answer from, over re-derivation" do
+    it "frames memory as authoritative reference data that should inform the response (Hermes-aligned)" do
       content = system_content_with_config(true)
-      expect(content).to include("authoritative ground truth")
-      expect(content).to include("answer from it directly")
-      # the precedence directive: don't re-investigate what memory already states
-      expect(content).to include("do NOT re-read files, grep, or otherwise re-derive")
+      expect(content).to include("authoritative reference data")
+      expect(content).to include("persistent memory")
+      expect(content).to include("should inform your response")
     end
 
     it "includes the 'search if you expect context' nudge" do

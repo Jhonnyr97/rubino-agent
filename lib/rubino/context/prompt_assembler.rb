@@ -599,7 +599,7 @@ module Rubino
 
         <<~PROMPT.strip
           ## Memory
-          You have persistent memory about the user and this project. Any memory relevant to this turn appears below under [Relevant Memories] and [User Profile] — treat it as authoritative ground truth the user has already given you, and answer from it directly. When it already answers the question, do NOT re-read files, grep, or otherwise re-derive what it already states — investigate only to fill a genuine gap it doesn't cover, or before modifying code. If you expect stored context (user preferences, project conventions, prior decisions) and none is shown, search it with the memory / session_search tool before assuming it doesn't exist.
+          You have persistent memory about the user and this project. Any memory relevant to this turn appears below under [Relevant Memories] and [User Profile]. Treat it as authoritative reference data — this is the agent's persistent memory, not new user input, and it should inform your response; answer from it when it already covers the question rather than re-deriving what it states. If you expect stored context (user preferences, project conventions, prior decisions) and none is shown, search it with the memory / session_search tool before assuming it doesn't exist.
         PROMPT
       end
 
