@@ -263,7 +263,11 @@ module Rubino
             relevant_memories: backend.retrieve(session_id: @session[:id], query: query)
           }
           recalled = context[:relevant_memories]
-          span.set_attribute("rubino.memory.relevant_count", recalled.is_a?(Array) ? recalled.size : 0)
+          relevant_count = recalled.is_a?(Array) ? recalled.size : 0
+          # relevant_count = facts injected this turn; hit = the recall surfaced
+          # at least one, so a dashboard can chart the recall hit-rate per turn.
+          span.set_attribute("rubino.memory.relevant_count", relevant_count)
+          span.set_attribute("rubino.memory.recall.hit", relevant_count.positive?)
           context
         end
       rescue StandardError

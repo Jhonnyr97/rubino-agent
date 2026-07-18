@@ -91,9 +91,12 @@ module Rubino
           # saved twice used to mint two identical rows. Idempotent — a verbatim
           # repeat (or whitespace/case variant) returns the existing row.
           existing = verbatim_duplicate(k, content)
-          return present(existing) if existing
+          if existing
+            record_fact_saved(k, inserted: false)
+            return present(existing)
+          end
 
-          insert_fact(
+          result = insert_fact(
             text: content,
             kind: k,
             entities: graph_entities(content, metadata[:entities]),
@@ -101,6 +104,8 @@ module Rubino
             confidence: confidence,
             valid_from: metadata[:valid_from]
           )
+          record_fact_saved(k, inserted: true)
+          result
         end
 
         # Replace the first LIVE fact of `kind` whose text includes `old_text`.
@@ -331,7 +336,9 @@ module Rubino
           )
           # Graph-lite: upsert entity nodes + co-occurrence/typed edges for this
           # fact. Best-effort — a graph hiccup must never abort the fact write.
-          index_fact_graph(id, entities, typed: edges) unless entities.empty? && Array(edges).empty?
+          # Wrapped so the graph feed is TELEMETRISED (entities/edges added +
+          # running totals) on the `memory.graph_indexed` span when otel is on.
+          record_graph_indexed(id, entities, edges) unless entities.empty? && Array(edges).empty?
           present(@db[TABLE].where(id: id).first)
         rescue Sequel::DatabaseError, StandardError => e
           raise if @db[TABLE].where(id: id).first.nil? # fact insert itself failed: surface it
@@ -581,6 +588,57 @@ module Rubino
           Rubino.logger.warn(event: "memory.sqlite.skip", error: error.class.name)
         rescue StandardError
           # logging must never block the write/extract path
+        end
+
+        # ---- telemetry (best-effort, no-op unless otel.enabled) ----
+
+        # Save-decision telemetry for one persisted fact, riding the proven OTLP
+        # trace pipeline (Telemetry.span). A short `memory.fact_saved` span
+        # carries the fact kind, whether this was a NEW insert or a verbatim
+        # dedup hit, and the running live-fact count — enough for a dashboard to
+        # chart saves-by-kind and store growth. Guarded on enabled? so the extra
+        # #count query never runs when telemetry is off; never raises.
+        def record_fact_saved(kind, inserted:)
+          return unless Telemetry.enabled?
+
+          Telemetry.span("memory.fact_saved",
+                         attributes: { "rubino.memory.fact.kind" => kind.to_s,
+                                       "rubino.memory.fact.inserted" => inserted,
+                                       "rubino.memory.facts.count" => count }) { nil }
+        rescue StandardError
+          nil
+        end
+
+        # Run the graph index for a fact and, when telemetry is on, emit a
+        # `memory.graph_indexed` span with the nodes/edges ADDED by this fact (a
+        # before/after diff, since index_fact_graph resolves-or-creates) plus the
+        # graph's running totals. index_fact_graph ALWAYS runs and its own errors
+        # still propagate to insert_fact's guard — only the telemetry counting is
+        # swallowed, so a metrics hiccup can't drop the graph feed.
+        def record_graph_indexed(fact_id, entities, edges)
+          unless Telemetry.enabled?
+            index_fact_graph(fact_id, entities, typed: edges)
+            return
+          end
+
+          before_entities = graph_entity_count
+          before_edges = graph_edge_count
+          index_fact_graph(fact_id, entities, typed: edges)
+          emit_graph_span(before_entities, before_edges)
+        end
+
+        def emit_graph_span(before_entities, before_edges)
+          after_entities = graph_entity_count
+          after_edges = graph_edge_count
+          Telemetry.span("memory.graph_indexed",
+                         attributes: {
+                           "rubino.memory.graph.entities_added" => after_entities - before_entities,
+                           "rubino.memory.graph.edges_added" => after_edges - before_edges,
+                           "rubino.memory.graph.entities_total" => after_entities,
+                           "rubino.memory.graph.edges_total" => after_edges
+                         }) { nil }
+        rescue StandardError
+          nil
         end
       end
     end

@@ -202,9 +202,81 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
       expect(span.name).to eq("search_memory")
       expect(span.attributes).to include(
         "gen_ai.operation.name" => "search_memory",
-        "rubino.memory.relevant_count" => 2
+        "rubino.memory.relevant_count" => 2,
+        "rubino.memory.recall.hit" => true
       )
       expect(span.attributes.keys).not_to include("gen_ai.memory.query.text")
+    end
+
+    it "marks the recall a miss when nothing relevant is injected" do
+      config = test_configuration("memory" => { "enabled" => true })
+      backend = double("MemoryBackend", user_profile: nil, project_context: nil, retrieve: [])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+      lifecycle = Rubino::Interaction::Lifecycle.new(
+        session: { id: "sess-4" }, event_bus: Rubino::Interaction::EventBus.new,
+        ui: Rubino::UI::Null.new, config: config
+      )
+
+      lifecycle.send(:load_memory, "anything")
+
+      expect(finished_span.attributes).to include(
+        "rubino.memory.relevant_count" => 0,
+        "rubino.memory.recall.hit" => false
+      )
+    end
+  end
+
+  describe "Sqlite backend → memory.fact_saved span" do
+    let(:db) { test_database.db }
+    let(:config) do
+      test_configuration("memory" => { "enabled" => true, "backend" => "sqlite",
+                                       "sqlite" => { "vector" => false, "graph" => true,
+                                                     "graph_extraction" => "deterministic" } })
+    end
+    let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db) }
+
+    it "emits a fact_saved span with kind, a NEW-insert flag and the running count" do
+      backend.store(kind: "user_profile", content: "Nilthon deploys AziendaOS with Kamal.")
+      saved = exporter.finished_spans.find { |s| s.name == "memory.fact_saved" }
+      expect(saved).not_to be_nil
+      expect(saved.attributes).to include(
+        "rubino.memory.fact.kind" => "user_profile",
+        "rubino.memory.fact.inserted" => true,
+        "rubino.memory.facts.count" => 1
+      )
+    end
+
+    it "flags a verbatim re-save as a dedup (inserted:false) without growing the count" do
+      backend.store(kind: "fact", content: "The build runs on CI.")
+      backend.store(kind: "fact", content: "The build runs on CI.")
+      dedup = exporter.finished_spans.select { |s| s.name == "memory.fact_saved" }.last
+      expect(dedup.attributes).to include(
+        "rubino.memory.fact.inserted" => false,
+        "rubino.memory.facts.count" => 1
+      )
+    end
+  end
+
+  describe "Sqlite backend → memory.graph_indexed span" do
+    let(:db) { test_database.db }
+    let(:config) do
+      test_configuration("memory" => { "enabled" => true, "backend" => "sqlite",
+                                       "sqlite" => { "vector" => false, "graph" => true,
+                                                     "graph_extraction" => "supplied" } })
+    end
+    let(:backend) { Rubino::Memory::Backends::Sqlite.new(config: config, db: db) }
+
+    it "emits the entities/edges added and running totals for a fact with entities" do
+      backend.store(kind: "project", content: "AziendaOS runs on Incus VMs.",
+                    metadata: { entities: %w[AziendaOS Incus] })
+      graph = exporter.finished_spans.find { |s| s.name == "memory.graph_indexed" }
+      expect(graph).not_to be_nil
+      expect(graph.attributes).to include(
+        "rubino.memory.graph.entities_added" => 2,
+        "rubino.memory.graph.edges_added" => 1, # C(2,2) co_occurs
+        "rubino.memory.graph.entities_total" => 2,
+        "rubino.memory.graph.edges_total" => 1
+      )
     end
   end
 

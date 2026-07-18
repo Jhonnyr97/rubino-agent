@@ -149,6 +149,20 @@ module Rubino
           row[:id] if ents.any? { |e| wanted.include?(e) }
         end.first(limit)
       end
+
+      # ---- totals (telemetry) ----
+
+      # Current node/edge totals for the memory graph. Nodes are permanent;
+      # edges are counted LIVE only (a superseded edge is a tombstone, exactly
+      # as graph_neighbors traverses). Plain COUNT(*)s used to stamp the graph's
+      # running size onto the `memory.graph_indexed` telemetry span.
+      def graph_entity_count
+        @db[ENTITIES].count
+      end
+
+      def graph_edge_count
+        @db[EDGES].where(valid_to: nil).count
+      end
     end
   end
 end
