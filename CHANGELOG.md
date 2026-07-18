@@ -21,7 +21,11 @@
   `rubino.aux.task`, and the turn-opening memory recall as a `search_memory`
   span with a relevant-memories count; the post-turn background review
   (memory extraction + skill capture) traces as its own `invoke_agent` run.
-  See `docs/observability.md`.
+  The `execute_tool` span carries the always-on audit skeleton:
+  `rubino.tool.decision.source` (which mechanism allowed/denied the call —
+  `auto`/`user`/`policy`/`hardline`/`permissions: deny`/`doom-loop`/
+  `no interactive session`) and `rubino.tool.target` (the skill/subagent
+  name for `skill`/`task` calls). See `docs/observability.md`.
 
 ### Changed
 

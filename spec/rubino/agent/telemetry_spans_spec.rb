@@ -106,10 +106,43 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
       expect(span.attributes.keys).not_to include("gen_ai.tool.call.arguments", "gen_ai.tool.call.result")
     end
 
-    it "marks a policy-denied call denied — the span still exists" do
-      allow(policy).to receive_messages(decide: :deny, last_deny_reason: nil)
+    it "marks a policy-denied call denied with its decision source — the span still exists" do
+      allow(policy).to receive_messages(decide: :deny, last_deny_reason: :hardline)
       executor.execute(name: "fake_tool", arguments: {}, call_id: "call_9")
-      expect(finished_span.attributes["rubino.tool.status"]).to eq("denied")
+      expect(finished_span.attributes).to include(
+        "rubino.tool.status" => "denied",
+        "rubino.tool.decision.source" => "hardline"
+      )
+    end
+
+    it "attributes a user 'No' at the approval prompt to source user" do
+      allow(policy).to receive_messages(decide: :ask, last_ask_reason: nil)
+      ui = executor.instance_variable_get(:@ui)
+      allow(ui).to receive(:confirm).and_return(false)
+      executor.execute(name: "fake_tool", arguments: {}, call_id: "call_9")
+      expect(finished_span.attributes).to include(
+        "rubino.tool.status" => "denied",
+        "rubino.tool.decision.source" => "user"
+      )
+    end
+
+    it "splits interactive approval (user) from auto-allow (auto) on ran calls" do
+      allow(policy).to receive(:decide).and_return(:ask)
+      allow(policy).to receive_messages(last_ask_reason: nil, workspace_widen_dirs: [])
+      executor.execute(name: "fake_tool", arguments: {}, call_id: "call_a")
+      approved = exporter.finished_spans.last
+      expect(approved.attributes["rubino.tool.decision.source"]).to eq("user")
+
+      allow(policy).to receive(:decide).and_return(:allow)
+      executor.execute(name: "fake_tool", arguments: {}, call_id: "call_b")
+      auto = exporter.finished_spans.last
+      expect(auto.attributes["rubino.tool.decision.source"]).to eq("auto")
+    end
+
+    it "surfaces the skill/subagent name as rubino.tool.target" do
+      allow(tool).to receive(:name).and_return("skill")
+      executor.execute(name: "skill", arguments: { action: "load", name: "deploy-checklist" }, call_id: "call_s")
+      expect(finished_span.attributes["rubino.tool.target"]).to eq("deploy-checklist")
     end
 
     it "exports arguments/output only under the capture_content opt-in" do

@@ -47,7 +47,7 @@ invoke_agent rubino                        the whole turn (Interaction::Lifecycl
 |---|---|---|
 | `invoke_agent <agent>` | one per turn | `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.conversation.id` (session id), `rubino.turn.stop_reason` |
 | `chat <model>` | one per model call (the whole retry/recovery/fallback envelope) | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `rubino.iteration` |
-| `execute_tool <name>` | one per tool call (MCP tools included — their registry name is `<server>_<tool>`) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `rubino.tool.status` (`success` / `error` / `denied`) |
+| `execute_tool <name>` | one per tool call (MCP tools included — their registry name is `<server>_<tool>`) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `rubino.tool.status` (`success` / `error` / `denied`), `rubino.tool.decision.source` (which mechanism decided: `auto` / `user` / `policy` / `hardline` / `permissions: deny` / `doom-loop` / `no interactive session`), `rubino.tool.target` (the skill / subagent name for `skill` and `task` calls) |
 | `chat <model>` + `rubino.aux.task` | one per auxiliary LLM call (summarize / title / vision / approval / compression) | same as `chat`, plus `rubino.aux.task` to tell aux spend apart from the main loop |
 | `search_memory` | the turn-opening memory recall | `gen_ai.operation.name`, `rubino.memory.relevant_count` |
 
@@ -58,6 +58,10 @@ Notes:
 - **Denied tools still produce spans** (`rubino.tool.status: denied`) — an approval denial is an observable outcome, not a gap in the trace.
 - **Background subagents** run on their own threads and start their own traces (OTel context is thread-local). Foreground delegation nests, as shown above.
 - **Memory and skills**: the model-driven `memory` / `skill` tool calls appear as ordinary `execute_tool` spans; the turn-opening recall has its own `search_memory` span; and the post-turn background review (the fork that extracts memories and captures skills) runs through the normal Runner/Lifecycle, so it shows up as its own `invoke_agent` trace with its `chat` and `execute_tool memory`/`execute_tool skill` children.
+
+## Audit model: traces find, transcripts explain
+
+The always-on trace is the **decision skeleton**: which tools ran, in what order, what was denied and by which mechanism (`rubino.tool.decision.source`), which skill/subagent was involved, what it cost. The full *content* answering "why did the agent do that?" lives in the session transcript rubino already persists (SQLite session store) — and every trace carries `gen_ai.conversation.id`, the session id, so an audit goes: find the span in Grafana → open that session's transcript at that turn. Keep the transcript store's retention longer than the traces' (`cleanup.period_days`) — it is the audit log.
 
 ## Privacy model
 

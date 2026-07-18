@@ -75,6 +75,8 @@ module Rubino
                        attributes: { "gen_ai.operation.name" => "execute_tool",
                                      "gen_ai.tool.name" => name.to_s,
                                      "gen_ai.tool.call.id" => call_id.to_s }) do |span|
+          target = telemetry_target(name, arguments)
+          span.set_attribute("rubino.tool.target", target) if target
           span.set_attribute("gen_ai.tool.call.arguments", Telemetry.content(arguments)) if Telemetry.capture_content?
           result = dispatch(name: name, arguments: arguments, call_id: call_id)
           record_result_on(span, result)
@@ -84,8 +86,32 @@ module Rubino
 
       private
 
+      # For the tools whose FIRST-CLASS argument is a low-sensitivity NAME —
+      # which skill was loaded, which subagent was delegated to — surface it as
+      # an always-on span attribute: it is explanation, not payload, and an
+      # audit reading "execute_tool skill" without the skill's name answers
+      # nothing. Everything else in `arguments` stays behind capture_content.
+      TELEMETRY_TARGET_ARGS = { "skill" => :name, "task" => :subagent }.freeze
+
+      def telemetry_target(name, arguments)
+        key = TELEMETRY_TARGET_ARGS[name.to_s]
+        return unless key && arguments.respond_to?(:[])
+
+        value = (arguments[key] || arguments[key.to_s]).to_s
+        value.empty? ? nil : value
+      end
+
       # Span-facing outcome of a finished tool call. Only Tools::Result carries
       # a status (a raw String from a bare-tool path does not — skip it).
+      #
+      # decision.source names WHICH MECHANISM let the call run or refused it —
+      # not a user identity. For a denial the Result's own label already
+      # carries it ("policy" / "hardline" / "permissions: deny" / "doom-loop" /
+      # "no interactive session"; nil = the human said no). For a call that
+      # ran, @decision_source (stamped by dispatch) splits interactive human
+      # approval ("user") from every auto path ("auto": allowlist, yolo,
+      # read-only auto-allow). Combined with rubino.tool.status this answers
+      # the audit question "who decided?" with zero sensitive content.
       def record_result_on(span, result)
         return unless result.respond_to?(:denied?)
 
@@ -94,10 +120,22 @@ module Rubino
                  else "success"
                  end
         span.set_attribute("rubino.tool.status", status)
+        span.set_attribute("rubino.tool.decision.source", decision_source(result))
         span.set_attribute("gen_ai.tool.call.result", Telemetry.content(result.output)) if Telemetry.capture_content?
       end
 
+      def decision_source(result)
+        return result.label || "user" if result.denied?
+
+        @decision_source || "auto"
+      end
+
       def dispatch(name:, arguments:, call_id:)
+        # Fresh per call: flipped to "user" only when an interactive approval
+        # prompt is answered yes below; every auto-proceed path (config
+        # allowlist, yolo, read-only auto-allow) keeps "auto". Read back by
+        # record_result_on for the span's rubino.tool.decision.source.
+        @decision_source = "auto"
         # Normalize arguments to symbol keys ONCE, before any downstream consumer
         # (live_card_header, preview_arguments, tool.call, SkillTool#call) reads
         # them. RubyLLM::Tool#call does the same transform_keys(&:to_sym), so
@@ -184,6 +222,8 @@ module Rubino
                           result: denied, reason: "user-denied")
             return finish(name, arguments, call_id, denied)
           end
+
+          @decision_source = "user"
         end
 
         # Widen-on-approval (Claude-Code-aligned): a structured write whose
@@ -231,8 +271,6 @@ module Rubino
         end
         finish(name, arguments, call_id, result)
       end
-
-      private
 
       # Single exit point: notifies the Loop's on_result sink (count + persist)
       # for every completed/denied tool, then returns the result unchanged. This
@@ -799,9 +837,8 @@ module Rubino
             # Wrap to fit inside the real terminal width, budgeting for the
             # "⚠ " prefix the CLI adds to the first line of every approval card.
             wrap = [approval_wrap_width - 2, 1].max
-            if header.length > wrap
-              return UI::CallSummary.wrap_line(header, wrap).join("\n")
-            end
+            return UI::CallSummary.wrap_line(header, wrap).join("\n") if header.length > wrap
+
             return header
           end
         end
