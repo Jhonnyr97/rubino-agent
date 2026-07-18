@@ -42,6 +42,7 @@ module Rubino
     class NullSpan
       def set_attribute(_key, _value); end
       def add_attributes(_attributes); end
+      def add_event(_name, **_kwargs); end
       def record_exception(_exception); end
       def status=(_status); end
     end

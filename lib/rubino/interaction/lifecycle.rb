@@ -244,11 +244,13 @@ module Rubino
       def load_memory(query = nil)
         return {} unless @config.memory_enabled?
 
-        # The turn-opening memory recall gets its own `search_memory` span
-        # (GenAI semconv memory operation) so recall latency and hit counts are
-        # visible per turn. Query text rides only under capture_content.
+        # The turn-opening memory recall gets its own `search_memory` span so
+        # recall latency and hit counts are visible per turn. The operation is
+        # tagged with the OTel GenAI-semconv RETRIEVAL name (`retrievals`, the
+        # RAG-recall operation) — the human span name stays `search_memory`.
+        # Query text rides only under capture_content.
         Telemetry.span("search_memory",
-                       attributes: { "gen_ai.operation.name" => "search_memory" }) do |span|
+                       attributes: { "gen_ai.operation.name" => "retrievals" }) do |span|
           if query && Telemetry.capture_content?
             span.set_attribute("gen_ai.memory.query.text",
                                Telemetry.content(query))
@@ -266,12 +268,36 @@ module Rubino
           relevant_count = recalled.is_a?(Array) ? recalled.size : 0
           # relevant_count = facts injected this turn; hit = the recall surfaced
           # at least one, so a dashboard can chart the recall hit-rate per turn.
+          # (Custom rubino.memory.* — GenAI-semconv defines no recall-count/hit.)
           span.set_attribute("rubino.memory.relevant_count", relevant_count)
           span.set_attribute("rubino.memory.recall.hit", relevant_count.positive?)
+          # The standard GenAI-semconv `gen_ai.retrieval.documents` payload rides
+          # a span EVENT, and only under the SAME capture_content privacy gate as
+          # the query text — the retrieved facts are content, never exported by
+          # default.
+          record_retrieval_documents(span, recalled) if Telemetry.capture_content?
           context
         end
       rescue StandardError
         {} # Don't fail the interaction if memory loading fails
+      end
+
+      # Record the recalled facts as the standard GenAI-semconv
+      # `gen_ai.retrieval.documents` list on a span EVENT of the same name. This
+      # is CONTENT, so the caller gates on capture_content?; the payload is
+      # redacted + truncated by Telemetry.content, exactly like the query text
+      # and the chat message payloads. Best-effort — an event must never break
+      # the turn.
+      def record_retrieval_documents(span, recalled)
+        return unless recalled.is_a?(Array) && !recalled.empty?
+
+        documents = recalled.map do |m|
+          { "id" => m[:id], "kind" => m[:kind], "content" => m[:content] }
+        end
+        span.add_event("gen_ai.retrieval.documents",
+                       attributes: { "gen_ai.retrieval.documents" => Telemetry.content(documents) })
+      rescue StandardError
+        nil
       end
 
       def build_messages(_input, memory_context)

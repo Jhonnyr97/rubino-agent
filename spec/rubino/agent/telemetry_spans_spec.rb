@@ -200,12 +200,33 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
       expect(context[:relevant_memories].size).to eq(2)
       span = finished_span
       expect(span.name).to eq("search_memory")
+      # operation.name follows the OTel GenAI-semconv RETRIEVAL name.
       expect(span.attributes).to include(
-        "gen_ai.operation.name" => "search_memory",
+        "gen_ai.operation.name" => "retrievals",
         "rubino.memory.relevant_count" => 2,
         "rubino.memory.recall.hit" => true
       )
       expect(span.attributes.keys).not_to include("gen_ai.memory.query.text")
+      expect((span.events || []).map(&:name)).not_to include("gen_ai.retrieval.documents")
+    end
+
+    it "records the retrieved facts as a gen_ai.retrieval.documents event under capture_content" do
+      allow(Rubino::Telemetry).to receive(:capture_content?).and_return(true)
+      config = test_configuration("memory" => { "enabled" => true })
+      backend = double("MemoryBackend", user_profile: nil, project_context: nil,
+                                        retrieve: [{ id: "f1", kind: "project", content: "uses Kamal" }])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+      lifecycle = Rubino::Interaction::Lifecycle.new(
+        session: { id: "sess-5" }, event_bus: Rubino::Interaction::EventBus.new,
+        ui: Rubino::UI::Null.new, config: config
+      )
+
+      lifecycle.send(:load_memory, "deploy?")
+
+      span = finished_span
+      event = span.events.find { |e| e.name == "gen_ai.retrieval.documents" }
+      expect(event).not_to be_nil
+      expect(event.attributes["gen_ai.retrieval.documents"]).to include('"content":"uses Kamal"', '"kind":"project"')
     end
 
     it "marks the recall a miss when nothing relevant is injected" do
