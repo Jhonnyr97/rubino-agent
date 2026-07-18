@@ -278,6 +278,11 @@ module Rubino
           # backend exposes no #last_retrieval, so this is a no-op there.
           explain = recall_explain(backend)
           record_recall_signals(span, explain) if explain
+          # Surface a swallowed embed failure so "vector.hits=0" is distinguishable
+          # from "embedding call errored" (e.g. missing credentials at recall time).
+          if backend.respond_to?(:last_embed_error) && backend.last_embed_error
+            span.set_attribute("rubino.memory.vector.embed_error", backend.last_embed_error.to_s[0, 200])
+          end
           # The standard GenAI-semconv `gen_ai.retrieval.documents` payload rides
           # a span EVENT, and only under the SAME capture_content privacy gate as
           # the query text — the retrieved facts (content, scores, sources) are

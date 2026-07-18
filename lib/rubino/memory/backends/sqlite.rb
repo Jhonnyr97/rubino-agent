@@ -484,17 +484,23 @@ module Rubino
           vec && encode_embedding(vec)
         end
 
+        # Set on the last embed failure so a silent nil (which degrades recall to
+        # keyword-only) is observable instead of invisible. Read by telemetry.
+        attr_reader :last_embed_error
+
         def embed(text)
           return nil unless vector?
 
           cfg = embedding_config
           res = if embedding_configured?(cfg)
-                  scoped_embed(text, cfg)
+                  RubyLLM.embed(text.to_s, **embedding_opts(cfg))
                 else
                   RubyLLM.embed(text.to_s)
                 end
+          @last_embed_error = nil
           res.respond_to?(:vectors) ? res.vectors : res
-        rescue StandardError
+        rescue StandardError => e
+          @last_embed_error = "#{e.class}: #{e.message}"
           nil
         end
 
@@ -515,29 +521,82 @@ module Rubino
           !(provider.empty? || provider == "main") || !model.empty?
         end
 
-        def scoped_embed(text, cfg)
-          resolved_provider = resolve_embedding_provider(cfg)
-          model = cfg["model"].to_s.strip
+        # RubyLLM.embed options built ONCE from the aux embedding config and reused
+        # for every call. Fully SELF-CONTAINED: the base URL, model, and API key
+        # are resolved here from config + ENV — NOT copied from the process-global
+        # RubyLLM.config. Recall embeds at load_memory (turn start), before the
+        # main adapter configures the global RubyLLM credentials, so any reliance
+        # on that global made recall-time embedding fail intermittently and vector
+        # recall silently degrade to keyword-only. `assume_model_exists` lets a
+        # local embedding model (not in RubyLLM's static registry) be used.
+        def embedding_opts(cfg)
+          @embedding_opts ||= begin
+            provider = resolve_embedding_provider(cfg)
+            model    = cfg["model"].to_s.strip
+            base_url = cfg["base_url"].to_s.strip
+
+            llm = RubyLLM::Configuration.new
+            apply_embedding_credentials!(llm, provider, cfg)
+            set_provider_base_url(llm, provider, base_url) unless base_url.empty?
+            llm.default_embedding_model = model unless model.empty?
+
+            opts = { context: RubyLLM::Context.new(llm) }
+            opts.merge!(model: model, provider: provider.to_sym, assume_model_exists: true) unless model.empty?
+            opts
+          end
+        end
+
+        # Resolve the embedding provider's api_key deterministically: the aux
+        # config's own key, else the provider block, else ENV, else a placeholder
+        # (local/custom gateways accept any bearer). Independent of whether the
+        # main adapter has configured RubyLLM yet.
+        def apply_embedding_credentials!(llm, provider, cfg)
+          setter = "#{provider}_api_key"
+          return unless llm.respond_to?(setter)
+
+          key = resolve_embedding_api_key(provider, cfg)
+          llm.public_send("#{setter}=", key) unless key.empty?
+        rescue NoMethodError
+          nil
+        end
+
+        # Resolve the embedding endpoint's api_key. The subtlety: a custom base_url
+        # REDIRECTS the provider away from its default hosted endpoint (e.g. to a
+        # local gateway), and the ambient ENV key (`PROVIDER_API_KEY`) is the
+        # credential for the HOSTED service — a redirected endpoint rejects it with
+        # "Invalid API key" and vector recall silently degrades. So ENV is used
+        # ONLY for the default hosted endpoint; a redirected one reuses the main
+        # model provider's key (usually the same gateway) before any placeholder.
+        def resolve_embedding_api_key(provider, cfg)
+          key = cfg["api_key"].to_s.strip
+          key = @config.dig("providers", provider, "api_key").to_s.strip if key.empty?
+          return key unless key.empty?
+
           base_url = cfg["base_url"].to_s.strip
+          # No custom endpoint → the provider's hosted default, where the ambient
+          # ENV key is the right credential.
+          return ENV.fetch("#{provider.upcase}_API_KEY", "").to_s.strip if base_url.empty?
 
-          llm_config = RubyLLM::Configuration.new
-          # Copy API keys from the global RubyLLM config so the scoped
-          # context inherits the process's credentials (ENV vars).
-          copy_llm_api_keys(llm_config)
-          # Point the resolved provider at the configured base URL.
-          set_provider_base_url(llm_config, resolved_provider, base_url) unless base_url.empty?
-          # Honour the configured model (or keep the global default).
-          llm_config.default_embedding_model = model unless model.empty?
+          # Redirected endpoint → reuse the api_key of whichever configured
+          # provider points at the SAME base_url (typically the local gateway the
+          # main model uses), so the endpoint receives a key it accepts rather
+          # than the hosted ENV key it rejects. Neutral placeholder as last resort.
+          provider_key_for_base_url(base_url) || "local"
+        end
 
-          # A local/custom embedding model (the advertised local-first use case)
-          # is NOT in RubyLLM's static registry, so a bare embed raises
-          # ModelNotFoundError and vector recall silently falls back to FTS-only.
-          # When the user explicitly names a model + provider, tell RubyLLM to
-          # trust it — mirroring the provider's `assume_model_exists` for the main
-          # model. Without a model we keep the registry-validated default path.
-          opts = { context: RubyLLM::Context.new(llm_config) }
-          opts.merge!(model: model, provider: resolved_provider.to_sym, assume_model_exists: true) unless model.empty?
-          RubyLLM.embed(text.to_s, **opts)
+        # The api_key of the configured provider whose base_url matches +base_url+,
+        # or nil if none carries one.
+        def provider_key_for_base_url(base_url)
+          providers = @config.dig("providers")
+          return nil unless providers.is_a?(Hash)
+
+          providers.each_value do |pc|
+            next unless pc.is_a?(Hash) && pc["base_url"].to_s.strip == base_url
+
+            k = pc["api_key"].to_s.strip
+            return k unless k.empty?
+          end
+          nil
         end
 
         def resolve_embedding_provider(cfg)
@@ -545,18 +604,6 @@ module Rubino
           return @config.dig("model", "provider").to_s if provider.empty? || provider == "main"
 
           provider
-        end
-
-        # Copy known API keys from the global RubyLLM config to a scoped one
-        # so embedding calls to a custom endpoint still carry credentials.
-        def copy_llm_api_keys(target)
-          %w[openai_api_key anthropic_api_key gemini_api_key deepseek_api_key
-             ollama_api_key bedrock_api_key bedrock_secret_key].each do |key|
-            val = RubyLLM.config.public_send(key)
-            target.public_send("#{key}=", val) if val
-          rescue NoMethodError
-            # Provider option not registered — ignore
-          end
         end
 
         def set_provider_base_url(target, provider_name, base_url)

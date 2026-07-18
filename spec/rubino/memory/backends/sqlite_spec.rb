@@ -398,7 +398,7 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(b.send(:maybe_embed, "test query")).to be_nil
     end
 
-    it "calls RubyLLM.embed with configured context when aux is set" do
+    it "calls RubyLLM.embed with the self-contained aux embedding opts when aux is set" do
       cfg = test_configuration(
         "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
         "auxiliary" => {
@@ -411,12 +411,35 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       )
       b = described_class.new(config: cfg, db: db)
 
-      # Stub the scoped embed call
+      # embed routes through a self-contained context (own credentials + base_url),
+      # NOT the process-global RubyLLM config, and trusts the configured model.
       fake_embedding = double("embedding", vectors: [0.1, 0.2, 0.3])
-      expect(b).to receive(:scoped_embed).with("test query", kind_of(Hash)).and_return(fake_embedding).once
+      expect(RubyLLM).to receive(:embed)
+        .with("test query", hash_including(model: "bge-m3", provider: :openai, assume_model_exists: true))
+        .and_return(fake_embedding).once
 
       result = b.send(:embed, "test query")
       expect(result).to eq([0.1, 0.2, 0.3])
+    end
+
+    it "resolves the embedding key from the provider matching the custom base_url, not the hosted ENV key" do
+      # A redirected base_url (a local gateway) must NOT receive the hosted
+      # PROVIDER_API_KEY (the gateway rejects it as "Invalid API key" and vector
+      # recall silently degrades). It reuses the key of the provider pointing at
+      # the same base_url.
+      cfg = test_configuration(
+        "model" => { "provider" => "deepseek" },
+        "providers" => {
+          "gateway" => { "base_url" => "http://127.0.0.1:8000/v1", "api_key" => "gw-key" }
+        },
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => { "provider" => "openai", "model" => "bge-m3", "base_url" => "http://127.0.0.1:8000/v1" }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+      key = b.send(:resolve_embedding_api_key, "openai", cfg.auxiliary_config("embedding"))
+      expect(key).to eq("gw-key")
     end
 
     it "stores an embedding blob on insert when vector mode is on and embed succeeds" do
