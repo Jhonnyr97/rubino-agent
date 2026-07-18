@@ -244,15 +244,28 @@ module Rubino
       def load_memory(query = nil)
         return {} unless @config.memory_enabled?
 
-        # Route through the configured backend. `query` (the current user
-        # message) lets a relevance-aware backend rank recall; the default
-        # backend ignores it and returns "everything that fits", as before.
-        backend = Memory::Backends.build(config: @config)
-        {
-          user_profile: backend.user_profile,
-          project_context: backend.project_context,
-          relevant_memories: backend.retrieve(session_id: @session[:id], query: query)
-        }
+        # The turn-opening memory recall gets its own `search_memory` span
+        # (GenAI semconv memory operation) so recall latency and hit counts are
+        # visible per turn. Query text rides only under capture_content.
+        Telemetry.span("search_memory",
+                       attributes: { "gen_ai.operation.name" => "search_memory" }) do |span|
+          if query && Telemetry.capture_content?
+            span.set_attribute("gen_ai.memory.query.text",
+                               Telemetry.content(query))
+          end
+          # Route through the configured backend. `query` (the current user
+          # message) lets a relevance-aware backend rank recall; the default
+          # backend ignores it and returns "everything that fits", as before.
+          backend = Memory::Backends.build(config: @config)
+          context = {
+            user_profile: backend.user_profile,
+            project_context: backend.project_context,
+            relevant_memories: backend.retrieve(session_id: @session[:id], query: query)
+          }
+          recalled = context[:relevant_memories]
+          span.set_attribute("rubino.memory.relevant_count", recalled.is_a?(Array) ? recalled.size : 0)
+          context
+        end
       rescue StandardError
         {} # Don't fail the interaction if memory loading fails
       end

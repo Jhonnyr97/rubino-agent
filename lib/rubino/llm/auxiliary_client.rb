@@ -22,15 +22,34 @@ module Rubino
         @config = config
       end
 
+      # Every aux call runs inside its own `chat` span (Rubino::Telemetry,
+      # no-op unless otel.enabled) tagged rubino.aux.task, so the summarize/
+      # title/vision/approval/memory-review spend — invisible in the main
+      # loop's spans — shows up in the same trace tree with its own usage.
       def call(task:, messages:, **opts)
         cfg = @config.auxiliary_config(task)
         raise ArgumentError, "No auxiliary config for task=#{task}" if cfg.empty?
 
         adapter = build_adapter(cfg)
-        adapter.chat(messages: cache_marked(messages), **opts.slice(:tools, :response_format, :image_paths))
+        label = adapter.respond_to?(:model_id) ? adapter.model_id : task
+        Telemetry.span("chat #{label}", kind: :client,
+                                        attributes: span_attributes(task, adapter, messages)) do |span|
+          response = adapter.chat(messages: cache_marked(messages),
+                                  **opts.slice(:tools, :response_format, :image_paths))
+          Telemetry.record_llm_response(span, response)
+          response
+        end
       end
 
       private
+
+      def span_attributes(task, adapter, messages)
+        attrs = { "gen_ai.operation.name" => "chat", "rubino.aux.task" => task.to_s }
+        attrs["gen_ai.request.model"] = adapter.model_id.to_s if adapter.respond_to?(:model_id)
+        attrs["gen_ai.provider.name"] = adapter.provider.to_s if adapter.respond_to?(:provider) && adapter.provider
+        attrs["gen_ai.input.messages"] = Telemetry.content(messages) if Telemetry.capture_content?
+        attrs
+      end
 
       # Stamps a prompt-cache breakpoint on the STABLE HEAD of an aux request so
       # the byte-identical prefix shared across same-task calls (memory-extract,

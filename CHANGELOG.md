@@ -16,7 +16,12 @@
   (or the standard `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)
   opts in, and even then payloads pass `Logger.redact` and are truncated.
   Zero-cost no-op when disabled; fail-open (a missing gem or broken exporter
-  config logs one warning and disables itself). See `docs/observability.md`.
+  config logs one warning and disables itself). Also covered: auxiliary LLM
+  calls (summarize/title/vision/approval) as `chat` spans tagged
+  `rubino.aux.task`, and the turn-opening memory recall as a `search_memory`
+  span with a relevant-memories count; the post-turn background review
+  (memory extraction + skill capture) traces as its own `invoke_agent` run.
+  See `docs/observability.md`.
 
 ### Changed
 

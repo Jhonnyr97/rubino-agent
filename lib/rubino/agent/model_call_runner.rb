@@ -74,9 +74,9 @@ module Rubino
       # final gen_ai.usage.* reflect what the turn actually paid for this call.
       def call!(request, iteration: nil, &block)
         Telemetry.span("chat #{model_label}", kind: :client,
-                       attributes: chat_span_attributes(request, iteration)) do |span|
+                                              attributes: chat_span_attributes(request, iteration)) do |span|
           response = call_with_recovery!(request, iteration: iteration, &block)
-          record_response(span, response)
+          Telemetry.record_llm_response(span, response)
           response
         end
       end
@@ -188,21 +188,6 @@ module Rubino
         attrs["rubino.iteration"] = iteration if iteration
         attrs["gen_ai.input.messages"] = Telemetry.content(request.messages) if Telemetry.capture_content?
         attrs
-      end
-
-      # Final-response attributes: token usage (cache reads included — the
-      # KV-cache health signal) and, opt-in, the output text.
-      def record_response(span, response)
-        return unless response.respond_to?(:usage)
-
-        usage = response.usage
-        span.set_attribute("gen_ai.response.model", response.model_id.to_s) if response.model_id
-        span.set_attribute("gen_ai.response.finish_reasons", [response.stop_reason.to_s]) if response.stop_reason
-        span.set_attribute("gen_ai.usage.input_tokens", usage[:input_tokens].to_i)
-        span.set_attribute("gen_ai.usage.output_tokens", usage[:output_tokens].to_i)
-        span.set_attribute("gen_ai.usage.cache_read.input_tokens", usage[:cache_read_input_tokens].to_i)
-        span.set_attribute("gen_ai.usage.cache_creation.input_tokens", usage[:cache_creation_input_tokens].to_i)
-        span.set_attribute("gen_ai.output.messages", Telemetry.content(response.content)) if Telemetry.capture_content?
       end
 
       # The degenerate/empty-response path (Slice 5). A response reached here is

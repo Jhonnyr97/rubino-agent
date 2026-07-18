@@ -48,6 +48,8 @@ invoke_agent rubino                        the whole turn (Interaction::Lifecycl
 | `invoke_agent <agent>` | one per turn | `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.conversation.id` (session id), `rubino.turn.stop_reason` |
 | `chat <model>` | one per model call (the whole retry/recovery/fallback envelope) | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `rubino.iteration` |
 | `execute_tool <name>` | one per tool call (MCP tools included — their registry name is `<server>_<tool>`) | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `rubino.tool.status` (`success` / `error` / `denied`) |
+| `chat <model>` + `rubino.aux.task` | one per auxiliary LLM call (summarize / title / vision / approval / compression) | same as `chat`, plus `rubino.aux.task` to tell aux spend apart from the main loop |
+| `search_memory` | the turn-opening memory recall | `gen_ai.operation.name`, `rubino.memory.relevant_count` |
 
 Notes:
 
@@ -55,6 +57,7 @@ Notes:
 - **Cache health**: `gen_ai.usage.cache_read.input_tokens` on every `chat` span makes prompt-cache regressions (a busted KV prefix) directly visible as a per-call time series.
 - **Denied tools still produce spans** (`rubino.tool.status: denied`) — an approval denial is an observable outcome, not a gap in the trace.
 - **Background subagents** run on their own threads and start their own traces (OTel context is thread-local). Foreground delegation nests, as shown above.
+- **Memory and skills**: the model-driven `memory` / `skill` tool calls appear as ordinary `execute_tool` spans; the turn-opening recall has its own `search_memory` span; and the post-turn background review (the fork that extracts memories and captures skills) runs through the normal Runner/Lifecycle, so it shows up as its own `invoke_agent` trace with its `chat` and `execute_tool memory`/`execute_tool skill` children.
 
 ## Privacy model
 

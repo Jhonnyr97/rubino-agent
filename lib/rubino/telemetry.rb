@@ -85,6 +85,24 @@ module Rubino
         value.to_s[0, CONTENT_MAX_CHARS]
       end
 
+      # Stamps the GenAI response/usage attributes shared by every LLM call
+      # site — the main loop's `chat` span (ModelCallRunner) and the auxiliary
+      # tasks' (AuxiliaryClient) — onto +span+. One implementation so the two
+      # spans stay attribute-compatible. Accepts anything response-shaped
+      # (AdapterResponse); silently skips objects without #usage.
+      def record_llm_response(span, response)
+        return unless response.respond_to?(:usage)
+
+        usage = response.usage
+        span.set_attribute("gen_ai.response.model", response.model_id.to_s) if response.model_id
+        span.set_attribute("gen_ai.response.finish_reasons", [response.stop_reason.to_s]) if response.stop_reason
+        span.set_attribute("gen_ai.usage.input_tokens", usage[:input_tokens].to_i)
+        span.set_attribute("gen_ai.usage.output_tokens", usage[:output_tokens].to_i)
+        span.set_attribute("gen_ai.usage.cache_read.input_tokens", usage[:cache_read_input_tokens].to_i)
+        span.set_attribute("gen_ai.usage.cache_creation.input_tokens", usage[:cache_creation_input_tokens].to_i)
+        span.set_attribute("gen_ai.output.messages", content(response.content)) if capture_content?
+      end
+
       # Flushes and shuts down the exporter (registered at_exit by boot!, so
       # batched spans survive process exit). Safe to call when never booted.
       def shutdown

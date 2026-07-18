@@ -121,6 +121,60 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
     end
   end
 
+  describe "AuxiliaryClient → aux chat span" do
+    let(:config) do
+      test_configuration("auxiliary" => { "summarize" => { "provider" => "fake", "model" => "fake/happy-path" } })
+    end
+
+    it "wraps the aux call in a task-tagged `chat` span with usage attributes" do
+      response = Rubino::LLM::AdapterResponse.new(
+        content: "a summary", tool_calls: [], input_tokens: 9, output_tokens: 3, model_id: "aux-model"
+      )
+      adapter = double("Adapter", model_id: "aux-model", provider: "fake", chat: response)
+      allow(Rubino::LLM::AdapterFactory).to receive(:build).and_return(adapter)
+
+      Rubino::LLM::AuxiliaryClient.new(config: config).call(task: :summarize,
+                                                            messages: [{
+                                                              role: "user", content: "x"
+                                                            }])
+
+      span = finished_span
+      expect(span.name).to eq("chat aux-model")
+      expect(span.attributes).to include(
+        "gen_ai.operation.name" => "chat",
+        "rubino.aux.task" => "summarize",
+        "gen_ai.request.model" => "aux-model",
+        "gen_ai.usage.input_tokens" => 9,
+        "gen_ai.usage.output_tokens" => 3
+      )
+      expect(span.attributes.keys).not_to include("gen_ai.input.messages")
+    end
+  end
+
+  describe "Lifecycle → search_memory span" do
+    it "records the recall with a relevant-memories count and no query text by default" do
+      config = test_configuration("memory" => { "enabled" => true })
+      backend = double("MemoryBackend", user_profile: nil, project_context: nil,
+                                        retrieve: [{ text: "fact one" }, { text: "fact two" }])
+      allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
+      lifecycle = Rubino::Interaction::Lifecycle.new(
+        session: { id: "sess-3" }, event_bus: Rubino::Interaction::EventBus.new,
+        ui: Rubino::UI::Null.new, config: config
+      )
+
+      context = lifecycle.send(:load_memory, "what did we decide?")
+
+      expect(context[:relevant_memories].size).to eq(2)
+      span = finished_span
+      expect(span.name).to eq("search_memory")
+      expect(span.attributes).to include(
+        "gen_ai.operation.name" => "search_memory",
+        "rubino.memory.relevant_count" => 2
+      )
+      expect(span.attributes.keys).not_to include("gen_ai.memory.query.text")
+    end
+  end
+
   describe "Lifecycle → invoke_agent span" do
     let(:lifecycle) do
       Rubino::Interaction::Lifecycle.new(
