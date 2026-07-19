@@ -77,6 +77,7 @@ module Rubino
                                      "gen_ai.tool.call.id" => call_id.to_s }) do |span|
           target = telemetry_target(name, arguments)
           span.set_attribute("rubino.tool.target", target) if target
+          span.set_attribute("rubino.skill.action", skill_action(arguments)) if name.to_s == "skill"
           span.set_attribute("gen_ai.tool.call.arguments", Telemetry.content(arguments)) if Telemetry.capture_content?
           result = dispatch(name: name, arguments: arguments, call_id: call_id)
           record_result_on(span, result)
@@ -99,6 +100,19 @@ module Rubino
 
         value = (arguments[key] || arguments[key.to_s]).to_s
         value.empty? ? nil : value
+      end
+
+      # The skill tool's sub-verb — "load" (the model USING a skill) vs
+      # "create"/"edit"/"patch"/"write_file"/"delete" (the model AUTHORING one).
+      # Surfaced always-on (a fixed enum, not payload) so a trace can split skill
+      # USE from skill CREATION — the central observability question for skills:
+      # did rubino reach for an existing skill, or write a new one unprompted?
+      # Mirrors SkillTool's own default: a call with no `action` is a load.
+      def skill_action(arguments)
+        return "load" unless arguments.respond_to?(:[])
+
+        value = (arguments[:action] || arguments["action"]).to_s
+        value.empty? ? "load" : value
       end
 
       # Span-facing outcome of a finished tool call. Only Tools::Result carries

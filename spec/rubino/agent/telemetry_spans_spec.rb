@@ -145,6 +145,23 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
       expect(finished_span.attributes["rubino.tool.target"]).to eq("deploy-checklist")
     end
 
+    it "splits skill USE (load) from skill AUTHORING via rubino.skill.action" do
+      allow(tool).to receive(:name).and_return("skill")
+      executor.execute(name: "skill", arguments: { action: "create", name: "new-flow" }, call_id: "call_c")
+      expect(finished_span.attributes["rubino.skill.action"]).to eq("create")
+    end
+
+    it "defaults a skill call with no action to load — matching SkillTool's own default" do
+      allow(tool).to receive(:name).and_return("skill")
+      executor.execute(name: "skill", arguments: { name: "deploy-checklist" }, call_id: "call_l")
+      expect(finished_span.attributes["rubino.skill.action"]).to eq("load")
+    end
+
+    it "does not stamp rubino.skill.action on non-skill tools" do
+      executor.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "call_n")
+      expect(finished_span.attributes).not_to have_key("rubino.skill.action")
+    end
+
     it "exports arguments/output only under the capture_content opt-in" do
       allow(Rubino::Telemetry).to receive(:capture_content?).and_return(true)
       executor.execute(name: "fake_tool", arguments: { "x" => 1 }, call_id: "call_9")
