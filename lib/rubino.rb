@@ -356,6 +356,13 @@ module Rubino
       connection = database
       migrator   = Database::Migrator.new(connection)
 
+      # Seed the gem's built-in skills into ~/.rubino on every boot (marker-gated,
+      # so it's a one-file-read no-op after the first time). This runs BEFORE the
+      # already-set-up fast path returns, so existing homes — not just fresh
+      # installs via ensure_directories! — get the built-ins materialized as
+      # owned, editable files. Best-effort inside the method; never fatal.
+      seed_builtin_skills!(File.join(home_path, "skills"))
+
       # FAST PATH (lock-free, race-safe): a side-effect-free read of
       # `schema_info` that does NOT construct a Sequel migrator. The common case
       # — an already-set-up home — returns here without touching the lock. Note
@@ -566,6 +573,40 @@ module Rubino
       rescue SystemCallError => e
         raise ConfigurationError, "RUBINO_HOME is not a writable directory: #{home} (#{clean_errno_message(e.message)})"
       end
+
+      seed_builtin_skills!(File.join(home, "skills"))
+    end
+
+    # Materialize the gem-bundled skills into the user's home so ~/.rubino is the
+    # SINGLE source of truth: the user owns, edits, and deletes them as files
+    # there. Runs at the home-materialization chokepoint (every entry point), so
+    # a fresh install seeds on first use and a gem upgrade seeds only NEW
+    # built-ins on next run.
+    #
+    # A `.seeded_builtins` marker records which built-ins were ever seeded, so a
+    # skill the user DELETED is not resurrected on the next boot (absence ≠ "never
+    # seeded"). An existing skill is never overwritten — the user's edits win. The
+    # gem `skills/` dir is the seed template, no longer read at runtime (see
+    # Registry#include_builtin). Best-effort: a copy failure never blocks boot.
+    def seed_builtin_skills!(dest_root)
+      src_root = Rubino::Skills::Registry::BUILTIN_SKILLS_DIR
+      return unless File.directory?(src_root)
+
+      FileUtils.mkdir_p(dest_root)
+      marker = File.join(dest_root, ".seeded_builtins")
+      seeded = File.exist?(marker) ? File.read(marker).split("\n").map(&:strip).reject(&:empty?) : []
+      newly = []
+      Dir.children(src_root).sort.each do |name|
+        next if seeded.include?(name)             # seeded once already — respect a user delete
+        src = File.join(src_root, name)
+        next unless File.directory?(src)
+
+        FileUtils.cp_r(src, File.join(dest_root, name)) unless File.exist?(File.join(dest_root, name))
+        newly << name
+      end
+      File.write(marker, (seeded + newly).join("\n") + "\n") unless newly.empty?
+    rescue StandardError => e
+      logger.debug(event: "seed_builtin_skills_failed", error: "#{e.class}: #{e.message}")
     end
   end
 end

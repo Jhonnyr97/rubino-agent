@@ -82,6 +82,8 @@ module Rubino
           #{header}### Creating skills
           When you finish a task that was complex, multi-step (typically 5+ tool calls), and likely to recur — and no existing skill already covers it — proactively capture it as a new skill so the next run is faster and more reliable. Do this at the natural end of the work, without being asked, and without interrupting the user mid-task. If the work was trivial, one-off, or already covered by a loaded skill, do NOT create one.
 
+          Before you write or edit a skill, load the `skill-authoring` skill and follow it. Two rules matter as much as a trigger-focused description, because the skill hard-codes a choice for every future run: (1) prescribe a RELIABLE method — never enshrine a tool that can exit 0 while producing garbage; if one is known to fail silently, say so and prescribe the robust alternative; (2) END the procedure with a mandatory output-verification step that checks the result is actually correct (page/row count, re-open/parse, sanity assert) and NEVER trusts a tool's exit code or "Done".
+
           To create a skill, call the `skill` tool with action "create":
 
           <skill_create>

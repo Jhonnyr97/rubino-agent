@@ -22,18 +22,21 @@ RSpec.describe "Skills (directory layout + disclosure)" do
       expect(registry.names).to contain_exactly("legacy-flat", "data-helper")
     end
 
-    # Built-in (gem-bundled) skills under skills/<name>/SKILL.md ship with every
-    # install and are discovered regardless of skills.paths / folder-trust, so a
-    # fresh user gets them without any copy step.
+    # Built-in (gem-bundled) skills under skills/<name>/SKILL.md are a SEED
+    # TEMPLATE: Rubino.ensure_directories! materializes them into ~/.rubino/skills
+    # so the home is the single source of truth. Reading them straight from the
+    # gem dir at runtime is now opt-in (`include_builtin: true` / config key) —
+    # these tests exercise that opt-in path (discovery, reference files,
+    # language-scoping); the seed itself is covered by the boot path.
     describe "gem-bundled built-in skills" do
       it "discovers the shipped ruby-expert skill even with no configured paths" do
-        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }), include_builtin: true)
         expect(reg.names).to include("ruby-expert")
         expect(reg.find("ruby-expert")).to be_directory
       end
 
       it "exposes ruby-expert's bundled reference files" do
-        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+        reg = described_class.new(config: test_configuration("skills" => { "paths" => [] }), include_builtin: true)
         expect(reg.find("ruby-expert").linked_files).to include("references/rails.md", "references/testing.md")
       end
 
@@ -147,7 +150,9 @@ RSpec.describe "Skills (directory layout + disclosure)" do
     describe "language-scoped built-in skills" do
       def registry_in(root)
         allow(Rubino::Workspace).to receive(:primary_root).and_return(root)
-        described_class.new(config: test_configuration("skills" => { "paths" => [] }))
+        # include_builtin: true — exercise the built-in language-scoping directly
+        # against the gem dir (the default now reads only the seeded home).
+        described_class.new(config: test_configuration("skills" => { "paths" => [] }), include_builtin: true)
       end
 
       def summary_names(reg)

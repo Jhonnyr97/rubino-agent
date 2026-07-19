@@ -46,16 +46,18 @@ module Rubino
       # (the home `~/.rubino/skills` catalogue is always loaded — it's the
       # user's own, not attacker-controllable by cd-ing into a repo).
       # +include_builtin+ controls whether the gem-bundled BUILTIN_SKILLS_DIR is
-      # scanned. Always on in production (built-ins ship with every install).
-      # When left nil it falls back to the `skills.include_builtin` config key
-      # (default true), so a caller that only has the config — like the prompt
-      # assembler, which builds its own Registry — can still opt out; tests that
-      # assert an exact catalogue pass false to isolate from the shipped skills.
+      # scanned AT RUNTIME. Default OFF: the gem's `skills/` is a SEED TEMPLATE,
+      # materialized once into `~/.rubino/skills` by Rubino.ensure_directories!,
+      # so the user's home is the SINGLE source of truth — they own, edit, and
+      # DELETE skills as files there (a deleted skill stays gone; the seed marker
+      # prevents re-seeding). Opt back into live gem-reading with
+      # `skills.include_builtin: true` in config. When left nil it reads that key
+      # (default false). Tests still pass false explicitly to isolate.
       def initialize(config: nil, state_repository: nil, include_project_local: true, include_builtin: nil)
         @config = config || Rubino.configuration
         @state_repository = state_repository
         @include_project_local = include_project_local
-        @include_builtin = include_builtin.nil? ? (@config.dig("skills", "include_builtin") != false) : include_builtin
+        @include_builtin = include_builtin.nil? ? (@config.dig("skills", "include_builtin") == true) : include_builtin
         @skills = {}
         @discovered = false
       end

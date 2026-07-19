@@ -57,7 +57,7 @@ A trigger-focused description is the single biggest lever on reliable auto-activ
 
 ## Body structure
 
-Every skill should follow this shap
+Every skill should follow this shape
 
 ```
 # <Title>
@@ -79,6 +79,16 @@ Every skill should follow this shap
 ```
 
 Not every section is mandatory, but the **"## When to use" / "## Don't use for"** pair is the minimum for reliable triggering — they give the model clear boundaries so it loads the skill only when it genuinely applies.
+
+## Prescribe a reliable, self-verifying method
+
+A skill hard-codes a choice for EVERY future run, so two things matter as much as the description:
+
+1. **Reliable method.** Prescribe tools that don't fail silently. If a tool is known to break on a platform — or can exit 0 while producing garbage — say so and prescribe the robust alternative. Don't enshrine the first thing that returned once.
+
+2. **Mandatory output verification.** End the procedure with an explicit step that checks the OUTPUT is actually correct — page count, row count, file re-opens/parses, a sanity assert — and instruct the agent: **do not report success until it passes; never trust a tool's exit code or a "Done" message.** Most real skill failures in practice are an agent trusting a converter/generator that lied.
+
+Real lesson: a Markdown→PDF skill that prescribed `wkhtmltopdf` (whose macOS build silently emits a 0-page blank PDF while printing "Done") with no output check was loaded, followed, and produced blank PDFs reported as "clean, ready to send". The fix was a robust renderer (headless Chrome) plus "count the PDF's pages; if 0, it FAILED — say so, don't claim success". A skill without §2 would have shipped the same bug to every future run.
 
 ## Skill creation
 
@@ -110,6 +120,8 @@ Bundled skills (shipped in the gem under `skills/`) are protected — the review
 
 5. **Writing to the wrong location.** The `skill` tool writes to the agent HOME, not the gem's `skills/` directory. If you're adding a bundled skill that should ship with the gem, use `write`/`write_file` to `skills/<name>/SKILL.md` and `git add` it. The `skill` tool creates user skills; the filesystem creates bundled skills.
 
+6. **Enshrining a tool that lies, or no output check.** The most damaging skill is one that prescribes a silently-failing tool (or trusts an exit code) so every future run produces broken output reported as success. Prescribe a robust method and make the last step verify the actual output — see "Prescribe a reliable, self-verifying method".
+
 ## Verification checklist
 
 - [ ] Description starts with "Use when " and describes the trigger class.
@@ -118,3 +130,5 @@ Bundled skills (shipped in the gem under `skills/`) are protected — the review
 - [ ] No duplicate of an existing skill.
 - [ ] Pitfalls section covers known gotchas.
 - [ ] Each ordered step has a checkable completion criterion.
+- [ ] The procedure prescribes a reliable method (no silently-failing tool, or its failure is called out).
+- [ ] The procedure ends with an output-verification step that does not trust the exit code / "Done".
