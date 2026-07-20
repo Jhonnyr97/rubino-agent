@@ -2,12 +2,16 @@
 
 module Rubino
   module Security
-    # ONE "is this a secret/credential path?" predicate for the WRITE-side
-    # approval gate (Security::ApprovalPolicy#decide → :ask when a write/edit
-    # targets a secret). Writing/clobbering a secret
-    # requires explicit user approval; READING one is allowed unprompted (the
-    # field norm, #480) and has no gate, so this predicate is no longer
-    # consulted on the read path.
+    # The "is this a secret/credential path?" predicates behind the approval
+    # gates in Security::ApprovalPolicy#decide:
+    #
+    #   #secret?/#category → the WRITE side (step 5b): writing/clobbering a
+    #                        secret asks for explicit approval.
+    #   #read_gated?       → the READ side (step 5c): reading a credential
+    #                        store asks too, on a narrower set.
+    #
+    # Both resolve to :ask. NOTHING here auto-denies: dangerous means "ask the
+    # human", never "refuse and strand the task".
     #
     # The gate itself is in ApprovalPolicy/ToolExecutor (interactive →
     # approval dropdown; approved → tool proceeds; denied → refused; headless →
@@ -24,26 +28,17 @@ module Rubino
         \A\.bashrc\z | \A\.zshrc\z | \A\.profile\z | \A\.bash_profile\z | \A\.zprofile\z
       /x
 
-      # Common secret-bearing project-local environment file basenames blocked
-      # on the structured READ path (read/grep), ported 1:1 from Hermes'
-      # `agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES`. Deliberately an
-      # EXACT set (not BASENAME_RE) so `.env.example` — the documented-shape
-      # substitute — is NOT blocked, matching Hermes.
+      # Common secret-bearing project-local environment file basenames gated
+      # on the structured READ path (read/grep), ported from Hermes'
+      # `agent/file_safety._BLOCKED_PROJECT_ENV_BASENAMES` (Hermes refuses these;
+      # rubino asks). Deliberately an EXACT set (not BASENAME_RE) so
+      # `.env.example` — the documented-shape substitute — reads unprompted.
       BLOCKED_PROJECT_ENV_BASENAMES = [
         ".env", ".env.local", ".env.development",
         ".env.production", ".env.test", ".env.staging", ".envrc"
       ].to_set.freeze
 
-      # Agent-home credential-store basenames blocked on the structured READ
-      # path, mirroring Hermes' `get_read_block_error` credential_file_names
-      # (auth.json / .anthropic_oauth.json / .env / mcp-tokens/ live under the
-      # agent home). rubino's token store is rubino.sqlite3.
-      BLOCKED_HOME_CREDENTIAL_BASENAMES = [
-        ".env", "auth.json", "auth.lock",
-        ".anthropic_oauth.json", "rubino.sqlite3"
-      ].to_set.freeze
-
-      # $HOME-relative credential FILES blocked on the structured READ path.
+      # $HOME-relative credential FILES gated on the structured READ path.
       # Ported from Hermes' `build_write_denied_paths` (file_safety.py:35-58):
       # the SSH key/identity files (`~/.ssh/{id_rsa,id_ed25519,authorized_keys,
       # config}`), `~/.netrc`, and `~/.git-credentials`. QA finding: these
@@ -86,51 +81,37 @@ module Rubino
       # read-allowed and unredacted. Defense-in-depth, not a boundary.
       BLOCKED_CREDENTIAL_BASENAMES = [".netrc", ".git-credentials"].to_set.freeze
 
-      # Returns a model-facing error string when a structured READ (read/grep)
-      # targets a denied secret/credential path, or nil when the read is
-      # allowed. Ported 1:1 from Hermes' `get_read_block_error` plus the
-      # home credential files/dirs Hermes write-denies (file_safety.py:35-82):
-      # the project-local .env family ANYWHERE on disk and the user's SSH/AWS/
-      # kube/docker/gnupg/azure/gh credential stores under $HOME (#537), plus
-      # `.netrc`/`.git-credentials` wherever they sit (HOME or project-local).
+      # True when a structured READ (read/grep/glob) targets a secret/credential
+      # path and so requires EXPLICIT USER APPROVAL (ApprovalPolicy step 5c).
       #
-      # EVERYTHING under the agent home (~/.rubino) is short-circuited to nil
-      # at the top: those reads are gated by EXPLICIT APPROVAL (ApprovalPolicy
-      # step 5c), never auto-denied here. Redaction still applies via Redactor.
+      # THE RULE: a secret read is never auto-denied. Rubino asks; the human
+      # decides. An auto-deny is unrecoverable from inside the loop — the model
+      # cannot ask for the exception, and read-before-write makes the deny
+      # deadlock any legitimate edit of the file (#XXX: `edit .env` prompts,
+      # approval is granted, then the mandatory read is refused and the task
+      # cannot complete). An :ask is the same protection with a human in it.
       #
-      # **NOT a security boundary** — the shell runs as the same OS user and
-      # can still `cat .env`, where the value is REDACTED (see Redactor).
-      # The read block is defense-in-depth: it returns a clear error that
-      # most models respect, and surfaces an audit trail. Mirrors the framing
-      # in Hermes' module docstring.
-      def read_block_error(path)
+      # The gated set is the READ-side denylist ported from Hermes'
+      # `get_read_block_error` plus the home credential files/dirs Hermes
+      # write-denies (file_safety.py:35-82): the project-local .env family
+      # ANYWHERE on disk and the user's SSH/AWS/kube/docker/gnupg/azure/gh
+      # credential stores under $HOME (#537), plus `.netrc`/`.git-credentials`
+      # wherever they sit. It is deliberately NARROWER than #category (the
+      # write-side predicate): `.env.example` and `~/.zshrc` stay unprompted.
+      #
+      # Everything under the agent home (~/.rubino) is gated by the SAME step-5c
+      # ask via SecretPath.under_agent_home? — it is not repeated here.
+      #
+      # **NOT a security boundary** — the shell runs as the same OS user and can
+      # still `cat .env`, where the value is REDACTED (see Redactor). This gate
+      # is defense-in-depth with a human in the loop.
+      def read_gated?(path)
         base   = File.basename(path.to_s)
         target = canonical_path(path) || File.expand_path(path.to_s)
 
-        # ~/.rubino is gated by EXPLICIT APPROVAL (ApprovalPolicy step 5c),
-        # never auto-denied here. Credential stores under the agent home
-        # (.env, rubino.sqlite3, oauth, mcp-tokens) are therefore readable
-        # AFTER the human approves, not silently refused. Redaction still
-        # applies via Redactor.
-        return nil if under_agent_home?(path)
-
-        if BLOCKED_PROJECT_ENV_BASENAMES.include?(base)
-          return "Access denied: #{path} is a secret-bearing environment file " \
-                 "and cannot be read to prevent credential leakage. If you need " \
-                 "to check the file structure, read .env.example instead. " \
-                 "(Defense-in-depth — not a security boundary; the shell tool " \
-                 "can still bypass.)"
-        end
-
-        if BLOCKED_CREDENTIAL_BASENAMES.include?(base) || home_credential_path?(target)
-          return "Access denied: #{path} is a private credential store " \
-                 "(SSH key, cloud/kube/docker/gh credentials, gnupg keyring, " \
-                 "netrc, or git-credentials) and cannot be read to prevent " \
-                 "credential leakage. (Defense-in-depth — not a security " \
-                 "boundary; the shell tool can still bypass.)"
-        end
-
-        nil
+        BLOCKED_PROJECT_ENV_BASENAMES.include?(base) ||
+          BLOCKED_CREDENTIAL_BASENAMES.include?(base) ||
+          home_credential_path?(target)
       end
 
       # True when the symlink-resolved +target+ is one of the $HOME-relative

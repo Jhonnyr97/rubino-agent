@@ -26,19 +26,17 @@ module Rubino
       # auto-edit / aider).
       STRUCTURED_EDIT_TOOLS = %w[edit write].freeze
 
-      # File tools whose WRITE TARGET path is run through the secret-file gate.
-      # WRITE side resolves the path from `file_path`. The READ side (read/grep/glob) is NOT
-      # gated: reading a secret is allowed unprompted, matching the field norm
-      # (Claude Code / Codex / aider / Windsurf / LangChain all allow secret
-      # reads; protection is on write/exec/network, #480). Only writing/editing
-      # a secret still requires explicit approval.
+      # File tools whose WRITE TARGET path is run through the secret-file gate
+      # (step 5b), resolved from `file_path`.
       SECRET_GATED_WRITE_TOOLS = STRUCTURED_EDIT_TOOLS
 
-      # Read tools whose target path is checked against the agent home
-      # (~/.rubino). Reading config, memories, or session data requires
-      # explicit approval — symmetric with the write gate. grep/glob path
-      # defaults to "." (the cwd), which is never under the agent home.
-      AGENT_HOME_READ_TOOLS = %w[read grep glob].freeze
+      # Read tools whose target path is run through the secret-file READ gate
+      # (step 5c): the agent home (~/.rubino) plus SecretPath.read_gated?.
+      # Reading credentials asks — symmetric with the write gate, and never an
+      # auto-deny. grep/glob path defaults to "." (the cwd), which is neither
+      # under the agent home nor on the read set, so ordinary searches are
+      # unprompted.
+      SECRET_GATED_READ_TOOLS = %w[read grep glob].freeze
 
       # Dedicated code-execution tools that, under dangerous_only, must run
       # unprompted — SYMMETRIC with (and never HARDER than) safe shell.
@@ -207,25 +205,33 @@ module Rubino
         #     and BELOW yolo (step 3) so a --yolo operator who opted into full
         #     file trust isn't re-prompted.
         #
-        #     READING a secret (read/grep/glob) is NOT gated here —
-        #     SecretPath.read_block_error refuses the project-local .env family
-        #     and the $HOME credential stores OUTSIDE the agent home (~/.ssh,
-        #     ~/.aws, ~/.kube, ~/.docker, ~/.gnupg, ~/.azure, ~/.config/gh,
-        #     .netrc, .git-credentials); EVERYTHING under ~/.rubino is handled
-        #     by the step-5c gate below.
+        #     READING a secret is gated by step 5c below, on its own narrower set.
         return :ask if secret_file_access?(tool, arguments)
 
-        # 5c. AGENT-HOME READ GATE. THE RULE: every read under ~/.rubino
-        #     requires EXPLICIT APPROVAL, never an auto-deny.
-        #     SecretPath.read_block_error short-circuits to nil for paths under
-        #     the agent home so the human decides here. Structured reads
-        #     (read/grep/glob) are gated; the skill tool `load` reads SKILL.md
-        #     in-process and is NOT gated here (it's the primary skill-loading
-        #     path). The shell tool can still `cat ~/.rubino/*` unprompted
-        #     (defense-in-depth, like the SecretPath read-block). Runs BELOW
+        # 5c. SECRET-FILE READ GATE. THE RULE: a read of a credential store
+        #     requires EXPLICIT APPROVAL, never an auto-deny — everything under
+        #     the agent home (~/.rubino), the project-local .env family anywhere
+        #     on disk, and the $HOME credential stores (~/.ssh, ~/.aws, ~/.kube,
+        #     ~/.docker, ~/.gnupg, ~/.azure, ~/.config/gh, .netrc,
+        #     .git-credentials).
+        #
+        #     An auto-deny was WORSE than an ask, not safer: it stranded the
+        #     model with no way to request the exception, and read-before-write
+        #     turned it into a deadlock (approve `edit .env`, then have the
+        #     mandatory read refused). Asking gives the same protection with the
+        #     human restored as the decider.
+        #
+        #     Structured reads (read/grep/glob) are gated; the skill tool `load`
+        #     reads SKILL.md in-process and is NOT gated here (it's the primary
+        #     skill-loading path). The shell tool can still `cat .env` unprompted
+        #     (defense-in-depth, and the value is redacted there). Runs BELOW
         #     yolo (step 3) so a --yolo operator opted into full trust is never
         #     re-prompted.
-        return :ask if agent_home_read?(tool, arguments)
+        #
+        #     #secret_read? is also what the ToolExecutor consults to hand a
+        #     CLEARED secret read back unredacted (see #redaction_profile_for) —
+        #     which is why it keys on the predicate, not on this :ask.
+        return :ask if secret_read?(tool, arguments)
 
         # 6. Config allowlist of pre-approved commands. Checked AFTER deny
         #    patterns (deny always wins) but BEFORE mode-based decision so a
@@ -463,17 +469,19 @@ module Rubino
         end
       end
 
-      # True when this is a structured read (read/grep/glob) whose target
-      # resolves under the agent home (~/.rubino). config.yml, memories,
-      # session data — reading any of it requires explicit approval.
-      # Skill tool `load` is NOT gated (not in AGENT_HOME_READ_TOOLS).
-      def agent_home_read?(tool, arguments)
-        return false unless AGENT_HOME_READ_TOOLS.include?(tool.name)
+      # True when this is a structured read (read/grep/glob) whose target is a
+      # credential store the human must clear first: anything under the agent
+      # home (~/.rubino — config.yml, memories, session data) or on the
+      # SecretPath READ set (.env family, ~/.ssh, ~/.aws, .netrc, …).
+      # Skill tool `load` is NOT gated (not in SECRET_GATED_READ_TOOLS).
+      def secret_read?(tool, arguments)
+        return false unless SECRET_GATED_READ_TOOLS.include?(tool.name)
 
         raw = self.class.command_string(tool, arguments)
         return false if raw.to_s.empty?
 
-        SecretPath.under_agent_home?(resolve_workspace_path(raw))
+        path = resolve_workspace_path(raw)
+        SecretPath.under_agent_home?(path) || SecretPath.read_gated?(path)
       end
 
       # True when this call WRITES a secret/credential path and so must be

@@ -435,8 +435,7 @@ module Rubino
         # they enter context, the compressor, or the UI. Shell streaming (below)
         # uses the same instance for live line-by-line redaction.
         redactor = Security::Redactor.resolve
-        profile  = redaction_override ||
-                   (tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell)
+        profile  = redaction_override || redaction_profile_for(tool, arguments)
         # Body redaction runs early (never compressed — human-facing only).
         body = redactor.redact(body, profile: profile) if body && profile != :none
         # Skip the body block when the tool already streamed its output line by
@@ -783,6 +782,35 @@ module Rubino
 
         "#{question}\n   ↳ OUTSIDE the workspace (#{Workspace.roots.join(", ")}) — " \
           "approving adds #{dirs.join(", ")} for this session"
+      end
+
+      # The redaction profile for THIS call's output.
+      #
+      # Normally the tool's own declared profile. The one exception is a
+      # SECRET-FILE READ (policy step 5c) that was cleared to run: its output is
+      # handed back UNREDACTED (:none).
+      #
+      # Clearing "read .env" means clearing the secret into context — masking it
+      # anyway would grant the request in name only. It also silently broke the
+      # task: the model got `password=‹redacted by rubino›`, echoed the mask back
+      # as an `edit` old_string, and the edit could never match. Reading a secret
+      # is the transient half of the split; the durable half is Memory::Store,
+      # which REFUSES to persist a credential outright.
+      #
+      # Keyed on the policy's own predicate — the same one that gates the read —
+      # rather than on "did a prompt get approved", so it holds however the call
+      # was cleared: an approved prompt, an explicit `read .env: allow` rule, or
+      # --yolo (no prompt at all, where an approval-keyed check would miss and
+      # leave the .env edit deadlocked). An UNcleared read never reaches this
+      # chokepoint — it returns denied earlier — so the predicate alone is
+      # sufficient. Every other read (incl. incidental secrets in source) keeps
+      # its declared profile.
+      def redaction_profile_for(tool, arguments)
+        declared = tool.class.respond_to?(:redaction_profile) ? tool.class.redaction_profile : :shell
+        return declared unless @approval_policy.respond_to?(:secret_read?)
+        return declared unless @approval_policy.secret_read?(tool, arguments)
+
+        :none
       end
 
       # Appends the out-of-jail disclosure when the policy routed THIS call to the

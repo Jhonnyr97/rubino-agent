@@ -26,23 +26,21 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(tool.risk_level).to eq(:low)
   end
 
-  # Matches Hermes get_read_block_error: the structured `read` tool BLOCKS the
-  # secret-bearing .env family with a clear message (no content), defense-in-
-  # depth. The shell tool can still `cat .env` (value redacted there). The
-  # write-side approval gate is covered in
+  # The secret-bearing .env family is approval-gated UPSTREAM (ApprovalPolicy
+  # step 5c → the approval dropdown), never refused by the tool: an approved
+  # read must deliver the content, or read-before-write deadlocks on a .env
+  # edit. Both approval gates are covered in
   # spec/rubino/security/secret_file_gate_spec.rb.
-  it "blocks reading a .env credential file with a message (Hermes-matched)" do
+  it "reads a .env credential file (the gate is the approval prompt, not the tool)" do
     outside = Dir.mktmpdir("read_secret")
     path = File.join(outside, ".env")
     File.write(path, "API_KEY=supersecret\n")
-    out = payload(tool.call("file_path" => path))
-    expect(out).to include("Access denied")
-    expect(out).not_to include("supersecret")
+    expect(payload(tool.call("file_path" => path))).to include("supersecret")
   ensure
     FileUtils.rm_rf(outside)
   end
 
-  it "allows reading .env.example (documented-shape substitute, not blocked)" do
+  it "allows reading .env.example (documented-shape substitute, never gated)" do
     outside = Dir.mktmpdir("read_envexample")
     path = File.join(outside, ".env.example")
     File.write(path, "API_KEY=your-key-here\n")
@@ -386,6 +384,55 @@ RSpec.describe Rubino::Tools::ReadTool do
         expect(out).to match(/refusing to access|outside/)
       ensure
         FileUtils.rm_f(outside)
+      end
+
+      # A document the agent staged under its OWN home (where web_fetch saves a
+      # fetched PDF/office file) IS convertible — this is what lets web_fetch
+      # delegate conversion to read instead of mirroring it. Still framed as
+      # untrusted; agent-home is trusted-provenance, not trusted-content.
+      it "converts a document the agent staged under its home tool-results dir" do
+        home = Dir.mktmpdir("rubino_home")
+        staged = File.join(home, "tool-results")
+        FileUtils.mkdir_p(staged)
+        path = File.join(staged, "webfetch_example.com_report.csv")
+        File.write(path, "x,y\n1,2\n")
+        allow(Rubino).to receive(:home_path).and_return(home)
+
+        out = payload(tool.call("file_path" => path))
+        expect(out).to include("untrusted user data")
+        expect(out).to include("| x | y |")
+        expect(out).not_to match(/refusing to access|outside/)
+      ensure
+        FileUtils.rm_rf(home)
+      end
+    end
+
+    describe "pdf source-level page windowing (offset/limit -> PDF pages)", if: pdf_available? do
+      let(:pdf) do
+        dest = File.join(tmp_dir, "multipage.pdf")
+        FileUtils.cp(File.join(documents_fixtures_dir, "multipage.pdf"), dest)
+        dest
+      end
+
+      it "a whole-file read converts every page (default unchanged)" do
+        out = payload(tool.call("file_path" => pdf))
+        expect(out).to include("Page One Alpha")
+        expect(out).to include("Page Three Charlie")
+        expect(out).not_to include("PDF pages")
+      end
+
+      it "offset/limit select a PDF page window, converting only those pages" do
+        out = payload(tool.call("file_path" => pdf, "offset" => 2, "limit" => 1))
+        expect(out).to include("Page Two Bravo")
+        expect(out).not_to include("Page One Alpha")
+        expect(out).not_to include("Page Three Charlie")
+        expect(out).to include("PDF pages 2–2 of 3")
+        expect(out).to include("untrusted user data") # still framed as untrusted
+      end
+
+      it "reports past-the-end honestly for a window beyond the last page" do
+        out = payload(tool.call("file_path" => pdf, "offset" => 9, "limit" => 2))
+        expect(out).to match(/past the end/i)
       end
     end
 

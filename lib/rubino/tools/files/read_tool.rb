@@ -39,7 +39,9 @@ module Rubino
                "(default window: first #{DEFAULT_LIMIT} lines). DOCUMENTS (PDF, DOCX, XLSX, " \
                "PPTX, HTML, CSV, JSON, XML) are auto-detected and converted to Markdown " \
                "in-process, framed as untrusted data — no need to shell out to " \
-               "`markitdown`/`pdftotext`. Offset/limit apply to text files only; a document " \
+               "`markitdown`/`pdftotext`. For a PDF, offset/limit select a PAGE window " \
+               "(offset=first page, limit=max pages) so a large PDF converts only the pages " \
+               "you ask for; for other documents offset/limit are ignored and a conversion " \
                "too large to inline is written to a file you then page with `read`/`grep`."
         base + compression_note
       end
@@ -79,15 +81,11 @@ module Rubino
         full_file = offset == 1 && limit == DEFAULT_LIMIT
 
         expanded = expand_workspace_path(file_path)
-        # Secret-file READ block, ported 1:1 from Hermes' get_read_block_error:
-        # the project-local .env family anywhere on disk, plus the agent-home
-        # credential stores, are blocked-with-message (no content). Checked
-        # BEFORE existence so we don't leak whether the secret file is present.
-        # Defense-in-depth, not a boundary — the shell can still `cat .env`,
-        # where the value is REDACTED (Security::Redactor).
-        if (block = Security::SecretPath.read_block_error(expanded))
-          return { output: block, error_code: :secret_read_blocked }
-        end
+        # No secret gate here: a read of a credential store is approval-gated
+        # UPSTREAM (ApprovalPolicy step 5c → the approval dropdown), so by the
+        # time the tool runs the human has already cleared it. The tool must not
+        # then refuse the very read that was approved — that deadlocked
+        # read-before-write on .env.
         return "Error: File not found: #{file_path}" unless File.exist?(expanded)
         return "Error: Not a regular file: #{file_path}" unless File.file?(expanded)
 
@@ -97,7 +95,7 @@ module Rubino
         # below. Returns nil for an ordinary text/code file so we fall through to
         # the verbatim line-numbered read. This runs BEFORE binary? so a PDF/office
         # file (which binary? would refuse) reaches the converter instead.
-        if (converted = read_document(file_path, expanded))
+        if (converted = read_document(file_path, expanded, offset, limit, full_file))
           return converted
         end
 
@@ -164,7 +162,7 @@ module Rubino
       #      envelope (a converted document = untrusted user data).
       #
       # Returns nil for a non-document so #execute continues to the text read.
-      def read_document(display_path, expanded)
+      def read_document(display_path, expanded, offset, limit, full_file)
         cls = Attachments::Classify.call(expanded)
         return nil unless cls.safe
         return nil unless Rubino::Documents.document_format?(mime: cls.mime, path: cls.path)
@@ -172,7 +170,16 @@ module Rubino
         # It IS a document. From here on, replicate read_attachment exactly —
         # workspace confine (staged-attachment path handling), policy gate,
         # in-process conversion, untrusted framing, oversize spill.
-        return workspace_violation_message(display_path) unless within_workspace?(cls.path)
+        #
+        # A document the agent itself staged under its home (webfetch saves a
+        # fetched PDF/office file to <home>/tool-results) is trusted-provenance
+        # and converted framed-as-untrusted regardless, so it is allowed
+        # alongside the workspace — consistent with #outside_workspace? already
+        # treating agent-home as in-bounds. This is what lets web_fetch delegate
+        # document conversion to read instead of mirroring it.
+        unless within_workspace?(cls.path) || under_agent_home?(cls.path)
+          return workspace_violation_message(display_path)
+        end
         unless Attachments::Policy.allow_kind?(cls.kind)
           return "Error: #{display_path} is a #{cls.kind} (#{cls.mime}); read only converts " \
                  "documents and text. Inspect other kinds via the shell."
@@ -180,7 +187,13 @@ module Rubino
 
         # Thread the cancel_token so a runaway/bomb conversion is interruptible
         # mid-flight and bounded by the converter's wall-clock/element caps.
-        markdown = Rubino::Documents.to_markdown(cls.path, mime: cls.mime, cancel_token: @cancel_token)
+        # A windowed read (offset/limit) of a PDF selects a PAGE range at the
+        # source so a huge document converts only those pages; other formats
+        # ignore it. A whole-file read (the default) converts everything.
+        pages = document_page_window(full_file, offset, limit)
+        markdown = Rubino::Documents.to_markdown(
+          cls.path, mime: cls.mime, cancel_token: @cancel_token, pages: pages
+        )
         # No in-process converter (unknown format / optional gem absent): degrade
         # with the actionable shell-extraction hint, exactly like read_attachment.
         # NEVER raise — a missing gem must not break a turn.
@@ -203,6 +216,18 @@ module Rubino
 
       def oversized?(markdown)
         markdown.bytesize > Attachments::Policy.inline_text_budget_bytes
+      end
+
+      # Map a windowed read onto a 1-based inclusive PAGE range for the document
+      # converter: offset = first page, limit = max pages. nil for a whole-file
+      # read (offset==1 && limit==DEFAULT_LIMIT) so the default still converts the
+      # whole document. Only the PDF converter honors it; other formats ignore it.
+      def document_page_window(full_file, offset, limit)
+        return nil if full_file
+
+        first = [offset, 1].max
+        count = [limit, 1].max
+        first..(first + count - 1)
       end
 
       # Wrap the converted Markdown in the ONE nonce-framed untrusted envelope

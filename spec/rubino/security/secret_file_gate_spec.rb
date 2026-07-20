@@ -69,18 +69,18 @@ RSpec.describe "secret-file write approval gate (#480)" do
       expect(policy.decide(make_tool(name: "edit"), arguments: args)).to eq(:ask)
     end
 
-    # The read-side APPROVAL gate stays removed (#480): reading a secret
-    # auto-allows at the policy level — NO approval menu. (The structured
-    # `read`/`grep` tools enforce the Hermes-matched block/redaction INSIDE
-    # the tool, not via an approval prompt — see read_tool_spec / grep_tool_spec.)
+    # The read side ASKS (step 5c) — it neither auto-allows (the old #480
+    # read-gate removal) nor auto-DENIES (the tool-internal block that replaced
+    # it, which stranded the model with no way to request the exception and
+    # deadlocked read-before-write on an approved `edit .env`). The human decides.
     {
       "read" => { "file_path" => ".env" },
       "grep" => { "pattern" => "K", "path" => ".env" },
       "glob" => { "pattern" => "*", "path" => ".env" }
     }.each do |tool_name, args|
-      it "does NOT ask for #{tool_name} of a secret path — it AUTO-ALLOWS (no menu, #480)" do
+      it "ASKS for #{tool_name} of a secret path — never auto-denies it" do
         expect(policy.decide(make_tool(name: tool_name, risky: false, risk_level: :low),
-                             arguments: args)).to eq(:allow)
+                             arguments: args)).to eq(:ask)
       end
     end
 
@@ -119,12 +119,13 @@ RSpec.describe "secret-file write approval gate (#480)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 2. End-to-end through ToolExecutor: read auto-allows; write approve/deny/headless
+  # 2. End-to-end through ToolExecutor: read and write both approve/deny/headless
   # ----------------------------------------------------------------------------
   describe "end-to-end via ToolExecutor" do
     let(:registry) do
       Rubino::Tools::Registry.register(Rubino::Tools::ReadTool.new)
       Rubino::Tools::Registry.register(Rubino::Tools::WriteTool.new)
+      Rubino::Tools::Registry.register(Rubino::Tools::EditTool.new)
       Rubino::Tools::Registry
     end
     let(:repo) { double("Repo", record: true) }
@@ -141,27 +142,88 @@ RSpec.describe "secret-file write approval gate (#480)" do
       path
     end
 
-    # No approval PROMPT (the menu stays removed, #480), but the `read` tool
-    # itself BLOCKS the .env family with a message and no content — matching
-    # Hermes get_read_block_error.
-    it "reading a secret needs NO prompt but the tool blocks it with a message" do
+    # THE RULE: reading a secret ASKS — it is never auto-denied. The human
+    # decides, and an approval actually delivers the content (an approved read
+    # that still refused deadlocked read-before-write on .env).
+    it "APPROVED read of a secret returns the content" do
+      ui = double("UI", interactive?: true, confirm: true)
+      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c1")
+      expect(result.output).to include("supersecret")
+    end
+
+    # The REGRESSION GUARD for the reported bug, and it must use a URL-embedded
+    # credential: the `API_KEY=…` shape above is skipped by read's :code profile
+    # anyway, so it would pass even with the redaction bug present. This shape is
+    # one :code DOES mask — the model got `postgres:‹redacted by rubino›@`, sent
+    # the mask back as an edit old_string, and the edit could never match.
+    def db_url_env_path
+      path = File.join(tmp_dir, ".env")
+      File.write(path, %(DATABASE_URL="postgresql://postgres:s3cr3tpw@postgres:5432/postgres"\n))
+      path
+    end
+
+    it "APPROVED read hands back a URL-embedded credential UNMASKED (edit can match)" do
+      ui = double("UI", interactive?: true, confirm: true)
+      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => db_url_env_path },
+                                        call_id: "c1c")
+      expect(result.output).to include("s3cr3tpw")
+      expect(result.output).not_to include("redacted by rubino")
+    end
+
+    # --yolo clears the read with NO prompt, so an approval-keyed check would
+    # miss it and leave the .env edit deadlocked for headless/automated runs.
+    it "--yolo read of a secret is UNMASKED too (no prompt to key off)" do
+      allow(Rubino::Modes).to receive(:skip_approvals?).and_return(true)
+      ui = double("UI", interactive?: false)
+      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => db_url_env_path },
+                                        call_id: "c1d")
+      expect(result.output).to include("s3cr3tpw")
+    end
+
+    # An ordinary file keeps its declared :code redaction — the carve-out is
+    # scoped to secret-file reads the human cleared, not to reads at large.
+    it "a NORMAL file read still gets its declared redaction profile" do
       ui = double("UI", interactive?: true)
       allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
-      expect(ui).not_to receive(:confirm)
-      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c1")
-      expect(result.output).to include("Access denied")
+      path = File.join(tmp_dir, "app.rb")
+      File.write(path, %(TOKEN = "ghp_abcdefghijklmnop1234"\n))
+      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => path }, call_id: "c1e")
+      expect(result.output).not_to include("ghp_abcdefghijklmnop1234")
+    end
+
+    it "DENIED read of a secret returns no content" do
+      ui = double("UI", interactive?: true, confirm: false)
+      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      result = executor(ui: ui).execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c2")
+      expect(result.denied?).to be(true)
       expect(result.output).not_to include("supersecret")
     end
 
-    it "reading a secret HEADLESS does not fail-closed; the tool blocks with a message" do
+    it "reading a secret HEADLESS FAILS CLOSED (:noninteractive), leaking nothing" do
       ui = double("UI", interactive?: false)
       allow(ui).to receive_messages(warning: nil, tool_blocked: nil, tool_started: nil,
                                     tool_finished: nil, tool_body: nil)
       exec = executor(ui: ui)
       result = exec.execute(name: "read", arguments: { "file_path" => env_path }, call_id: "c3")
-      expect(result.output).to include("Access denied")
+      expect(result.denied?).to be(true)
       expect(result.output).not_to include("supersecret")
-      expect(exec.blocked_for_approval?).to be(false)
+      expect(exec.blocked_for_approval?).to be(true)
+    end
+
+    # The regression that motivated the gate change: `edit .env` prompts, the
+    # human approves, and the mandatory read-before-write must then succeed.
+    it "APPROVED read then edit of a secret completes (no read-before-write deadlock)" do
+      ui = double("UI", interactive?: true, confirm: true)
+      allow(ui).to receive_messages(tool_started: nil, tool_finished: nil, tool_body: nil, warning: nil)
+      path = env_path
+      exec = executor(ui: ui)
+      exec.execute(name: "read", arguments: { "file_path" => path }, call_id: "c1a")
+      exec.execute(name: "edit", arguments: { "file_path" => path, "old_string" => "supersecret",
+                                              "new_string" => "rotated" }, call_id: "c1b")
+      expect(File.read(path)).to eq("API_KEY=rotated\n")
     end
 
     it "APPROVED write of a secret actually writes it" do
@@ -209,13 +271,14 @@ RSpec.describe "secret-file write approval gate (#480)" do
   end
 
   # ----------------------------------------------------------------------------
-  # 2b. Home credential-store READ block (ported from Hermes write-deny set:
+  # 2b. Home credential-store READ gate (ported from Hermes write-deny set:
   #     file_safety.py:35-82). These leaked because they were only on the WRITE
   #     denylist — a `read` of ~/.ssh/id_rsa etc. returned the key material.
+  #     read_gated? routes them to the approval prompt (step 5c), never a deny.
   #     We assert against a FAKE home dir so the spec is hermetic and does not
   #     depend on the real ~ (also sidesteps the macOS /private realpath quirk).
   # ----------------------------------------------------------------------------
-  describe "Security::SecretPath.read_block_error — home credential stores" do
+  describe "Security::SecretPath.read_gated? — home credential stores" do
     let(:fake_home) { Dir.mktmpdir("fake_home_spec") }
 
     around do |example|
@@ -250,95 +313,43 @@ RSpec.describe "secret-file write approval gate (#480)" do
       "~/.gnupg/private-keys-v1.d/key" => [".gnupg", "private-keys-v1.d", "key"],
       "~/.azure/accessTokens.json" => [".azure", "accessTokens.json"]
     }.each do |label, rel|
-      it "BLOCKS reading #{label} with a clear error and no content" do
-        path = write_under_home(*rel)
-        err = Rubino::Security::SecretPath.read_block_error(path)
-        expect(err).to include("Access denied")
-        expect(err).not_to include("SECRET_MATERIAL")
+      it "GATES reading #{label} behind approval" do
+        expect(Rubino::Security::SecretPath.read_gated?(write_under_home(*rel))).to be(true)
       end
     end
 
-    # #537 — `.netrc`/`.git-credentials` were only blocked at their exact
-    # $HOME path; a project-local copy was read-allowed and unredacted. Now
-    # blocked by basename wherever they sit. Asserted via tmp_dir (NOT $HOME)
-    # so the check is project-local and hermetic (no dependence on real ~).
+    # #537 — `.netrc`/`.git-credentials` were only gated at their exact $HOME
+    # path; a project-local copy was read-allowed and unredacted. Now gated by
+    # basename wherever they sit. Asserted via tmp_dir (NOT $HOME) so the check
+    # is project-local and hermetic (no dependence on real ~).
     %w[.netrc .git-credentials].each do |base|
-      it "BLOCKS reading a project-local #{base} with a clear error and no content" do
+      it "GATES reading a project-local #{base}" do
         path = File.join(tmp_dir, base)
         File.write(path, "SECRET_MATERIAL\n")
-        err = Rubino::Security::SecretPath.read_block_error(path)
-        expect(err).to include("Access denied")
-        expect(err).not_to include("SECRET_MATERIAL")
+        expect(Rubino::Security::SecretPath.read_gated?(path)).to be(true)
       end
     end
 
-    it "blocks ~/.aws/credentials even with a lowercase aws_secret_access_key body" do
+    it "gates ~/.aws/credentials even with a lowercase aws_secret_access_key body" do
       path = write_under_home(".aws", "credentials",
                               content: "aws_secret_access_key = AKIAIOSFODNN7EXAMPLE\n")
-      expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
+      expect(Rubino::Security::SecretPath.read_gated?(path)).to be(true)
     end
 
-    it "does NOT block a non-credential file under the home dir" do
+    it "does NOT gate a non-credential file under the home dir" do
       path = write_under_home("notes.md", content: "hello\n")
-      expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
+      expect(Rubino::Security::SecretPath.read_gated?(path)).to be(false)
     end
 
-    it "does NOT block .env.example or an ordinary source file" do
-      expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, ".env.example"))).to be_nil
-      expect(Rubino::Security::SecretPath.read_block_error(File.join(tmp_dir, "app.rb"))).to be_nil
+    it "does NOT gate .env.example or an ordinary source file" do
+      expect(Rubino::Security::SecretPath.read_gated?(File.join(tmp_dir, ".env.example"))).to be(false)
+      expect(Rubino::Security::SecretPath.read_gated?(File.join(tmp_dir, "app.rb"))).to be(false)
     end
 
-    # THE RULE: every read under ~/.rubino is gated by EXPLICIT APPROVAL
-    # (ApprovalPolicy step 5c), never auto-denied. read_block_error returns
-    # nil so the human decides. Project-local .env + $HOME credential stores
-    # OUTSIDE the agent home stay blocked.
-    describe "agent-home reads are never auto-denied" do
-      let(:agent_home) { Dir.mktmpdir("fake_agent_home") }
-
-      before do
-        allow(Rubino).to receive(:home_path).and_return(agent_home)
-      end
-
-      after do
-        FileUtils.rm_rf(agent_home)
-      end
-
-      def write_under_agent_home(*rel, content: "SECRET\n")
-        path = File.join(agent_home, *rel)
-        FileUtils.mkdir_p(File.dirname(path))
-        File.write(path, content)
-        path
-      end
-
-      %w[
-        .env rubino.sqlite3 config.yml
-      ].each do |base|
-        it "returns nil for ~/.rubino/#{base}" do
-          path = write_under_agent_home(base)
-          expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
-        end
-      end
-
-      it "returns nil for an oauth file under ~/.rubino" do
-        path = write_under_agent_home("oauth", "credentials.json")
-        expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
-      end
-
-      it "returns nil for an mcp-tokens file under ~/.rubino" do
-        path = write_under_agent_home("mcp-tokens", "server-token.json")
-        expect(Rubino::Security::SecretPath.read_block_error(path)).to be_nil
-      end
-
-      it "still BLOCKS a project-local .env (outside agent home)" do
-        path = File.join(tmp_dir, ".env")
-        File.write(path, "API_KEY=leak\n")
-        expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
-      end
-
-      it "still BLOCKS ~/.ssh/id_rsa (outside agent home)" do
-        path = write_under_home(".ssh", "id_rsa")
-        expect(Rubino::Security::SecretPath.read_block_error(path)).to include("Access denied")
-      end
+    it "GATES a project-local .env" do
+      path = File.join(tmp_dir, ".env")
+      File.write(path, "API_KEY=leak\n")
+      expect(Rubino::Security::SecretPath.read_gated?(path)).to be(true)
     end
   end
 

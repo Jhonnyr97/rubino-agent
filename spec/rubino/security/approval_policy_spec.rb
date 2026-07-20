@@ -309,7 +309,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
     end
   end
 
-  describe "#decide agent-home read gate (step 5c)" do
+  describe "#decide secret-file read gate (step 5c)" do
     let(:read_tool)  { make_tool(name: "read", risk_level: :low, risky: false) }
     let(:grep_tool)  { make_tool(name: "grep", risk_level: :low, risky: false) }
     let(:glob_tool)  { make_tool(name: "glob", risk_level: :low, risky: false) }
@@ -323,6 +323,33 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
       expect(pol.decide(read_tool, arguments: { "file_path" => "~/.rubino/config.yml" })).to eq(:ask)
+    end
+
+    # THE RULE: a credential read ASKS — it is never auto-denied, so the human
+    # can clear it and read-before-write can complete on a .env edit.
+    it "asks (never denies) when a read targets a project-local .env" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => ".env" })).to eq(:ask)
+    end
+
+    it "asks when a read targets a $HOME credential store" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => "~/.ssh/id_rsa" })).to eq(:ask)
+    end
+
+    it "allows reading .env.example unprompted (documented-shape substitute)" do
+      pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
+      expect(pol.decide(read_tool, arguments: { "file_path" => ".env.example" })).to eq(:allow)
+    end
+
+    # An explicit user rule wins over the secret gate (step 5 runs above it),
+    # so a user who pre-approved the read is not prompted for it.
+    it "honors an explicit allow rule for a secret read" do
+      pol = described_class.new(
+        config: test_configuration("approvals" => { "mode" => "auto" },
+                                   "permissions" => { "read .env" => "allow" })
+      )
+      expect(pol.decide(read_tool, arguments: { "file_path" => ".env" })).to eq(:allow)
     end
 
     it "allows a read targeting a normal in-workspace file" do
@@ -342,7 +369,7 @@ RSpec.describe Rubino::Security::ApprovalPolicy do
       expect(pol.decide(glob_tool, arguments: { "pattern" => "*.yml", "path" => "~/.rubino" })).to eq(:ask)
     end
 
-    it "does NOT gate the skill tool load (not in AGENT_HOME_READ_TOOLS)" do
+    it "does NOT gate the skill tool load (not in SECRET_GATED_READ_TOOLS)" do
       skill = make_tool(name: "skill", risk_level: :low, risky: false)
       allow(Rubino::Security::SecretPath).to receive(:under_agent_home?).and_return(true)
       pol = described_class.new(config: test_configuration("approvals" => { "mode" => "auto" }))
