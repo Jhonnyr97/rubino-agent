@@ -37,14 +37,23 @@ module Rubino
     #     each tool. When it returns truthy the bridge returns RubyLLM::Tool::Halt
     #     instead of running the tool, which makes handle_tool_calls stop the auto
     #     loop after the current batch and hand control back to the Loop (#355a).
+    #   steer_injector : 0-arity callable the streaming transport consults at each
+    #     tool-result boundary INSIDE the single ask(). When a user typed a line
+    #     mid-turn it returns the framed steer text (else nil/""), which the
+    #     adapter piggybacks onto that tool-result message so the model sees it on
+    #     the very next round-trip — Claude-style mid-task steering that the outer
+    #     Loop can't deliver (its iteration counter stays 1 for a whole streaming
+    #     turn, so #inject_steered_input never drains typed lines mid-ask).
     class Request
       attr_reader :messages, :tools, :temperature, :max_tokens, :thinking,
                   :prefill, :image_paths, :stream,
-                  :on_intermediate_message, :on_round_trip, :budget_exhausted
+                  :on_intermediate_message, :on_round_trip, :budget_exhausted,
+                  :steer_injector
 
       def initialize(messages:, tools: nil, temperature: nil, max_tokens: nil,
                      thinking: nil, prefill: nil, image_paths: nil, stream: false,
-                     on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil)
+                     on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil,
+                     steer_injector: nil)
         @messages    = messages || []
         @tools       = tools || []
         @temperature = temperature
@@ -56,6 +65,7 @@ module Rubino
         @on_intermediate_message = on_intermediate_message
         @on_round_trip           = on_round_trip
         @budget_exhausted        = budget_exhausted
+        @steer_injector          = steer_injector
       end
 
       # True when the loop asked the boundary to stream this call.

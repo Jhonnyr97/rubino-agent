@@ -99,7 +99,8 @@ module Rubino
       # the bytes natively (no `vision` tool round-trip). Only meaningful on
       # the first model call of a turn — Loop strips it for follow-ups.
       def chat(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
-               on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil)
+               on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil,
+               steer_injector: nil) # rubocop:disable Lint/UnusedMethodArgument -- non-streaming steers via the outer Loop
         if bedrock_bearer_mode?
           bedrock_bearer_client.chat(messages: messages, tools: tools)
         else
@@ -120,7 +121,8 @@ module Rubino
       # is preserved across mid-stream parse errors so downstream code can show
       # whatever the model produced before the failure.
       def stream(messages:, tools: nil, response_format: nil, image_paths: [], prefill: nil,
-                 on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &)
+                 on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil,
+                 steer_injector: nil, &)
         if bedrock_bearer_mode?
           # BedrockBearerClient#stream buffers the whole /converse response before
           # its first emit, so a transport error can only fire pre-first-chunk —
@@ -142,7 +144,8 @@ module Rubino
         stream_once(messages: messages, tools: tools, response_format: response_format,
                     image_paths: image_paths, prefill: prefill,
                     on_intermediate_message: on_intermediate_message,
-                    on_round_trip: on_round_trip, budget_exhausted: budget_exhausted, &)
+                    on_round_trip: on_round_trip, budget_exhausted: budget_exhausted,
+                    steer_injector: steer_injector, &)
       end
 
       private
@@ -157,7 +160,8 @@ module Rubino
         hooks = {
           on_intermediate_message: request.on_intermediate_message,
           on_round_trip: request.on_round_trip,
-          budget_exhausted: request.budget_exhausted
+          budget_exhausted: request.budget_exhausted,
+          steer_injector: request.steer_injector
         }
         if request.stream?
           stream(messages: request.messages, tools: request.tools,
@@ -181,7 +185,8 @@ module Rubino
       # contract. Inline <think>…</think> sentinels are routed to :thinking;
       # buffered content is preserved across mid-stream parse/transport errors.
       def stream_once(messages:, tools:, response_format:, image_paths:, prefill: nil,
-                      on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil, &block)
+                      on_intermediate_message: nil, on_round_trip: nil, budget_exhausted: nil,
+                      steer_injector: nil, &block)
         chat_instance = build_chat(tools: tools, response_format: response_format,
                                    budget_exhausted: budget_exhausted)
         load_history(chat_instance, messages)
@@ -303,6 +308,16 @@ module Rubino
           # tool's runtime so a long, legitimate tool (a blocking
           # `question`/clarify waiting on the human) is not killed at `stale_after`.
           tool_running = true if intermediate_tool_message?(msg)
+          # Mid-task steering (Claude parity): a TOOL-RESULT message just landed in
+          # chat.messages, so ruby_llm is at a valid ordering boundary — the next
+          # thing it does is call the model again. If the user typed a line while
+          # this streaming turn was working, PIGGYBACK it onto this tool result's
+          # content (exactly Loop#append_to_tool_result's trick, but INSIDE the
+          # single ask()) so the model sees it on the very next round-trip instead
+          # of after the whole task finishes. The injector drains atomically and
+          # returns "" once consumed, so a multi-tool batch appends it to the FIRST
+          # result only — no new user message splits the tool_use/tool_result pair.
+          inject_stream_steer(msg, steer_injector)
         end
         if chat_instance.respond_to?(:after_message)
           chat_instance.after_message(&close_block)
@@ -473,6 +488,31 @@ module Rubino
         msg.tool_call?
       rescue StandardError
         false
+      end
+
+      # Mid-task steering piggyback (Claude parity). Called from the after_message
+      # boundary the instant a TOOL-RESULT message is appended to chat.messages —
+      # a point where injecting is safe (the tool_use/tool_result pair is complete
+      # and the model call for the next round hasn't been issued). When the Loop's
+      # steer_injector reports a queued typed line, append its framed text to THIS
+      # tool result's content so the model reads it on the next round-trip. We
+      # MUST mutate an existing tool message rather than add a user one: a new
+      # user message here would split a multi-call batch's remaining tool_results
+      # from their tool_use and strict providers 400. Guarded to the plain-string
+      # result (the normal success payload); a Content::Raw error result is left
+      # alone and the steer rides the next tool / the text-only fallback instead.
+      # Best-effort: a steer detail must never abort the live stream.
+      def inject_stream_steer(msg, steer_injector)
+        return unless steer_injector
+        return unless msg.respond_to?(:tool_result?) && msg.tool_result?
+        return unless msg.respond_to?(:content) && msg.content.is_a?(String)
+
+        steer = steer_injector.call
+        return if steer.nil? || steer.to_s.empty?
+
+        msg.content = "#{msg.content}#{steer}"
+      rescue StandardError => e
+        log_safely(event: "llm.stream.steer_inject_failed", error: e.message)
       end
 
       # Normalizes a ruby_llm assistant(tool_use) Message into the plain hash the

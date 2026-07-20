@@ -102,6 +102,27 @@ module Rubino
         @mutex.synchronize { !@lines.empty? || !@notices.empty? }
       end
 
+      # True when at least one TYPED line is waiting (notices are ignored). The
+      # in-stream steer (Loop#stream_steer_injection) consults this so a queued
+      # user message can be folded into the running streaming turn at the next
+      # tool boundary — WITHOUT touching parked background notices, which keep
+      # their own turn-start / text-only delivery.
+      def typed_pending?
+        @mutex.synchronize { !@lines.empty? }
+      end
+
+      # Removes and returns every queued TYPED line (FIFO), leaving parked
+      # background notices untouched. The streaming in-stream steer drains ONLY
+      # typed lines mid-ask; the outer-loop #drain still coalesces notices+lines
+      # at an iteration boundary. Atomic against a concurrent #push.
+      def drain_typed
+        @mutex.synchronize do
+          lines  = @lines
+          @lines = []
+          lines
+        end
+      end
+
       # True when one or more background notices are parked AND no typed line is
       # waiting. The idle prompt uses this to decide whether to AUTONOMOUSLY
       # resume into a follow-up turn (#561): a background subagent that finished

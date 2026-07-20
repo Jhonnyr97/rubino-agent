@@ -62,6 +62,18 @@ module Rubino
         "needed it, report that the task is blocked pending approval." \
         "</system-reminder>".freeze
 
+      # Framing for a line the user typed WHILE a streaming turn was working,
+      # piggybacked onto the next tool-result and delivered mid-task (#steer).
+      # Carries the trusted-harness marker so an injection-aware model reads the
+      # wrapper as runtime control, then treats the quoted text as the user's own
+      # instruction — the mid-ask twin of NOTICES_PREAMBLE, but for a REAL user
+      # message (an instruction to act on now), not a background notice.
+      STEER_INJECTION_PREAMBLE =
+        "#{HARNESS_CONTROL_MARKER} <system-reminder>The user sent the message " \
+        "below while you were working. Treat it as their latest instruction: " \
+        "fold it into what you're doing and adjust course as needed — do not " \
+        "ignore it or defer it to a later turn.</system-reminder>".freeze
+
       def initialize(session:, llm_adapter:, tool_executor:, message_store:,
                      budget:, ui:, event_bus:, config:, cancel_token: nil,
                      initial_image_paths: [], input_queue: nil)
@@ -346,7 +358,10 @@ module Rubino
             # ordering boundary) and the model folds the result in without waiting.
             # Guarded on #notices_pending? (a typed line always wins via #shift and
             # carries the notice on its own turn); the iteration budget still bounds
-            # the turn, and once drained the notice can't re-trigger this.
+            # the turn, and once drained the notice can't re-trigger this. A typed
+            # line queued during a LONG streaming turn is delivered EARLIER, mid-ask
+            # at a tool boundary (#stream_steer_injection), so it is already drained
+            # by the time this final-answer branch runs — this path stays notices-only.
             if @input_queue&.notices_pending?
               persist_assistant_message(response)
               close_intermediate_stream(response)
@@ -496,6 +511,41 @@ module Rubino
         framed = "\n\n[background notices] #{text}"
         last_msg[:content] = last_msg[:content].to_s + framed
         true
+      end
+
+      # Mid-task steering for the STREAMING path (#steer). ruby_llm runs the whole
+      # tool loop inside one ask(), so the outer loop's #inject_steered_input —
+      # which only drains typed lines at iteration > 1 — never fires mid-ask (the
+      # iteration counter stays 1 for the entire streaming turn). This is the
+      # in-ask twin: the adapter calls it at each tool-result boundary; when the
+      # user typed a line while the turn was working, drain it, persist it as a
+      # real user row (transcript/resume parity), commit its "⏳ queued" indicator
+      # and echo it, and return the framed text for the adapter to piggyback onto
+      # that tool result — so the model sees it on the very next round-trip.
+      #
+      # Returns the framed steer string, or nil when nothing is queued / no queue
+      # is wired. Drains TYPED lines only (via #drain_typed): parked background
+      # notices keep their existing turn-start / text-only delivery, and the
+      # atomic drain means a multi-tool batch appends the steer to the first
+      # result only. Runs on the streaming thread — the same thread the mid-stream
+      # tool executor already persists and renders from, so no new concurrency.
+      def stream_steer_injection
+        return nil unless @input_queue&.typed_pending?
+
+        lines = @input_queue.drain_typed
+        return nil if lines.empty?
+
+        text = lines.join("\n")
+        persist_user_message(text)
+        @event_bus.emit(Interaction::Events::INPUT_INJECTED, text: text, iteration: -1)
+        @ui.input_injected(text)
+        "\n\n#{STEER_INJECTION_PREAMBLE}\n#{text}"
+      rescue StandardError => e
+        # A steer-delivery hiccup must never abort the live turn — log and let the
+        # stream continue; the line stays consumed only if #drain_typed ran, and a
+        # persist failure there still delivers the steer to the model this round.
+        Rubino.logger&.warn(event: "loop.stream_steer_failed", error: e.message)
+        nil
       end
 
       # Reinforces the no-confabulation rule when a tool was blocked this turn
@@ -842,7 +892,11 @@ module Rubino
           # ToolBridge consults to Halt once the budget is spent (#355a).
           on_intermediate_message: method(:persist_intermediate_assistant),
           on_round_trip: method(:note_stream_round_trip),
-          budget_exhausted: method(:stream_budget_exhausted?)
+          budget_exhausted: method(:stream_budget_exhausted?),
+          # Mid-task steering (#steer): the streaming transport consults this at
+          # each tool-result boundary inside the single ask(). Nil-queue runs
+          # (API/server/subagents) and the non-streaming path leave it inert.
+          steer_injector: method(:stream_steer_injection)
         )
 
         # Single boundary entry (normalize_response seam).

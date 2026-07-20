@@ -73,7 +73,7 @@ RSpec.describe Rubino::LLM::Request do
       expect(adapter).to receive(:chat).with(messages: req.messages, tools: req.tools,
                                              image_paths: req.image_paths, prefill: req.prefill,
                                              on_intermediate_message: nil, on_round_trip: nil,
-                                             budget_exhausted: nil)
+                                             budget_exhausted: nil, steer_injector: nil)
       adapter.call(req)
     end
 
@@ -82,7 +82,7 @@ RSpec.describe Rubino::LLM::Request do
       expect(adapter).to receive(:stream).with(messages: req.messages, tools: req.tools,
                                                image_paths: req.image_paths, prefill: req.prefill,
                                                on_intermediate_message: nil, on_round_trip: nil,
-                                               budget_exhausted: nil)
+                                               budget_exhausted: nil, steer_injector: nil)
       adapter.call(req) { |_chunk| }
     end
 

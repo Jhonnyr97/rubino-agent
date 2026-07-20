@@ -236,4 +236,39 @@ RSpec.describe Rubino::Interaction::InputQueue do
       expect(drained.uniq.size).to eq(total)
     end
   end
+
+  # Mid-task streaming steer (#steer): the in-ask injector drains TYPED lines
+  # only, leaving parked background notices for their own delivery path.
+  describe "#typed_pending? / #drain_typed" do
+    it "typed_pending? is true for a typed line, false for a notice-only queue" do
+      queue = described_class.new
+      expect(queue.typed_pending?).to be(false)
+
+      queue.push_notice("[background-task] bg_1 completed.")
+      expect(queue.typed_pending?).to be(false) # a notice is NOT a typed line
+      expect(queue.pending?).to be(true)
+
+      queue.push("steer me")
+      expect(queue.typed_pending?).to be(true)
+    end
+
+    it "drain_typed returns typed lines in order and clears them, keeping notices" do
+      queue = described_class.new
+      queue.push_notice("[background-task] bg_1 completed.")
+      queue.push("first")
+      queue.push("second")
+
+      expect(queue.drain_typed).to eq(%w[first second])
+      expect(queue.typed_pending?).to be(false)
+      # The notice survives for its own (turn-start / text-only) delivery.
+      expect(queue.pending?).to be(true)
+      expect(queue.drain_notices).to eq(["[background-task] bg_1 completed."])
+    end
+
+    it "drain_typed is empty when only notices are queued" do
+      queue = described_class.new
+      queue.push_notice("[background-task] bg_1 completed.")
+      expect(queue.drain_typed).to eq([])
+    end
+  end
 end

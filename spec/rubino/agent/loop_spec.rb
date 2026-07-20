@@ -1648,6 +1648,79 @@ RSpec.describe Rubino::Agent::Loop do
   end
 
   # ---------------------------------------------------------------------------
+  # Mid-task streaming steer (#steer): the injector the adapter consults at each
+  # in-ask tool-result boundary. On the streaming path ruby_llm runs the whole
+  # tool loop inside one ask(), so the outer #inject_steered_input never fires
+  # mid-turn — this is what delivers a line the user typed WHILE a long turn was
+  # working to the model at the next tool boundary, instead of terminating the
+  # loop and replaying it as a fresh turn.
+  # ---------------------------------------------------------------------------
+  describe "#stream_steer_injection" do
+    def injector_for(queue)
+      build_loop(input_queue: queue).method(:stream_steer_injection)
+    end
+
+    it "returns the framed steer text and persists the line as a user row" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push("also handle the edge case")
+
+      framed = injector_for(queue).call
+
+      expect(framed).to include("also handle the edge case")
+      expect(framed).to include(Rubino::Agent::Loop::HARNESS_CONTROL_MARKER)
+      # The line is drained (consumed) and persisted so the transcript/resume see it.
+      expect(queue.typed_pending?).to be(false)
+      stored = message_store.for_session(session[:id]).select { |m| m.role == "user" }
+      expect(stored.map(&:content)).to include("also handle the edge case")
+    end
+
+    it "commits the queued indicator / echo via ui.input_injected" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push("steer me")
+
+      injector_for(queue).call
+
+      injected = null_ui.messages.select { |m| m[:level] == :input_injected }
+      expect(injected.map { |m| m[:message] }).to include("steer me")
+    end
+
+    it "coalesces several typed lines into one injection, in order" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push("first")
+      queue.push("second")
+
+      framed = injector_for(queue).call
+
+      expect(framed).to include("first\nsecond")
+    end
+
+    it "drains TYPED lines only, leaving a parked background notice" do
+      queue = Rubino::Interaction::InputQueue.new
+      queue.push_notice("[background-task] bg_1 completed.")
+      queue.push("typed steer")
+
+      framed = injector_for(queue).call
+
+      expect(framed).to include("typed steer")
+      expect(framed).not_to include("[background-task]")
+      expect(queue.pending?).to be(true) # the notice survives
+    end
+
+    it "returns nil when nothing typed is queued (notice-only / empty)" do
+      empty = Rubino::Interaction::InputQueue.new
+      expect(injector_for(empty).call).to be_nil
+
+      notice_only = Rubino::Interaction::InputQueue.new
+      notice_only.push_notice("[background-task] bg_1 completed.")
+      expect(injector_for(notice_only).call).to be_nil
+    end
+
+    it "returns nil when no queue is wired (subagent / API isolation)" do
+      expect(build_loop(input_queue: nil).method(:stream_steer_injection).call).to be_nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Human-in-the-loop (Option C): an interactive turn — one that may park the
   # run on a cross-thread approval/clarify gate — must run NON-STREAMING so the
   # LLM HTTP request closes before any tool fires and the gate wait holds no
