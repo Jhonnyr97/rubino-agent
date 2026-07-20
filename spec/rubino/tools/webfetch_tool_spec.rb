@@ -323,7 +323,7 @@ RSpec.describe Rubino::Tools::WebFetchTool do
     end
   end
 
-  describe "document conversion (PDF/DOCX/XLSX/PPTX)" do
+  describe "document download (delegates conversion to read)" do
     let(:fixtures) { documents_fixtures_dir }
 
     def stub_http_for_doc(body:, content_type:, host: "example.com")
@@ -332,29 +332,33 @@ RSpec.describe Rubino::Tools::WebFetchTool do
       allow(Rubino).to receive(:home_path).and_return(Dir.tmpdir)
     end
 
-    it "converts a PDF and returns extracted Markdown text" do
+    it "saves a fetched PDF and points the model at `read` (no auto-conversion)" do
       pdf_path = File.join(fixtures, "sample.pdf")
       pdf_bytes = File.binread(pdf_path)
       stub_http_for_doc(body: pdf_bytes, content_type: "application/pdf")
       result = tool.call("url" => "https://example.com/report.pdf")
-      expect(result).to include("Quarterly Report")
-      expect(result).to include("Revenue grew this quarter")
-      expect(result).to include("--BEGIN ")
-      expect(result).to include("--END ")
+
+      # web_fetch acquires + persists; it must NOT convert or inline the content.
+      expect(result).to include("Fetched PDF")
+      expect(result).to include("saved it to")
+      expect(result).to include("Read it with the `read` tool")
+      expect(result).to include("untrusted")
+      expect(result).not_to include("Quarterly Report") # converted text never inlined
       expect(result).not_to start_with("Error:")
+
+      # The raw bytes are on disk under the agent tool-results dir, byte-exact,
+      # with the correct extension so read's classifier detects the PDF.
+      saved = result[%r{(#{Regexp.escape(File.join(Dir.tmpdir, "tool-results"))}\S+\.pdf)}, 1]
+      expect(saved).not_to be_nil
+      expect(File.binread(saved)).to eq(pdf_bytes)
     end
 
-    it "returns an actionable hint when the PDF converter is absent" do
-      pdf_path = File.join(fixtures, "sample.pdf")
-      pdf_bytes = File.binread(pdf_path)
-      stub_http_for_doc(body: pdf_bytes, content_type: "application/pdf")
-      # Simulate pdf-reader not installed by stubbing Registry.for for pdf mime.
-      allow(Rubino::Documents::Registry).to receive(:for)
-        .with(mime: "application/pdf", path: anything).and_return(nil)
-      result = tool.call("url" => "https://example.com/report.pdf")
-      expect(result).to include("no in-process PDF converter")
-      expect(result).to include("gem install pdf-reader")
-      expect(result).to include("pdftotext")
+    it "labels a DOCX by its extension" do
+      docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      stub_http_for_doc(body: "PK\x03\x04docx-bytes", content_type: docx_mime)
+      result = tool.call("url" => "https://example.com/spec.docx")
+      expect(result).to include("Fetched DOCX")
+      expect(result).to include("Read it with the `read` tool")
     end
 
     it "still refuses image/png (opaque binary unchanged)" do

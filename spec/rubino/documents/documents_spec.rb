@@ -100,6 +100,44 @@ RSpec.describe Rubino::Documents do
       expect(md).to include("Revenue grew this quarter.")
     end
 
+    describe "pdf source-level page windowing (pages:)", if: pdf_available? do
+      let(:multipage) { File.join(fixtures, "multipage.pdf") }
+
+      it "converts ONLY the requested page window, not the whole document" do
+        md = described_class.to_markdown(multipage, pages: 2..2)
+        expect(md).to include("Page Two Bravo")
+        expect(md).not_to include("Page One Alpha")
+        expect(md).not_to include("Page Three Charlie")
+        expect(md).to include("PDF pages 2–2 of 3")
+      end
+
+      it "clamps a window that overruns the end to the last page" do
+        md = described_class.to_markdown(multipage, pages: 2..99)
+        expect(md).to include("Page Two Bravo")
+        expect(md).to include("Page Three Charlie")
+        expect(md).to include("PDF pages 2–3 of 3")
+      end
+
+      it "returns an honest past-the-end note for a window beyond the document" do
+        md = described_class.to_markdown(multipage, pages: 9..12)
+        expect(md).to match(/past the end/i)
+        expect(md).to include("3 page")
+      end
+
+      it "converts the WHOLE document when pages is nil (default unchanged)" do
+        md = described_class.to_markdown(multipage)
+        expect(md).to include("Page One Alpha")
+        expect(md).to include("Page Three Charlie")
+        expect(md).not_to include("PDF pages")
+      end
+
+      it "ignores pages: for a non-PDF format (whole document)" do
+        md = described_class.to_markdown(File.join(fixtures, "sample.csv"),
+                                         mime: "text/csv", pages: 1..1)
+        expect(md).to include("Alice") # full CSV, window ignored
+      end
+    end
+
     # KNOWN DIFFERENCE: a scanned / image-only PDF has no extractable text and
     # we perform no OCR -- we must return a clear note, never crash.
     it "scanned/image-only pdf -> a clear no-extractable-text note, not a crash", if: pdf_available? do

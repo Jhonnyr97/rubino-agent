@@ -46,6 +46,7 @@ module DocumentFixtures
     write_zip(File.join(dir, "sample.docx"), docx_files)
     File.binwrite(File.join(dir, "sample.pdf"), pdf_bytes)
     File.binwrite(File.join(dir, "scanned.pdf"), scanned_pdf_bytes)
+    File.binwrite(File.join(dir, "multipage.pdf"), multipage_pdf_bytes)
   end
 
   def write_zip(path, files)
@@ -223,6 +224,32 @@ module DocumentFixtures
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
       "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
       "<< /Length 0 >>\nstream\n\nendstream"
+    ]
+    assemble_pdf(objs)
+  end
+
+  # A 3-page PDF with distinct text per page, for exercising source-level page
+  # windowing (read's offset/limit -> PDF pages). Pages: "Page One Alpha",
+  # "Page Two Bravo", "Page Three Charlie".
+  def multipage_pdf_bytes
+    stream = lambda do |txt|
+      content = "BT /F1 24 Tf 72 700 Td (#{txt}) Tj ET"
+      "<< /Length #{content.bytesize} >>\nstream\n#{content}\nendstream"
+    end
+    page = lambda do |contents_ref|
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] " \
+      "/Resources << /Font << /F1 9 0 R >> >> /Contents #{contents_ref} >>"
+    end
+    objs = [
+      "<< /Type /Catalog /Pages 2 0 R >>",                          # 1
+      "<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>",      # 2
+      page.call("4 0 R"),                                           # 3
+      stream.call("Page One Alpha"),                                # 4
+      page.call("6 0 R"),                                           # 5
+      stream.call("Page Two Bravo"),                                # 6
+      page.call("8 0 R"),                                           # 7
+      stream.call("Page Three Charlie"),                            # 8
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"      # 9
     ]
     assemble_pdf(objs)
   end

@@ -29,21 +29,30 @@ module Rubino
           File.extname(path.to_s).downcase == ".pdf"
         end
 
-        def convert(path, budget = Limits.null_budget)
+        # `pages` (a 1-based inclusive Range, e.g. 1..5) converts ONLY those pages
+        # so a huge PDF never has to be extracted whole just to read a few pages —
+        # the source-level paging the `read` tool drives from offset/limit. nil
+        # converts the entire document (the default). Out-of-range windows return
+        # an honest past-the-end note, not a crash.
+        def convert(path, budget = Limits.null_budget, pages: nil)
           require "pdf/reader"
           reader = PDF::Reader.new(path)
-          pages = []
-          # budget.tick per page bails a page bomb DURING extraction, and the
-          # accumulated-bytes cap bounds a single pathologically dense page.
-          reader.pages.each do |page|
-            txt = page_text(page)
-            budget.tick(bytes: txt.bytesize)
-            pages << txt
-          end
-          text = pages.reject(&:empty?).join("\n\n")
-          return scanned_note if text.strip.empty?
+          total = reader.page_count
+          window = page_window(pages, total)
+          selected = window ? Array(reader.pages[window]) : reader.pages
+          return past_end_note(pages, total) if window && selected.empty?
 
-          text
+          texts = selected.map do |page|
+            txt = page_text(page)
+            # budget.tick per page bails a page bomb DURING extraction, and the
+            # accumulated-bytes cap bounds a single pathologically dense page.
+            budget.tick(bytes: txt.bytesize)
+            txt
+          end
+          body = texts.reject(&:empty?).join("\n\n")
+          return scanned_note if body.strip.empty?
+
+          window ? "#{page_marker(window, total)}\n\n#{body}" : body
         rescue Rubino::Interrupted, CapExceeded
           raise
         rescue PDF::Reader::MalformedPDFError, PDF::Reader::UnsupportedFeatureError
@@ -51,6 +60,26 @@ module Rubino
         end
 
         private
+
+        # 1-based inclusive page Range -> 0-based array-slice Range clamped to the
+        # document, or nil for "whole document". A first page past the end yields
+        # an empty slice the caller reports honestly.
+        def page_window(pages, total)
+          return nil unless pages
+
+          first0 = [pages.first - 1, 0].max
+          last0  = [pages.last - 1, total - 1].min
+          first0..last0
+        end
+
+        def page_marker(window, total)
+          "_(PDF pages #{window.first + 1}–#{window.last + 1} of #{total})_"
+        end
+
+        def past_end_note(pages, total)
+          "_(This PDF has #{total} page(s); requested pages #{pages.first}–#{pages.last} " \
+            "are past the end.)_"
+        end
 
         def page_text(page)
           page.text.to_s.gsub(/[ \t]+\n/, "\n").strip

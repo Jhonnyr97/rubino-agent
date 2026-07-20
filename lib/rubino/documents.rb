@@ -29,12 +29,20 @@ module Rubino
     # the file (unknown format, or the format's optional gem isn't installed, or
     # extraction produced nothing). Never raises -- a converter failure degrades
     # to nil so the caller emits the actionable shell-hint.
-    def to_markdown(path, mime: nil, cancel_token: nil)
+    # `pages` (a 1-based inclusive Range) is honored ONLY by the PDF converter —
+    # it converts just that page window so a huge PDF isn't extracted whole. Any
+    # other format ignores it (converts the whole document as before), so callers
+    # can pass it uniformly without knowing the format.
+    def to_markdown(path, mime: nil, cancel_token: nil, pages: nil)
       converter = Registry.for(mime: mime, path: path)
       return nil unless converter
 
       budget = Limits.budget(cancel_token: cancel_token)
-      out = converter.convert(path, budget)
+      out = if pages && converter.is_a?(Converters::Pdf)
+              converter.convert(path, budget, pages: pages)
+            else
+              converter.convert(path, budget)
+            end
       out = out.to_s
       out.strip.empty? ? nil : out
     rescue Rubino::Interrupted
