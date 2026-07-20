@@ -64,11 +64,18 @@ module Rubino
         # SpillStore doesn't return bytes — count files instead.
         spill_count = spill_deleted
 
-        Rubino.logger.info(
-          event: "cleanup.completed",
-          sessions_deleted: total_deleted,
-          spill_files_deleted: spill_count
-        )
+        # Only record a completion when the sweep actually removed something.
+        # An idle run (0 sessions / 0 spill files) fires on nearly every boot and
+        # just prints `cleanup.completed sessions_deleted:0 spill_files_deleted:0`
+        # — pure noise the user sees with nothing behind it. The useful signal is
+        # a run that pruned real rows; keep that, drop the no-op.
+        if total_deleted.positive? || spill_count.positive?
+          Rubino.logger.info(
+            event: "cleanup.completed",
+            sessions_deleted: total_deleted,
+            spill_files_deleted: spill_count
+          )
+        end
 
         # 3. SQLite VACUUM gated behind a size threshold so we never pay
         #    the cost on a small DB (Codex-style lock-contention avoidance).
