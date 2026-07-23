@@ -25,11 +25,11 @@ pointer carrying an `id` (`retrieve_output id=…`), and the model recovers the
 verbatim original by calling the `retrieve_output` tool with that id — there is
 **no cat-able filesystem path** in the pointer, so a small model can't `sed`/
 `grep`/`cat` a spill path and re-inflate the very output compression just shrank.
-While enabled, `read` and `shell` advertise an extra `compress` boolean parameter
-(default `true`) so the model can pass `compress:false` to get one call's output
-verbatim, and the registry adds the `retrieve_output` recovery tool (present
-**only** while compression is enabled — it is absent from the default registry,
-so the count below is unchanged). See
+`read` and `shell` advertise a `compress` boolean parameter **unconditionally**
+(default `true`, a no-op when compression is off) so the model can always pass
+`compress:false` to get one call's output verbatim, and — **only** while
+compression is enabled — the registry adds the `retrieve_output` recovery tool
+(absent from the default registry, so the count below is unchanged). See
 [configuration.md](configuration.md#tool_output_compression) for the full key
 reference. Compression is OFF in the default registry, so the parameter lists
 below describe the shipped (uncompressed) behaviour.
@@ -222,11 +222,11 @@ Parameters: todos[] (content, status, priority)
 
 ### memory
 
-Persist facts across sessions. `action=add` records a new fact, `replace` updates an existing one, `remove` deletes one. `target=user` writes the user profile; `target=memory` writes general memory. Content is scanned for prompt-injection / exfiltration patterns and subject to a character budget.
+Persist facts across sessions. `action=add` records a new fact, `replace` updates an existing one, `remove` deletes one. `target=user` writes the user profile; `target=project` records a durable project/codebase fact (surfaced as `[Project Context]`); `target=memory` writes general memory. An optional `entities` array names key entities in the fact (people, projects, tools, systems) to feed the memory graph — consulted only when `memory.sqlite.graph_extraction` is `supplied`, otherwise entities are derived automatically and it can be omitted. Content is scanned for prompt-injection / exfiltration patterns and subject to a character budget.
 
 ```
 Risk: low
-Parameters: action, target, content, old_text
+Parameters: action, target, content, old_text, entities[]
 ```
 
 ### session_search

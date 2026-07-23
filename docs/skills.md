@@ -31,11 +31,19 @@ skills:
 Override the search paths via the `skills.paths` config key. On a name collision
 the **directory** layout wins over the flat-file layout (it is the richer unit).
 
-The registry additionally scans the **agent-neutral** skill dirs — project
-`.agents/skills/` and `~/.agents/skills/` (the emerging cross-agent convention
-used by `npx skills`, Gemini CLI, goose) — at the lowest precedence: a
-rubino-path skill of the same name wins, and nothing changes when those dirs
-are absent. The project-local one is trust-gated exactly like `.rubino/skills`.
+The registry additionally scans two lower-precedence tiers so skills authored
+for other agents are picked up in place:
+
+- the **agent-neutral** skill dirs — project `.agents/skills/` and
+  `~/.agents/skills/` (the emerging cross-agent convention used by `npx skills`,
+  Gemini CLI, goose);
+- the **Claude** skill dirs — `~/.claude/skills` and project `.claude/skills`
+  (the Claude Code layout).
+
+Both tiers sit below the rubino paths: a rubino-path skill of the same name
+wins, and nothing changes when those dirs are absent. Within each tier the home
+dir is lower priority and the project-local dir higher (wins on collision), and
+each project-local dir is trust-gated exactly like `.rubino/skills`.
 
 ### Two layouts
 
@@ -49,25 +57,47 @@ because it can carry bundled references, scripts, and assets.
 
 ### Built-in (gem-bundled) skills
 
-On top of the configured user paths, the registry **always** scans the
-`skills/` directory shipped *inside the gem*. This is how a skill reaches every
-install with no copy step and updates automatically on `gem update`. Two bundled
-skills ship this way:
+The gem ships a `skills/` directory *inside the gem* as a **seed template**, not
+a runtime-scanned catalogue. On first use (and at every home-materialization
+chokepoint) `seed_builtin_skills!` **copies** each bundled skill once into
+`~/.rubino/skills`, so the user's home stays the single source of truth: you own,
+edit, and delete them as ordinary files there. Ten built-ins ship this way:
 
+- **`arxiv`** — fetch and work with arXiv papers.
+- **`codebase-exploration`** — systematically map an unfamiliar codebase.
+- **`dependency-audit`** — audit project dependencies.
+- **`llm-wiki`** — reference knowledge about LLMs and providers.
+- **`release`** — cut a gem/project release.
 - **`ruby-expert`** — deep Ruby/Rails knowledge across idioms, OO design,
   concurrency, Rails, testing, performance, security, and more.
 - **`skill-authoring`** — how to write effective `SKILL.md` files: frontmatter,
   the "Use when …" description convention, body structure, and common pitfalls.
+- **`spike`** — run a throwaway exploratory spike.
+- **`systematic-debugging`** — a disciplined debugging method.
+- **`test-driven-development`** — a TDD workflow.
 
-Built-ins are scanned **before** the user paths, so a user skill of the same
-name placed in `.rubino/skills` or `~/.rubino/skills` transparently overrides the
-built-in (last writer wins on the name-indexed merge). To run with only your own
-skills, set:
+Because the seed is a **copy**, not a live scan, the built-ins behave like any
+other home skill afterwards:
+
+- A `.seeded_builtins` marker records which built-ins were ever seeded, so a
+  built-in you **delete** stays deleted — it is *not* resurrected on the next run
+  (absence ≠ "never seeded").
+- An existing skill is **never overwritten** — your edits win.
+- A gem upgrade seeds only built-ins **new** to that version; it never
+  re-adds or overwrites ones already seeded.
+
+At runtime the registry does **not** read the gem's `skills/` dir by default. You
+can opt back into scanning the gem-bundled dir live (in addition to the seeded
+copies) with:
 
 ```yaml
 skills:
-  include_builtin: false   # default true
+  include_builtin: true   # default false — gem skills/ is a seed template, not a live scan
 ```
+
+When live-scanning is enabled the gem `BUILTIN_SKILLS_DIR` is scanned **first**,
+so a user skill of the same name in `.rubino/skills` or `~/.rubino/skills`
+overrides it (last writer wins on the name-indexed merge).
 
 ### Installing skills from git (`rubino skills install`)
 

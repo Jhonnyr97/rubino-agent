@@ -93,8 +93,8 @@ Everything after the closing `---` is the system prompt body.
 | `WebSearch` | `web_search` |
 | `WebFetch` | `web_fetch` |
 | `Task` | `task` |
-| `TaskOutput` | `task_manage` (action `result`) |
-| `TaskStop` | `task_manage` (action `stop`) |
+| `TaskOutput` | `task_result` (defunct) |
+| `TaskStop` | `task_stop` (defunct) |
 | `AskUserQuestion` | `question` |
 | `TodoWrite` | `todo` |
 | `NotepadEdit` | `memory` |
@@ -102,6 +102,9 @@ Everything after the closing `---` is the system prompt body.
 | `EnterPlanMode` | skipped (plan mode is a mode switch, not a tool) |
 
 Unknown tool names are dropped with a warning. An `EnterPlanMode` entry is silently skipped.
+`TaskOutput`/`TaskStop` translate literally to `task_result`/`task_stop`, but those targets
+are **no longer registered tools** — they were folded into `task_manage` (selected by `action`),
+so the translated names resolve to nothing and are effectively dropped.
 
 ### Fields with no rubino equivalent (ignored)
 

@@ -88,7 +88,7 @@ Telemetry is fail-open and can never take down a turn:
 
 - `otel.enabled: true` without the gems installed logs one `telemetry.gems_missing` warning (with the install command) and disables itself.
 - A broken exporter config logs `telemetry.boot_failed` and disables itself.
-- An unreachable collector is the exporter's problem (batched, retried, eventually dropped) — the agent never blocks on it.
+- An unreachable collector (e.g. Grafana/the OTLP endpoint is down) is the exporter's problem: spans are batched, retried, and eventually dropped — the agent never blocks on it. Rubino installs its own OpenTelemetry error handler so this degrades **quietly**: you get a single actionable `telemetry.collector_unreachable` warning (naming the endpoint), then subsequent drops fall to `debug` — instead of OpenTelemetry's default `ERROR -- : Unable to export N spans` on stderr for every retry. Telemetry resumes automatically once the collector is reachable again; to silence it entirely, start the collector, repoint `otel.endpoint`, or set `otel.enabled: false`.
 
 ## Config reference
 

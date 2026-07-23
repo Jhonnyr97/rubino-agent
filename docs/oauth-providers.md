@@ -43,12 +43,17 @@ client = Octokit::Client.new(access_token: conn[:access_token])
 
 ## Built-in providers
 
-| ID | Class | Default scopes | Required env |
-|---|---|---|---|
-| `github` | `OAuth::Provider::Github` | `repo`, `user:email` | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` |
-| `google` | `OAuth::Provider::Google` | `openid`, `email`, `profile` | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` |
+| ID | Class | Default scopes | Grant | Required env |
+|---|---|---|---|---|
+| `github` | `OAuth::Provider::Github` | `repo`, `user:email` | browser PKCE **or** device code | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` |
+| `google` | `OAuth::Provider::Google` | `openid`, `email`, `profile` | browser PKCE | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` |
+| `minimax` | `OAuth::Provider::Minimax` | `group_id`, `profile`, `model.completion` | device code (custom `user_code` grant) — CLI-login-only | `MINIMAX_OAUTH_CLIENT_ID`, `MINIMAX_OAUTH_CLIENT_SECRET` |
 
-Adding a new provider = new file under `lib/rubino/oauth/provider/`, add it to `Rubino::OAuth::Registry::BUILTINS`, declare it in `config.oauth.providers`. `load_from_config!` (called at boot) instantiates and registers every provider whose section in the config carries both `client_id` and `client_secret`. ~50 LOC for a standard OAuth 2.0 provider.
+The three are registered in `Rubino::OAuth::Registry::BUILTINS = { github:, google:, minimax: }`.
+
+`self.browser_flow?` (on `Provider`, default `true`) distinguishes them: `Github` and `Google` support the browser authorization-code + PKCE redirect; `Minimax` overrides it to `false`, so it is only reachable through the device-code flow. `Github` **also** includes the `DeviceCodeFlow` mixin, so it accepts either grant (`rubino auth login github --device` forces the device path).
+
+Adding a new provider = new file under `lib/rubino/oauth/provider/`, add it to `Rubino::OAuth::Registry::BUILTINS`, declare it in `config.oauth.providers`. `load_from_config!` (called at boot) instantiates and registers every BUILTIN provider whose section in the config carries both `client_id` and `client_secret`. ~50 LOC for a standard OAuth 2.0 provider.
 
 ## Flow (PKCE by default)
 
@@ -84,6 +89,36 @@ client                    rubino                provider
 ```
 
 The **client** (e.g. a web UI) keeps `state` + `code_verifier` between connect and callback. rubino does not maintain a per-flow session — keeps it stateless.
+
+## Flow (device code — RFC 8628)
+
+For providers whose `self.browser_flow?` is `false` (MiniMax), or when the browser path is force-disabled (`rubino auth login github --device`), there is no redirect and no loopback server. The `Rubino::OAuth::DeviceCodeFlow` mixin drives it: a Provider includes the mixin and defines `device_authorization_endpoint` (and, when they differ from the defaults, `device_token_endpoint` / `device_grant_type`).
+
+```
+client / CLI                rubino                  provider
+  │                            │                         │
+  │  build_device_code_request │                         │
+  │ ───────────────────────────►│  POST device_authz     │
+  │                            │ ───────────────────────►│
+  │  { user_code,              │ ◄───────────────────────│
+  │    verification_uri,        │                         │
+  │    expires_in, interval }   │                         │
+  │ ◄───────────────────────────│                         │
+  │                            │                         │
+  │  user opens verification_uri and enters user_code     │
+  │ ─────────────────────────────────────────────────────►│
+  │                            │                         │
+  │  poll_device_code (every `interval`s until expiry)    │
+  │ ───────────────────────────►│  POST device_token      │
+  │                            │ ───────────────────────►│
+  │       :pending / :slow_down / :expired / token hash   │
+  │ ◄───────────────────────────│ ◄───────────────────────│
+```
+
+`poll_device_code` returns `:pending`, `:slow_down`, or `:expired` on the RFC 8628 error codes and a normalized token hash on success; the CLI (`AuthCommand#device_code_login`) loops on `interval`, backing off on `:slow_down`, until it gets a hash or hits the deadline.
+
+- **GitHub** uses the standard RFC 8628 shape: `device_code` grant, standard error codes, `stateless_device_flow? == true` (so the stateless HTTP API device endpoints can serve it).
+- **MiniMax** uses a *custom* grant `urn:ietf:params:oauth:grant-type:user_code` and overrides both `build_device_code_request` and `poll_device_code`: PKCE is on the initial `/oauth/code` request (challenge on request, verifier on poll — the reverse of RFC 7636), and the poll response carries a JSON `status` discriminator (`pending` / `error` / `success`) rather than RFC 8628 error codes. Because the PKCE `code_verifier` is held in-memory across the connect+poll loop, `stateless_device_flow?` is `false` — the stateless HTTP API device endpoints reject MiniMax, so it is **CLI-login-only** (`rubino auth login minimax`).
 
 ## Storage
 
@@ -128,7 +163,13 @@ oauth:
         - email
         - profile
         - https://www.googleapis.com/auth/calendar.readonly
+    minimax:
+      client_id: ${MINIMAX_OAUTH_CLIENT_ID}
+      client_secret: ${MINIMAX_OAUTH_CLIENT_SECRET}
+      scopes: [group_id, profile, model.completion]
 ```
+
+`load_from_config!` only registers a BUILTIN section carrying both `client_id` and `client_secret`, so every provider — MiniMax included — needs both keys present to become connectable, even though MiniMax authenticates via the device-code (not redirect) flow.
 
 Providers not declared in config are not registered — `GET /v1/oauth/providers` only lists configured ones.
 
@@ -147,6 +188,16 @@ Providers not declared in config are not registered — `GET /v1/oauth/providers
 2. Application type: Web. Authorized redirect URIs: `<your-client>/oauth/callback`
 3. Enable required APIs (Calendar, Gmail, Drive, ...) based on scopes you want
 4. Export `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`
+
+### MiniMax (device code)
+
+MiniMax has no browser redirect flow (`browser_flow? == false`) — you authenticate from the terminal:
+
+1. Declare the `minimax` section under `oauth.providers` with `client_id` + `client_secret` (both required for it to register)
+2. Export `MINIMAX_OAUTH_CLIENT_ID` / `MINIMAX_OAUTH_CLIENT_SECRET`
+3. Run `rubino auth login minimax` — the CLI prints a `verification_uri` + `user_code`, then polls until you authorize (the device-code path is auto-selected because MiniMax is not a browser-flow provider)
+
+MiniMax uses a custom `user_code` grant with PKCE and cannot be authenticated through the HTTP API device endpoints (`stateless_device_flow? == false`) — it is CLI-login-only. This is the OAuth connector flow, and is separate from configuring MiniMax as your chat model via a plain `MINIMAX_API_KEY` (see [models-and-keys.md](models-and-keys.md)).
 
 ## Why we did this (and not "delegate to client")
 

@@ -9,11 +9,12 @@ Two surfaces: **CLI subcommands** (run from your shell) and **slash commands** (
 | `rubino setup` | Initialize config + database; run the first-run onboarding wizard on a TTY |
 | `rubino chat [PROMPT]` | Interactive chat (or one-shot with `-q`/a positional prompt) |
 | `rubino prompt PROMPT` | One-shot, non-interactive (alias for `chat -q`) |
-| `rubino config SUBCOMMAND` | Manage configuration (`get` / `set` / `show`) |
-| `rubino memory SUBCOMMAND` | Manage persistent memories (`list` / `show` / `delete` / `backend`) |
+| `rubino config SUBCOMMAND` | Manage configuration (`get` / `set` / `unset` / `show` / `path`) |
+| `rubino memory SUBCOMMAND` | Manage persistent memories (`list` / `show` / `delete` (`forget`) / `backend`) |
 | `rubino sessions SUBCOMMAND` | Manage chat sessions |
 | `rubino jobs SUBCOMMAND` | Manage background jobs |
 | `rubino skills SUBCOMMAND` | Manage skills (`list` / `show` / `enable` / `disable` / `install` / `update` / `remove`) |
+| `rubino auth SUBCOMMAND` | Manage OAuth connections (`login` / `logout` / `status`) |
 | `rubino tools` | List available tools and their enabled/disabled state |
 | `rubino server` | Start the JSON API + SSE server |
 | `rubino tls-cert` | Print the agent's self-signed TLS certificate PEM (generating it if absent) |
@@ -65,6 +66,10 @@ is set.
 | `--add-dir` | | Add an extra allowed workspace directory write/edit can reach (repeatable) |
 | `--max-turns` | | Max tool iterations per turn |
 | `--ignore-rules` | | Skip `AGENTS.md` and context files |
+| `--output-format` | | One-shot (`-q`/`prompt`) output: `text` (default) \| `json` (one result object) \| `stream-json` (JSONL: system→assistant→user→result). In json/stream-json modes ALL JSON goes to stdout, ALL logs/errors to stderr, and markdown rendering is suppressed |
+| `--json` | | Alias for `--output-format json` |
+| `--quiet` | `-Q` | Silence the one-shot stderr per-tool activity trace (answer-only). Capital `-Q` because `-q` is `--query` |
+| `--verbose` | `-v` | Expand the one-shot stderr tool-activity trace (fuller args) |
 
 ### Image attachments
 
@@ -128,14 +133,18 @@ Pasting **text** into the chat input goes through the file-backed paste pipeline
 ```bash
 rubino config get KEY        # read a config value (effective: file merged over defaults)
 rubino config set KEY VALUE  # write a config value
+rubino config unset KEY      # remove a config key (reverts to the default; idempotent)
 rubino config show           # print the full effective config (secrets masked)
+rubino config path           # print the config file path
 
 rubino memory list           # list stored memories (active backend)
 rubino memory show ID
 rubino memory delete ID
+rubino memory forget ID      # alias for delete (verb parity with in-chat /memory forget)
 rubino memory backend [NAME] # show the active memory backend, or switch to NAME
 
 rubino sessions             # on a TTY: arrow-key resume picker (Enter loads, Esc cancels); piped: lists
+rubino sessions resume      # the arrow-key resume picker as an explicit verb (same picker as bare `sessions`)
 rubino sessions list
 rubino sessions show ID
 rubino sessions compact ID
@@ -154,6 +163,10 @@ rubino skills install owner/repo --skill NAME   # install skills from a git repo
 rubino skills install --documents               # anthropics/skills: pdf docx pptx xlsx
 rubino skills update [NAME ...]                 # re-fetch from the recorded sources
 rubino skills remove NAME                       # delete an installed skill + provenance
+
+rubino auth login PROVIDER   # OAuth login (browser PKCE; --device, --manual-paste, --no-browser)
+rubino auth logout PROVIDER  # revoke tokens and remove connections for a provider
+rubino auth status           # list connected OAuth accounts
 ```
 
 `config get`/`config show` mask secret-named keys (`api_key`, tokens, …) on display — the file keeps the real value. See [memory.md](memory.md) for the memory backends, [jobs.md](jobs.md) for the queue/cron system and [skills.md](skills.md) for the skill model.

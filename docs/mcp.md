@@ -39,7 +39,7 @@ mcp:
 | Transport | Use Case | Config |
 |-----------|----------|--------|
 | `stdio` | Local MCP servers, CLI tools | `command`, `args`, `env` |
-| `sse` | Web-based servers with Server-Sent Events | `url`, `headers` |
+| `sse` | Web-based servers with Server-Sent Events | `url`, `headers`, `oauth` |
 | `streamable` | HTTP servers with streaming support | `url`, `headers`, `oauth` |
 
 ## How It Works
@@ -113,7 +113,7 @@ Rubino::Agent::Definition.new(
 
 Remote-server credentials are passed through config: use `headers` (e.g. `Authorization: "Bearer {env:MCP_TOKEN}"`) or the server process `env` for stdio servers.
 
-An `oauth` hash on a `streamable` server is forwarded verbatim to `ruby_llm-mcp` — rubino itself implements **no** OAuth flow: there is no PKCE/browser handshake and no rubino-side token storage (no `~/.rubino/oauth_tokens.json`). Whatever OAuth behavior you get is whatever your installed `ruby_llm-mcp` version provides; treat it as not yet supported.
+An `oauth` hash on a remote server — both `sse` and `streamable` transports carry it (`Manager#build_client_options` forwards `config[:oauth]` in the shared `sse`/`streamable` branch) — is forwarded verbatim to `ruby_llm-mcp`. rubino itself implements **no** OAuth flow: there is no PKCE/browser handshake and no rubino-side token storage (no `~/.rubino/oauth_tokens.json`). Whatever OAuth behavior you get is whatever your installed `ruby_llm-mcp` version provides; treat it as not yet supported.
 
 ## Managing from Chat
 

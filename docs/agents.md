@@ -161,6 +161,28 @@ internal.
 | **compaction** | utility | None | Internal: compresses context. Hidden. |
 | **title** | utility | None | Internal: generates session titles. Hidden. |
 
+### Custom agents (via `.md` files)
+
+The registry ships a **file-based** custom-agent surface that is **active by
+default**. At boot `AgentRegistry` runs `MarkdownLoader`
+(`load_file_agents: true`), which discovers `.md` agent definitions in the
+Claude Code AGENT format (YAML frontmatter + prompt body) from four directories,
+low-to-high precedence:
+
+1. `~/.claude/agents/*.md` — user-level, Claude-ecosystem
+2. `~/.rubino/agents/*.md` — user-level, rubino-specific
+3. `.claude/agents/*.md` — project-local, Claude-ecosystem
+4. `.rubino/agents/*.md` — project-local, rubino-specific
+
+Within each tier files register in alphabetical order; later tiers override
+earlier ones (and a file whose name collides with a built-in **replaces** that
+built-in). Project-local directories are trust-gated via `Rubino::Trust` — when
+the workspace root is untrusted they're skipped (same gate as skills/commands).
+
+A file-defined `:subagent` becomes a valid `task` target exactly like a
+programmatic one — dropping a `.md` under any scanned directory is enough; no
+code or config change is needed.
+
 ### Custom agents (via code)
 
 `AgentRegistry#register` accepts custom definitions programmatically:

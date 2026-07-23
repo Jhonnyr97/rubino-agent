@@ -27,7 +27,7 @@ Multi-agent ships: the model delegates to background subagents via the `task`
 tool, and the user switches the primary agent on the `/` slash channel (`/agent`,
 a bare `/<name>`, or Tab). There is no `@mention` agent routing — `@` is the
 workspace file picker. See [agents.md](agents.md).
-- `AgentRegistry` — Defines all agent types (build, plan, explore, general, utility)
+- `AgentRegistry` — Defines the built-in agents (build, plan, explore, general, compaction, title; `utility` is a *type*, not an agent name)
 - `Definition` — Agent type with model, tools, permissions, MCP scoping
 - `Runner` — Top-level orchestrator for a user interaction
 - `Loop` — Core LLM call + tool execution cycle
@@ -51,8 +51,12 @@ workspace file picker. See [agents.md](agents.md).
 
 ### `memory/`
 - `Store` — CRUD for memories (7 kinds: user_profile, preference, fact, etc.)
-- `Retriever` — Loads relevant memories for prompt inclusion
+- `Backend` — Duck-typed pluggable backend contract (write / read / retrieve / admin); retrieval is `Memory::Backend#retrieve`, not a dedicated Retriever class
+- `Backends` — name→class backend registry, selected by `memory.backend` (default `sqlite`, the FTS5/graph-lite backend)
 - `Deduplicator` — Jaccard similarity deduplication
+- `EntityExtractor` — Deterministic, zero-dependency entity extraction for the graph-lite layer (no LLM/NER)
+- `SqliteGraph` — Graph-lite mixin (entities + edges) blending a bounded 1-hop traversal into retrieval
+- `ThreatScanner` — Scans every memory write for injection/exfiltration before it can splice into a future prompt
 
 Extraction is no longer a dedicated class: durable facts are mined agentically
 by the warm-prefix review fork (`Jobs::Handlers::BackgroundReviewJob`) writing
@@ -71,7 +75,10 @@ API's `parent_session_id` path.
 - `Runner` — Executes jobs, records runs
 - `Worker` — Polling loop for background processing
 - `Registry` — Maps job types to handler classes
-- Handlers: BackgroundReview (memory + skills), SummarizeSession, CompactSession, CleanupSessions
+- `Handlers::BackgroundReviewJob` — the only handler: warm-prefix review fork mining memory + skills. There is no SummarizeSession/CompactSession/CleanupSessions handler — compaction runs inline (`Interaction::Lifecycle#check_and_compact`) and session cleanup is `CleanupService`, not a job handler
+- `Scheduler` — In-process cron scheduler (rufus-scheduler) that fires enabled cron jobs
+- `CronJobRepository` — CRUD for cron job definitions
+- `WebhookDelivery` — POSTs cron-job results to a configured webhook with HMAC signing, idempotency, and retries
 
 ### `tools/`
 - `Base` — Abstract tool interface (name, description, input_schema, risk_level, call)
@@ -83,7 +90,7 @@ API's `parent_session_id` path.
 ### `llm/`
 - `RubyLLMAdapter` — Wraps ruby_llm (chat, stream, structured output)
 - `ProviderResolver` — Auto-detects provider from model name
-- `ModelRegistry` — Known models with context windows
+- `ModelCatalog` — Enumerates the model ids the ruby_llm registry knows for a provider (powers `/model`)
 - `ContentBuilder` — Multipart content for vision (text + images)
 
 ### `mcp/`
@@ -120,12 +127,12 @@ Experimental — booted at chat startup when `mcp.servers` is configured
 - `ConnectionRepository` — encrypted token persistence (AES-256-GCM via `TokenEncryptor`)
 
 ### `config/`
-- `Loader` — Basic YAML loader
-- `EnhancedLoader` — Multi-layer precedence with substitutions
-- `RemoteConfig` — Enterprise remote config fetching
+- `Loader` — Layered YAML loader
 - `Configuration` — Typed accessors for all config sections
 - `Writer` — Persists config changes
-- `Defaults` — All default values
+- `Validator` — Set-time schema validation for `config set` (rejects unknown keys and type/format mismatches at write time)
+- `ReasoningPrefs` — Single source of truth resolving reasoning/thinking prefs from config (shared by adapter gate + CLI render)
+- `Defaults` — All default values (the authoritative schema)
 
 ### `database/`
 - `Connection` — SQLite + WAL mode via Sequel
@@ -151,7 +158,7 @@ User Input
   └─→ Interaction::Lifecycle
         │
         ├─ Persist user message
-        ├─ Load memory (Retriever)
+        ├─ Load memory (Memory::Backend#retrieve)
         ├─ Extract images (ContentBuilder)
         ├─ Build context (PromptAssembler)
         ├─ Check token budget (TokenBudget)

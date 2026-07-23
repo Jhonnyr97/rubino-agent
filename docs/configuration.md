@@ -117,12 +117,21 @@ auxiliary:
     model: ""
     base_url: null
     timeout: 30
-  embedding:              # memory vector-recall endpoint (local-first, off by default; no shipped default block)
-    provider: "main"      # "main" reuses primary provider; set to "openai"/"ollama" for local
-    model: ""             # e.g. "bge-m3", "nomic-embed-text", "text-embedding-3-small"
-    base_url: null        # local endpoint URL (e.g. "http://localhost:8080/v1")
-    timeout: 30           # only used when memory.sqlite.vector: true — inert otherwise
 ```
+
+> **`auxiliary.embedding` ships no default block** — it is fully opt-in and only
+> read when `memory.sqlite.vector: true` (inert otherwise). Point it at a local
+> embedding model (e.g. an oMLX/Ollama endpoint) for semantic recall with no paid
+> API. Add the block yourself:
+>
+> ```yaml
+> auxiliary:
+>   embedding:
+>     provider: "main"    # "main" reuses the primary provider; set "openai"/"ollama" for local
+>     model: ""           # e.g. "bge-m3", "nomic-embed-text", "text-embedding-3-small"
+>     base_url: null      # local endpoint URL (e.g. "http://localhost:8080/v1")
+>     timeout: 30
+> ```
 
 Each block routes through `LLM::AuxiliaryClient`, so `provider`/`model`/`base_url`
 are all honored: `provider: "main"` (or empty) reuses the primary provider, an empty
@@ -230,8 +239,8 @@ The legacy `display.show_reasoning` boolean maps in only when `display.reasoning
 ```yaml
 display:
   streaming: true
-  reasoning: collapsed   # see "reasoning & thinking" above
-  show_reasoning: true   # LEGACY — superseded by display.reasoning
+  reasoning: collapsed   # NOT seeded in defaults.rb — ReasoningPrefs supplies "collapsed"; see "reasoning & thinking" above
+  show_reasoning: true   # LEGACY, NOT seeded — superseded by display.reasoning (maps in only when reasoning is unset)
   language: "en"
   runtime_footer: { enabled: false }
   interim_assistant_messages: false
@@ -244,6 +253,8 @@ display:
 
 paste:
   collapse_lines: 5            # pastes longer than this collapse to a placeholder
+  collapse_chars: 400          # a paste longer than this many CHARS also collapses to the chip,
+                               # even on a single line (a big one-line URL/token/minified JSON)
   file_threshold_tokens: 8000  # bigger pastes overflow to a session paste_N.txt
 
 streaming:
@@ -294,9 +305,15 @@ memory:
   memory_char_limit: 2200    # injection budget at RETRIEVAL time
   user_char_limit: 1375
   ingest_char_limit: null    # cap on the live set at STORE time (null = unbounded)
+  extract_max_retries: 3     # bounded retry budget for the aux extraction call on a transient
+                             # error (429/overloaded/5xx), honouring Retry-After — so a fact
+                             # isn't lost to a transient rate limit
   sqlite:
     vector: false            # opt-in sqlite-vec/embedding KNN on top of FTS5 (needs RubyLLM.embed)
     graph: true              # graph-lite 1-hop entity/edge blend
+    graph_extraction: "deterministic"  # how the entity graph is FED: "deterministic" (default —
+                             #   pure-Ruby proper-noun/identifier heuristic, no LLM), "supplied"
+                             #   (only entities the memory tool call carries), "off" (never feed it)
 ```
 
 See [memory.md](memory.md) for the backend internals.
@@ -309,6 +326,20 @@ jobs:
   poll_interval: 2            # Worker poll interval (seconds)
   max_attempts: 3
   retry_backoff_seconds: 30
+  lock_lease_seconds: 900     # how long a CLAIMED (running) row may stay locked before it's
+                              # presumed abandoned and reclaimed (attempts bumped) — a worker that
+                              # dies/hangs after claiming a row would otherwise leave it stuck (#76)
+```
+
+### cleanup
+
+Opportunistic session/spill cleanup at startup (not a cron job), throttled to at most once per 24h — deletes ENDED sessions older than `period_days` plus their spill files.
+
+```yaml
+cleanup:
+  period_days: 30        # retention window (days). nil / false / "off" / 0 / negative = OFF.
+                         #   Do NOT overload 0 as "retain forever" — use nil/false/"off".
+  min_retention_days: 1  # floor: newer sessions are UNTOUCHABLE regardless of status
 ```
 
 ### tasks
@@ -327,6 +358,10 @@ tasks:
 
 ```yaml
 tools:
+  recover_text_tool_calls: true  # re-parse tool calls a model LEAKS AS TEXT (markup in
+                          # assistant content) back into real tool calls, and strip them
+                          # from saved history. Covers Hermes/Qwen JSON, MiniMax/Qwen3-Coder
+                          # XML, Mistral arrays. Inert when native tool calls exist. false = off
   workspace_strict: true  # Sandbox write/edit/delete to workspace_root; false = any reachable path
   shell: true             # ON by default (the agent ships to run inside an isolated VM);
                           # dangerous commands are still gated by security.confirm_policy
@@ -354,6 +389,18 @@ tools:
     require: false          # true = FAIL-CLOSED: shell refuses to run when no
                             #        OS mechanism is available (default fails OPEN)
     escalation: protect-home # off | protect-home | full  (see below)
+    devices:                # macOS/Seatbelt only (Linux/Landlock ignores it)
+      gpu:
+        mode: allow         # allow (default) — IOKit user-clients added to every sandboxed
+                            #   spawn so a jailed command can reach the GPU (Metal/MLX/MPS).
+                            #   deny — never added (lock-down); a GPU command fails "No Metal device".
+                            # ALWAYS-ON knob, no per-command prompt (grants no fs-write/network)
+        iokit_user_clients: # user-client classes appended to the profile; add one to add a device
+          - AGXDeviceUserClient
+          - IOGPUDeviceUserClient
+          - IOSurfaceRootUserClient
+          - IOSurfaceSendRight
+          - AppleGraphicsDeviceControlClient
 ```
 
 The OS write-jail confines shell (and `ruby`) **writes** at the kernel level —
@@ -377,6 +424,23 @@ An escalated command **always** prompts (a fresh, distinct approval that shows i
 runs outside the jail), sits below `--yolo` and below the non-bypassable hardline
 floor (`rm -rf /` is still denied), and fails closed in a headless session.
 
+#### tools.webfetch (headless-browser fallback + private-network reach)
+
+```yaml
+tools:
+  webfetch:
+    js_rendering: "auto"          # auto (default) | off | always — when the web_fetch tool
+                                  #   renders a JS/SPA page in a headless browser. "auto" renders
+                                  #   only when the static response scores as a client-rendered
+                                  #   shell; "off" never; "always" every page (slower). Only ever
+                                  #   engages when the OPTIONAL ferrum gem + a Chrome/Chromium
+                                  #   binary are present — otherwise this whole block is inert.
+    allow_private_network: true   # let web_fetch reach loopback/LAN (localhost dev servers,
+                                  #   internal services) — rubino is a LOCAL dev agent. The
+                                  #   cloud-metadata floor (169.254.169.254 …) stays blocked
+                                  #   regardless. false = strict public-only fetching.
+```
+
 ### tool_output
 
 ```yaml
@@ -384,6 +448,10 @@ tool_output:
   max_bytes: 50000
   max_lines: 2000
   max_line_length: 2000
+  capture_max_bytes: 2000000   # hard RAM ceiling on what the shell tool RETAINS while draining a
+                               # subprocess pipe (independent of max_bytes). An unbounded producer
+                               # (`cat /dev/zero`, `yes`) is KILLED once this cap is hit; only a
+                               # bounded head+tail is kept, so RAM stays bounded.
 
 file_read:
   max_chars: 100000
@@ -541,6 +609,11 @@ attachments:
     inline_text_budget_bytes: 100000
     allow_kinds: [image, text, document, archive, binary]
     auto_extract_documents: false
+    convert_max_elements: 50000            # decompression-bomb caps for the in-process document
+    convert_max_decompressed_bytes: 5000000  # converters (a 100 KB .docx can expand to ~34 MB of
+    convert_wall_clock_seconds: 15.0       # XML): a paragraph/row/page/slide count ceiling, an
+                                           # accumulated decompressed-bytes ceiling, and a wall-clock
+                                           # budget. On any cap it bails to the shell-extraction hint
     aux_vision_egress: true          # allow the `vision` tool to send an image to an EXTERNAL aux model (data egress; see below)
     archive: { max_entries: 2000, max_uncompressed_bytes: 268435456, max_entry_ratio: 100, max_total_ratio: 50, max_nesting_depth: 1 }
 ```
@@ -564,6 +637,13 @@ security:
                                         # unprompted via the read-only auto-allow, so nothing needs seeding here.
                                         # Test/build runners (bundle exec rspec, rake, npm test) are deliberately
                                         # NOT auto-approvable: they load and run arbitrary project code.
+  redact_secrets: true                  # ON by default (secure default): redact credential VALUES
+                                        # (API keys, tokens, private keys, DB passwords, JWTs…) from
+                                        # read/grep/shell output before it enters context, the
+                                        # transcript, or the aux model. NOT a security boundary —
+                                        # defense-in-depth. Set false only to work on the redactor itself.
+  redaction: {}                         # pluggable redaction: "class" => custom redactor class, and/or
+                                        # "custom_patterns" => [] extra regexes (added to the built-in set)
   website_blocklist:
     enabled: false
     domains: []
@@ -571,6 +651,17 @@ security:
 ```
 
 The hardline floor (catastrophic commands) and `permissions: deny` rules always run **before** any allow path, including `yolo`. See [security.md](security.md).
+
+### doom_loop
+
+Repeated-identical-tool-call guard (`DoomLoopDetector`). At the defaults it WARNS the model on the Nth identical call but still lets it through, so a legitimate retry of an idempotent read isn't hard-denied.
+
+```yaml
+doom_loop:
+  hard_stop: false   # false (default) = surface a doom-loop WARNING but allow the call through;
+                     #   true = restore the old block-at-threshold behaviour
+  threshold: 5       # the Nth identical call trips the guard
+```
 
 ### mcp
 
@@ -641,6 +732,8 @@ commands:
 
 ### formatters
 
+No formatters ship by default (`formatters: {}` — empty). Configure per-glob format commands, run after a write/edit touches a matching file:
+
 ```yaml
 formatters:
   "*.rb": "rubocop -A --fail-level=fatal"
@@ -660,6 +753,10 @@ prompts:
     enabled: true                # inject an [Environment] block (date/OS/cwd/git/runtimes/PATH utilities)
     extra_utilities: []          # extra binaries to probe beyond the defaults
   overrides: {}                  # prompts.overrides.<role> fully replaces a built-in role prompt
+  prompt_cache: true             # emit Anthropic prompt-cache breakpoints (cache_control) on the
+                                 # stable system prefix + last tool definition, so the fixed prompt
+                                 # prefix is cached across turns (#311). Honored by anthropic-family
+                                 # providers; others ignore it
 ```
 
 ### clarify / worktree / privacy / quick_commands
@@ -689,16 +786,6 @@ otel:
   environment: null          # stamped as deployment.environment.name (dev/staging/prod)
   capture_content: false     # PRIVACY GATE: export message/tool text (redacted + truncated) — default OFF
   resource_attributes: {}    # extra key/value resource attributes on every span
-```
-
-### formatters
-
-```yaml
-formatters:
-  "*.rb": "rubocop -A --fail-level=fatal"
-  "*.js": "prettier --write"
-  "*.ts": "prettier --write"
-  "*.py": "black"
 ```
 
 ### agents (planned — not yet read)

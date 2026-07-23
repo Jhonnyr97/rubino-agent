@@ -13,9 +13,9 @@ Which provider, which model, which key — answered in 60 seconds. The fastest p
 | **OpenAI-compatible gateway** | A gateway picks the upstream | `auto` |
 | **fake** | Tests/demos only | `fake/happy-path` (needs `RUBINO_ALLOW_FAKE=1`) |
 
-How resolution works: an explicit `model.provider` (anything other than `auto`) wins. When `provider: auto`, the provider is derived from the `model.default` id by ruby_llm's registry. A key for the resolved provider must be available either via `providers.<name>.api_key` in `config.yml` **or** the provider's native ENV var.
+How resolution works: an explicit `model.provider` (anything other than `auto`) wins. When `provider: auto`, the provider is derived from the `model.default` id by **rubino's own** `LLM::ProviderResolver` (via `LLM::CredentialCheck.resolved_provider`) — a table of id-prefix patterns (`openai|gpt|o1…` → `openai`, `anthropic|claude` → `anthropic`, `google|gemini` → `google`, `minimax|abab` → `minimax`, …). ruby_llm's model registry is **not** consulted for provider resolution; it is used only to enumerate model ids for `/model` completion (`LLM::ModelCatalog`). A key for the resolved provider must be available either via `providers.<name>.api_key` in `config.yml` **or** the provider's native ENV var.
 
-## ⚠️ The default→OpenRouter trap (refs #93)
+## The default model + the missing-key preflight (refs #93)
 
 The shipped default is:
 
@@ -25,7 +25,9 @@ model:
   provider: "auto"
 ```
 
-In ruby_llm's model registry, the id `openai/gpt-4.1` resolves to **OpenRouter**, not OpenAI's own API. Historically, a brand-new user with no key hit ~80 seconds of silent retries against an endpoint they never chose, then got an empty answer and a success exit — a dead end with no signal.
+Under `provider: auto`, `ProviderResolver` matches the id prefix `openai/…` against `/\A(openai|gpt|o1|o3|o4)/` → the provider resolves to **`openai`** (OpenAI's own API), reading `OPENAI_API_KEY`. There is no OpenRouter hop — resolution is rubino's pattern table, not ruby_llm's registry.
+
+Historically the risk here was silent failure: a brand-new user with no key would hit ~80 seconds of silent retries, then get an empty answer and a success exit — a dead end with no signal.
 
 **This is now fixed.** Before any model call, rubino checks that the resolved provider has a usable credential (`LLM::CredentialCheck`). If not:
 
@@ -40,7 +42,7 @@ In ruby_llm's model registry, the id `openai/gpt-4.1` resolves to **OpenRouter**
     • set providers.openai.api_key in ~/.rubino/config.yml.
   ```
 
-The simplest fix is `rubino setup`. To deliberately use OpenAI's own API (not OpenRouter), set a bare `gpt-4.1` with `provider: openai` as shown below.
+The simplest fix is `rubino setup`. A bare `gpt-4.1` with `provider: openai` (shown below) resolves identically — both route to OpenAI's own API.
 
 ## Where keys live
 
@@ -49,6 +51,17 @@ The simplest fix is `rubino setup`. To deliberately use OpenAI's own API (not Op
 - `RUBINO_HOME` relocates the whole home (config, `.env`, and the database follow it).
 
 The native ENV var per provider: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `BEDROCK_API_KEY`, `MINIMAX_API_KEY`.
+
+### Anthropic: OAuth bearer tokens & borrowed-token precedence
+
+For the `anthropic` provider, beyond the static `ANTHROPIC_API_KEY`, rubino also honors two OAuth **bearer** env vars and a borrowed on-disk token. The resolution order at call time (`RubyLLMAdapter`, hermes parity — mirrored by the `doctor`/preflight `CredentialCheck`):
+
+1. **`ANTHROPIC_TOKEN`** — OAuth bearer; wins if set.
+2. **`CLAUDE_CODE_OAUTH_TOKEN`** — OAuth bearer; used next. Both bearer env vars **outrank** a static `ANTHROPIC_API_KEY`.
+3. **`ANTHROPIC_API_KEY`** — the static `x-api-key`. When you set it yourself and no bearer env var is present, it wins and rubino does **not** consult the borrowed store (the deliberate "seed gate": an explicit static key opts you out of borrowing).
+4. **Borrowed Claude Code OAuth token** — read from Claude Code's own credential store (macOS Keychain, else `~/.claude/.credentials.json`) by `CredentialSources` (`AnthropicOAuth`, priority 10). Consulted only when no static `ANTHROPIC_API_KEY` is set. Its priority-10 registration means that *whenever it is consulted*, the borrowed OAuth token is preferred over other lower-priority sources — the hermes-intended "Claude Code login beats a plain key," bounded here by the seed gate above.
+
+The net effect: a machine already logged into Claude Code needs **no** `ANTHROPIC_API_KEY` to use the `anthropic` provider — the borrowed token satisfies both `doctor`/preflight and the actual call. Any of the four counts as a usable credential.
 
 ---
 

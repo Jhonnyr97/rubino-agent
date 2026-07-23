@@ -4,18 +4,17 @@ rubino remembers facts about you and the project across sessions. The default ba
 
 ## Backends
 
-Memory backends are pluggable (registered like tools). Two ship:
+Memory backends are pluggable (registered like tools). One ships:
 
 | `memory.backend` | What it is |
 |---|---|
 | `sqlite` (**default**) | LLM-extracted atomic facts, bi-temporal supersession, hybrid FTS5/BM25 (+ optional vector) ranked recall, graph-lite 1-hop blend |
-| `default` | the legacy non-ranked store (kept for back-compat) |
 
-Switch backends:
+Inspect the active backend:
 
 ```bash
 rubino memory backend          # show the active backend + available names
-rubino memory backend sqlite   # switch (writes memory.backend to config.yml)
+rubino memory backend sqlite   # set memory.backend in config.yml (sqlite is the only registered backend)
 ```
 
 The agent loop, the in-chat `/memory` view, the `/status` panel, the `rubino memory` CLI, and the HTTP `/v1/memory` operations all use the **active** backend (fixed in #94/#106/#83 — these surfaces previously read a hardwired legacy table and never saw the facts the agent actually persists).

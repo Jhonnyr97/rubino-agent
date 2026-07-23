@@ -2,7 +2,7 @@
 
 Background work in rubino is split into two surfaces that share the `Rubino::Jobs::*` namespace but operate independently:
 
-1. **Internal background queue** — async side-effects the agent enqueues for itself (memory extraction, context compaction, session summarization, retention sweeps).
+1. **Internal background queue** — async side-effects the agent enqueues for itself. Today the only job ever enqueued is the post-turn / session-end **review fork** (`BackgroundReviewJob`), which mines memory and distils skills off the live turn's critical path. (Context compaction and session summarization run **inline**, threshold-gated — not through this queue.)
 2. **Cron jobs** — user-defined schedules that fire fresh agent runs on a cron expression, with optional webhook delivery on completion. HTTP surface lives at [`/v1/jobs`](api/v1.md#cron-jobs).
 
 This doc describes both, plus the **Backend Adapter contract** that the queue and the scheduler are designed to be plugged into so the gem can be hosted on Sidekiq / SolidQueue / GoodJob / ActiveJob without rewriting handlers.
@@ -13,7 +13,7 @@ This doc describes both, plus the **Backend Adapter contract** that the queue an
 
 ### Purpose
 
-Defer slow or out-of-band work off the request and chat paths. Anything an agent doesn't need to block on — extracting memories from a finished turn, compacting a session that crossed the threshold, GC'ing ended sessions — goes through the queue.
+Defer slow or out-of-band work off the request and chat paths. The one thing that goes through the queue today is the post-turn / session-end **review fork** — mining memories and distilling skills from a finished turn without blocking the next prompt. (Compaction and summarization are inline, threshold-gated; there are no retention sweeps.)
 
 ### Storage (default `Sqlite` backend)
 
@@ -64,7 +64,7 @@ Retry uses linear backoff: `retry_backoff_seconds * attempts`. After `max_attemp
 
 ### Execution modes
 
-`config.jobs_mode` selects how enqueued jobs actually run:
+The nested `jobs.mode` config key (default `inline`) selects how enqueued jobs actually run:
 
 | Mode | Behavior | When to use |
 |---|---|---|
@@ -107,9 +107,9 @@ Rubino::Jobs::Queue.new.enqueue("MyJob", session_id: "abc")
 | Type | Handler | Payload | Side-effect |
 |---|---|---|---|
 | `BackgroundReviewJob` | `Handlers::BackgroundReviewJob` | `{session_id, surfaces?}` | the single post-turn / session-end **review fork** — forks the session, re-emits the parent turn's byte-identical system prompt (extends the warm KV prefix, no eviction), and runs a restricted-toolset agent that mines durable **memory** (via the `memory` tool) **and** distils **skills** (via the `skill` tool). Gated on `memory.auto_extract` / `skills.auto_distill`; see [memory.md](memory.md#how-facts-are-extracted-write-path) and [skills.md](skills.md#creating-skills) |
-| `CompactSessionJob` | `Handlers::CompactSessionJob` | `{session_id}` | `Context::Compressor#compact!` |
-| `SummarizeSessionJob` | `Handlers::SummarizeSessionJob` | `{session_id}` | `Context::SummaryBuilder#build_and_save!` |
 | ~~`CleanupSessionsJob`~~ | — | — | **REMOVED** — replaced by opportunistic-at-startup `CleanupService` (see config `cleanup.period_days`), not a cron job |
+
+`BackgroundReviewJob` is the only built-in handler. Context compaction (`Context::Compressor#compact!`) and the running session summary run **inline** and threshold-gated in the interaction lifecycle — they are not job handlers.
 
 ### CLI
 
