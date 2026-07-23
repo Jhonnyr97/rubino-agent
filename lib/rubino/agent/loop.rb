@@ -282,6 +282,14 @@ module Rubino
                           model_id: response.model_id,
                           has_tool_calls: response.has_tool_calls?)
 
+          # Surface the model's reasoning as a first-class event (non-empty
+          # only). On the streaming path the CLI already renders it live from
+          # MODEL_STREAM :thinking chunks; this discrete event is what carries
+          # it to non-streaming consumers (the API/SSE recorder), so a run
+          # exposes reasoning the same way it exposes the final answer.
+          reasoning = response.respond_to?(:thinking) ? response.thinking.to_s : ""
+          @event_bus.emit(Interaction::Events::MODEL_REASONING, text: reasoning) unless reasoning.empty?
+
           token_total += response.total_tokens.to_i
 
           # #355a: the streaming round-trip loop was cut short mid-flight because

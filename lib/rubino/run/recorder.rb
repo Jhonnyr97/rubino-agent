@@ -19,6 +19,7 @@ module Rubino
     class Recorder
       EVENT_MAP = {
         Interaction::Events::MODEL_STREAM => "message.delta",
+        Interaction::Events::MODEL_REASONING => "reasoning",
         Interaction::Events::MESSAGE_COMPLETED => "message.completed",
         Interaction::Events::TOOL_STARTED => "tool.started",
         Interaction::Events::TOOL_PROGRESS => "tool.progress",

@@ -42,6 +42,15 @@ module Rubino
       MODEL_CALL_STARTED = :model_call_started
       MODEL_CALL_FINISHED = :model_call_finished
       MODEL_STREAM = :model_stream
+      # The model's reasoning / chain-of-thought for one model call, emitted
+      # once when the call finishes (non-empty only). Carries the WHOLE
+      # reasoning block, NOT per-token deltas: it fires on both the streaming
+      # and non-streaming paths off `response.thinking`, so an API run — which
+      # is non-streaming — still surfaces reasoning the same way it surfaces the
+      # final answer. A turn with several tool round-trips emits one per call.
+      # Payload: { text: }. The run association (run_id) is stamped by the
+      # Recorder, like every other event.
+      MODEL_REASONING = :model_reasoning
       # End of one assistant message (content block). Streamed content deltas
       # carry a +message_id+; this marks that block complete so a consumer can
       # group the deltas that belong together instead of splitting them around

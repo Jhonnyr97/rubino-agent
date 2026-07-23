@@ -64,4 +64,16 @@ RSpec.describe Rubino::Run::Recorder do
     bus_b.emit(Rubino::Interaction::Events::INTERACTION_FINISHED, output: "B")
     expect(store.rows.map { |r| r[:run_id] }).to eq(["run-B"])
   end
+
+  # MODEL_REASONING is the channel that carries the model's chain-of-thought to
+  # non-streaming (API/SSE) consumers. It must map to the public `reasoning`
+  # event, keep its text payload, and be stamped with the emitting run's id.
+  it "maps MODEL_REASONING to a run-scoped `reasoning` event carrying the text" do
+    recorder_a.attach!
+
+    bus_a.emit(Rubino::Interaction::Events::MODEL_REASONING, text: "let me think…")
+
+    row = store.rows.find { |r| r[:type] == "reasoning" }
+    expect(row).to include(run_id: "run-A", payload: { text: "let me think…" })
+  end
 end
