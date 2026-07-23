@@ -61,6 +61,58 @@ RSpec.describe Rubino::Telemetry do
     end
   end
 
+  # The runtime half of fail-open: a collector that is down after a clean boot
+  # must degrade quietly instead of spamming OTel's default ERROR-to-stderr.
+  describe "collector-unreachable error handler" do
+    around do |example|
+      previous = OpenTelemetry.error_handler
+      example.run
+    ensure
+      OpenTelemetry.error_handler = previous
+    end
+
+    before do
+      allow(Rubino).to receive(:configuration)
+        .and_return(test_configuration("otel" => { "enabled" => true, "endpoint" => "http://localhost:4318" }))
+      described_class.send(:install_error_handler!)
+    end
+
+    it "installs itself as the process-global OpenTelemetry error handler" do
+      expect(OpenTelemetry.error_handler).to respond_to(:call)
+    end
+
+    # The SDK surfaces a failed batch flush as an ExportError via `exception:`
+    # (message "Unable to export N spans"), which is exactly what the user sees
+    # spammed when the collector is down — assert on that real shape.
+    it "warns ONCE (actionable, with endpoint) then falls to debug on repeat batch-export failures" do
+      export_error = OpenTelemetry::SDK::Trace::Export::ExportError.new("Unable to export 2 spans")
+      expect(Rubino.logger).to receive(:warn)
+        .once.with(hash_including(event: "telemetry.collector_unreachable",
+                                  endpoint: "http://localhost:4318/v1/traces"))
+      expect(Rubino.logger).to receive(:debug)
+        .with(hash_including(event: "telemetry.export_dropped"))
+
+      OpenTelemetry.error_handler.call(exception: export_error)
+      OpenTelemetry.error_handler.call(exception: export_error)
+    end
+
+    it "also matches the batch-export failure passed via the message kwarg" do
+      expect(Rubino.logger).to receive(:warn).with(hash_including(event: "telemetry.collector_unreachable"))
+      OpenTelemetry.error_handler.call(message: "Unable to export 3 spans")
+    end
+
+    it "treats a transport connection error as unreachable, not an unexpected error" do
+      expect(Rubino.logger).to receive(:warn).with(hash_including(event: "telemetry.collector_unreachable"))
+      OpenTelemetry.error_handler.call(exception: Errno::ECONNREFUSED.new("Connection refused"))
+    end
+
+    it "surfaces a genuinely unexpected OTel error at warn (never silently swallowed)" do
+      expect(Rubino.logger).to receive(:warn)
+        .with(hash_including(event: "telemetry.otel_error", error: a_string_including("boom")))
+      OpenTelemetry.error_handler.call(exception: ArgumentError.new("boom"), message: "unexpected")
+    end
+  end
+
   describe ".span (enabled)" do
     it "exports a finished span with name, kind and attributes" do
       exporter = enable_with_test_tracer
