@@ -2574,15 +2574,25 @@ module Rubino
       # result riding the user role, not the `!` bang-shell injections
       # (<bash-input>/<bash-stdout> context glue), and not a SYNTHETIC harness
       # injection (the `[harness control]` iteration-cap continuation / blocked-
-      # tool / resume nudges, #75) — those are runtime control text the agent
-      # wrote on the user's behalf, never something to rewind-to-and-resend. Same
-      # principle as Codex's is_user_turn_boundary, which excludes injected /
-      # contextual messages so only genuine user turns are restore points.
+      # tool / resume nudges, #75) or a background completion notice — those are
+      # runtime control text the agent wrote on the user's behalf, never something
+      # to rewind-to-and-resend. Same principle as Codex's is_user_turn_boundary,
+      # which excludes injected / contextual messages so only genuine user turns
+      # are restore points.
       def rewindable_message?(msg)
         content = msg.content.to_s
         msg.role == "user" && msg.tool_call_id.nil? &&
           !content.start_with?("<bash-") &&
-          !content.start_with?(Agent::Loop::HARNESS_CONTROL_MARKER)
+          !content.start_with?(Agent::Loop::HARNESS_CONTROL_MARKER) &&
+          !synthetic_background_notice?(content)
+      end
+
+      # Background completion lines are persisted as role:"user" so the model
+      # can see them on the next turn, but they are runtime context rather than
+      # messages authored by the human. Keep them out of the Esc-Esc rewind
+      # picker, which is strictly a list of user-authored turn boundaries.
+      def synthetic_background_notice?(content)
+        content.start_with?("[background-shell]", "[background-task]", Agent::Loop::NOTICES_PREAMBLE)
       end
 
       # One picker row: `N ago · <first 60 chars>` — recency + a flattened

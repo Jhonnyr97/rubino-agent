@@ -1651,9 +1651,10 @@ RSpec.describe Rubino::Agent::Loop do
   # Mid-task streaming steer (#steer): the injector the adapter consults at each
   # in-ask tool-result boundary. On the streaming path ruby_llm runs the whole
   # tool loop inside one ask(), so the outer #inject_steered_input never fires
-  # mid-turn — this is what delivers a line the user typed WHILE a long turn was
-  # working to the model at the next tool boundary, instead of terminating the
-  # loop and replaying it as a fresh turn.
+  # mid-turn — this is the ONLY mid-turn delivery hook. It delivers BOTH a line the
+  # user typed WHILE a long turn was working AND a parked background-completion
+  # notice ([background-shell]/[background-task]), each at the next tool boundary,
+  # instead of terminating the loop / deferring the notice to the #561 fallback.
   # ---------------------------------------------------------------------------
   describe "#stream_steer_injection" do
     def injector_for(queue)
@@ -1694,25 +1695,39 @@ RSpec.describe Rubino::Agent::Loop do
       expect(framed).to include("first\nsecond")
     end
 
-    it "drains TYPED lines only, leaving a parked background notice" do
+    it "delivers a parked background notice alongside typed lines, each framed distinctly" do
       queue = Rubino::Interaction::InputQueue.new
       queue.push_notice("[background-task] bg_1 completed.")
       queue.push("typed steer")
 
       framed = injector_for(queue).call
 
+      # Both channels delivered on the same tool boundary.
       expect(framed).to include("typed steer")
-      expect(framed).not_to include("[background-task]")
-      expect(queue.pending?).to be(true) # the notice survives
+      expect(framed).to include("[background-task] bg_1 completed.")
+      expect(framed).to include(Rubino::Agent::Loop::NOTICES_PREAMBLE)
+      expect(framed).to include(Rubino::Agent::Loop::STEER_INJECTION_PREAMBLE)
+      # Notice (context) comes BEFORE the typed instruction (which stays last).
+      expect(framed.index("bg_1")).to be < framed.index("typed steer")
+      # Both drained — the #561 fallback can't re-deliver the notice.
+      expect(queue.pending?).to be(false)
     end
 
-    it "returns nil when nothing typed is queued (notice-only / empty)" do
+    it "returns nil only for an empty queue; a notice-only queue still delivers" do
       empty = Rubino::Interaction::InputQueue.new
       expect(injector_for(empty).call).to be_nil
 
+      # A background completion with no typed line must STILL reach the model
+      # mid-ask (the bug this fixes: it used to be skipped until the turn ended).
       notice_only = Rubino::Interaction::InputQueue.new
-      notice_only.push_notice("[background-task] bg_1 completed.")
-      expect(injector_for(notice_only).call).to be_nil
+      notice_only.push_notice("[background-shell] Shell bg_1 (`train`) completed.")
+      framed = injector_for(notice_only).call
+      expect(framed).to include(Rubino::Agent::Loop::NOTICES_PREAMBLE)
+      expect(framed).to include("[background-shell] Shell bg_1 (`train`) completed.")
+      # Persisted for --resume parity and drained.
+      stored = message_store.for_session(session[:id])
+      expect(stored.any? { |m| m.role == "user" && m.content.include?("bg_1") }).to be(true)
+      expect(notice_only.pending?).to be(false)
     end
 
     it "returns nil when no queue is wired (subagent / API isolation)" do

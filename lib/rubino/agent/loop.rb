@@ -366,10 +366,12 @@ module Rubino
             # ordering boundary) and the model folds the result in without waiting.
             # Guarded on #notices_pending? (a typed line always wins via #shift and
             # carries the notice on its own turn); the iteration budget still bounds
-            # the turn, and once drained the notice can't re-trigger this. A typed
-            # line queued during a LONG streaming turn is delivered EARLIER, mid-ask
-            # at a tool boundary (#stream_steer_injection), so it is already drained
-            # by the time this final-answer branch runs — this path stays notices-only.
+            # the turn, and once drained the notice can't re-trigger this. Both typed
+            # lines AND background notices are normally delivered EARLIER, mid-ask at a
+            # tool boundary (#stream_steer_injection), so they are already drained by
+            # the time this runs. This branch remains the FALLBACK for a notice that
+            # arrived AFTER the last tool boundary — i.e. while the final answer was
+            # being generated, when no further tool result exists to piggyback on.
             if @input_queue&.notices_pending?
               persist_assistant_message(response)
               close_intermediate_stream(response)
@@ -523,35 +525,60 @@ module Rubino
 
       # Mid-task steering for the STREAMING path (#steer). ruby_llm runs the whole
       # tool loop inside one ask(), so the outer loop's #inject_steered_input —
-      # which only drains typed lines at iteration > 1 — never fires mid-ask (the
-      # iteration counter stays 1 for the entire streaming turn). This is the
-      # in-ask twin: the adapter calls it at each tool-result boundary; when the
-      # user typed a line while the turn was working, drain it, persist it as a
-      # real user row (transcript/resume parity), commit its "⏳ queued" indicator
-      # and echo it, and return the framed text for the adapter to piggyback onto
-      # that tool result — so the model sees it on the very next round-trip.
+      # which drains typed lines AND background notices at iteration > 1 — never
+      # fires mid-ask (the iteration counter stays 1 for the entire streaming turn).
+      # This is the in-ask twin: the adapter calls it at each tool-result boundary
+      # and piggybacks the returned text onto that tool result, so the model sees it
+      # on the very next round-trip. It delivers BOTH channels:
       #
-      # Returns the framed steer string, or nil when nothing is queued / no queue
-      # is wired. Drains TYPED lines only (via #drain_typed): parked background
-      # notices keep their existing turn-start / text-only delivery, and the
-      # atomic drain means a multi-tool batch appends the steer to the first
-      # result only. Runs on the streaming thread — the same thread the mid-stream
-      # tool executor already persists and renders from, so no new concurrency.
+      #   - typed lines the user sent while the turn was working (drain_typed) —
+      #     persisted as a real user row (transcript/resume parity) and echoed;
+      #   - parked background-completion notices (drain_notices) — a [background-shell]
+      #     or [background-task] line whose job finished mid-turn.
+      #
+      # Delivering notices HERE (not only via the outer #text_only? &&
+      # notices_pending? fallback) closes a real gap: under streaming that fallback
+      # runs one iteration LATER, so a shell/subagent finishing mid-turn was invisible
+      # at every tool boundary and the model committed a stale answer before ever
+      # seeing the completion. The drains are atomic, so the #561 fallback never
+      # re-delivers a notice this already consumed, and a multi-tool batch appends to
+      # the first result only. Runs on the streaming thread — the same thread the
+      # mid-stream tool executor already persists and renders from, so no new
+      # concurrency. Returns the framed string, or nil when nothing is queued / no
+      # queue is wired.
       def stream_steer_injection
-        return nil unless @input_queue&.typed_pending?
+        return nil unless @input_queue&.pending?
 
-        lines = @input_queue.drain_typed
-        return nil if lines.empty?
+        parts = []
 
-        text = lines.join("\n")
-        persist_user_message(text)
-        @event_bus.emit(Interaction::Events::INPUT_INJECTED, text: text, iteration: -1)
-        @ui.input_injected(text)
-        "\n\n#{STEER_INJECTION_PREAMBLE}\n#{text}"
+        # Notices are CONTEXT (a job finished): frame with NOTICES_PREAMBLE and
+        # persist the raw lines so --resume shows what the model was told, matching
+        # #inject_steered_input's notice handling.
+        notices = @input_queue.drain_notices
+        unless notices.empty?
+          joined = notices.join("\n")
+          persist_user_message(joined)
+          parts << "#{NOTICES_PREAMBLE}\n#{joined}"
+        end
+
+        # Typed lines are an INSTRUCTION to act on now: frame with the steer
+        # preamble, persist as a user row, and echo/emit for the UI.
+        typed = @input_queue.drain_typed
+        unless typed.empty?
+          text = typed.join("\n")
+          persist_user_message(text)
+          @event_bus.emit(Interaction::Events::INPUT_INJECTED, text: text, iteration: -1)
+          @ui.input_injected(text)
+          parts << "#{STEER_INJECTION_PREAMBLE}\n#{text}"
+        end
+
+        return nil if parts.empty?
+
+        "\n\n#{parts.join("\n\n")}"
       rescue StandardError => e
         # A steer-delivery hiccup must never abort the live turn — log and let the
-        # stream continue; the line stays consumed only if #drain_typed ran, and a
-        # persist failure there still delivers the steer to the model this round.
+        # stream continue; drained input stays consumed, and a persist failure still
+        # delivers the framed text to the model this round.
         Rubino.logger&.warn(event: "loop.stream_steer_failed", error: e.message)
         nil
       end

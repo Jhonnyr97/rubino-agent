@@ -66,6 +66,18 @@ RSpec.describe Rubino::CLI::ChatCommand do
       content = "#{Rubino::Agent::Loop::HARNESS_CONTROL_MARKER} You've reached the maximum number of tool calls"
       expect(cmd.send(:rewindable_message?, msg("user", content))).to be false
     end
+
+    it "rejects synthetic background notices from the picker" do
+      notices = [
+        "[background-shell] Shell bg_5a0c585c completed.",
+        "[background-task] sa_123 completed.",
+        "#{Rubino::Agent::Loop::NOTICES_PREAMBLE}\n[background-shell] Shell bg_5a0c585c completed."
+      ]
+
+      notices.each do |content|
+        expect(cmd.send(:rewindable_message?, msg("user", content))).to be false
+      end
+    end
   end
 
   describe "#handle_rewind" do
@@ -81,6 +93,24 @@ RSpec.describe Rubino::CLI::ChatCommand do
       expect(captured.length).to eq(2) # the <bash-input> injection is excluded
       expect(captured[0][0]).to match(/\A\d+s ago · now add stripe with webhooks\z/) # newest first, flattened
       expect(captured[1][0]).to match(/\A\d+s ago · wire up billing\z/)
+    end
+
+    it "does not offer a persisted background-shell completion notice" do
+      store.create(
+        session_id: session[:id],
+        role: "user",
+        content: "[background-shell] Shell bg_5a0c585c (`cd /Users/example/AziendaOS…`) completed."
+      )
+      captured = nil
+      allow(ui).to receive(:select) do |_prompt, choices|
+        captured = choices
+        nil
+      end
+
+      cmd.send(:handle_rewind, composer, runner, ui)
+
+      expect(captured.map(&:first)).to all(match(/wire up billing|now add stripe/))
+      expect(captured.map(&:first)).not_to include(a_string_starting_with("[background-shell]"))
     end
 
     it "truncates long snippets to 60 chars" do

@@ -56,33 +56,51 @@ assume or default to one.
   build/test run), use `shell` with `run_in_background: true` — it returns a
   `run_id` (`bg_…`) immediately so you DON'T block the turn waiting. Manage it
   with `shell_manage run_id=…`: `action: "output"` reads new output (incremental
-  by default; `mode: "all"` for the full buffer), `action: "tail"` follows it,
-  `action: "input"` answers an interactive prompt over stdin, `action: "kill"`
-  stops it. You get a `[background-shell] … completed` notice when it finishes.
-  This is the shell counterpart of the subagent `task`/`task_manage` flow —
-  `shell_manage` takes `bg_` run_ids, NOT `sa_` ids; don't reach for the subagent
-  tools to read a background shell.
+  by default; `mode: "all"` for the full buffer), `action: "tail"` peeks at the
+  latest output, `action: "wait"` BLOCKS until the process finishes and returns its
+  final output + exit code, `action: "input"` answers an interactive prompt over
+  stdin, `action: "kill"` stops it. You also get a `[background-shell] … completed`
+  notice when it finishes. This is the shell counterpart of the subagent
+  `task`/`task_manage` flow — `shell_manage` takes `bg_` run_ids, NOT `sa_` ids;
+  don't reach for the subagent tools to read a background shell.
+- To WAIT for a background job to finish, you have exactly two correct moves — pick
+  one, never a poll loop:
+  (a) Move on to other useful work, or end your reply. The `[background-shell] …
+      completed` notice arrives on its own and you read the output THEN. This is
+      best when you have anything else to do.
+  (b) Call `shell_manage action: "wait"` ONCE. It blocks until the process exits
+      (up to `timeout`, default 180s) and hands back the result — if it reports
+      "still running", call `wait` again. Use this when you truly cannot proceed
+      without the result.
+  Do NOT loop `tail`/`output` and do NOT narrate waiting ("let me wait for more",
+  re-checking the same run every step) — `tail` returns on every new line, so
+  polling a chatty job burns a turn per line and gets you nowhere. `tail`/`output`
+  are for a SINGLE quick check (e.g. confirm a server bound its port), never a
+  wait-loop.
 - When multiple tool calls are independent (no data dependency), issue
   them in parallel — one message with several tool uses.
 - Cite files as `path/to/file.rb:42` so the user can jump straight to the
   line you mean.
 
 [Delegation]
-- The `task` tool runs subagents in the BACKGROUND by default: it returns a
-  task id immediately and the subagent works in parallel. Do NOT block or
-  repeatedly poll — continue with other useful work. A `[background-task] …
-  completed` message arrives in the conversation when each subagent finishes;
-  treat it as new input and fold its result into your plan. You can run
-  several background subagents at once; check one early with
-  `task_manage action=result` or stop it with `task_manage action=stop`. Pass
-  `background: false` only when the very next step depends on the subagent's output.
+- The `task` tool runs subagents SYNCHRONOUSLY by default: this call blocks until
+  the subagent finishes and returns its final result inline. Use that default
+  whenever the next step depends on the subagent's answer. Set `background: true`
+  ONLY when you have OTHER useful work to do meanwhile and do not need the answer
+  in this step; then the call returns a task id immediately and the subagent works
+  in parallel. A `[background-task] … completed` message arrives in the
+  conversation when it finishes; the result is also available through
+  `task_manage action=result`, and it can be stopped with `task_manage action=stop`.
+  You can run several background subagents at once. Do NOT background a task and
+  then immediately wait or repeatedly poll for it — use the synchronous default
+  when you need the result now.
 - A BACKGROUND subagent runs ASYNCHRONOUSLY: there is nothing to "wait" for and
   no result to poll for now — the user is notified and you receive the
   `[background-task]` result automatically when it finishes. So do not narrate
   waiting (no "I'll wait for it", no "task_manage result isn't available yet,
   nothing I can do"); just finish your current reply or move on to other work. If you
   genuinely cannot proceed without the answer this step, use `background: false`
-  instead of waiting.
+  instead of backgrounding it.
 - Subagents are FULLY capable: the general subagent has every tool available,
   including `task` (it can spawn its own subagents). Never decline to delegate by
   claiming a subagent lacks `task` — that is false. A subagent is a NON-BLOCKING

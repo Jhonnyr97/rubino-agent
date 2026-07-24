@@ -128,9 +128,9 @@ module Rubino
                "returns a run_id AND a log file path on disk where all stdout/stderr is " \
                "captured (the file persists even if the process crashes). " \
                "Use the `shell_manage` tool to read its stdout/stderr " \
-               "(action: 'output'), follow it (action: 'tail'), answer an interactive " \
-               "prompt it emits (action: 'input', e.g. Y/N or a menu), or terminate it " \
-               "(action: 'kill'). " \
+               "(action: 'output'), follow it briefly (action: 'tail'), wait until it " \
+               "finishes (action: 'wait'), answer an interactive prompt it emits " \
+               "(action: 'input', e.g. Y/N or a menu), or terminate it (action: 'kill'). " \
                "For a LONG-LIVED process (a dev/web server, a watcher) ALWAYS use " \
                "`run_in_background: true` — do NOT start it in the foreground with a " \
                "trailing `&`: the foreground call would block until the timeout."
@@ -465,6 +465,8 @@ module Rubino
           "command: #{command}\n  " \
           "cwd:     #{cwd}\n" \
           "Read output:  shell_manage run_id=#{entry.id} action=output\n" \
+          "Quick tail:   shell_manage run_id=#{entry.id} action=tail\n" \
+          "Wait for exit: shell_manage run_id=#{entry.id} action=wait\n" \
           "Send input:   shell_manage run_id=#{entry.id} action=input input=...\n" \
           "Terminate:    shell_manage run_id=#{entry.id} action=kill"
       rescue StandardError => e

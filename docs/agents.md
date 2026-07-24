@@ -26,14 +26,16 @@ rubino has two distinct multi-agent surfaces, and **both ship today**:
 
 The MODEL spawns subagents with the `task` tool — you don't start them by hand;
 you ask for something parallelizable ("audit these 4 files in parallel") and the
-agent delegates. By default a `task` call runs in the **background**: it returns
-immediately with a task id (`sa_…`) and the subagent works on its own thread
-while the parent keeps going. When it finishes, the parent is notified with a
-`[background-task] <id> completed` message folded into its turn; the parent can
-also poll with `task_manage id=<id> action=result` or cancel with
-`task_manage id=<id> action=stop`.
-`background: false` runs the child inline instead (the parent blocks); it goes
-through the same nesting caps and ownership stamping as a background spawn.
+agent delegates. By default a `task` call runs **synchronously**: it blocks until
+the child finishes and returns the final result inline. Set `background: true`
+only when the parent has other useful work to do; then it returns immediately
+with a task id (`sa_…`) and the subagent works on its own thread. When it
+finishes, the parent is notified with a `[background-task] <id> completed`
+message folded into its turn; the result can also be read with
+`task_manage id=<id> action=result` or cancelled with
+`task_manage id=<id> action=stop`. `background: false` is the explicit form of
+the synchronous default, and both paths use the same nesting caps and ownership
+stamping.
 
 Each subagent is **isolated**: it gets a fresh session seeded with ONLY the
 prompt string — the parent transcript never leaks into the child, so the parent

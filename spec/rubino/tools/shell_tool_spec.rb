@@ -16,6 +16,14 @@ RSpec.describe Rubino::Tools::ShellTool do
     expect(tool.risk_level).to eq(:high)
   end
 
+  it "describes every background-shell management action, including wait" do
+    expect(tool.description).to include("action: 'output'")
+      .and include("action: 'tail'")
+      .and include("action: 'wait'")
+      .and include("action: 'input'")
+      .and include("action: 'kill'")
+  end
+
   # Slice 2: the SHARED OS-jail spawn builder used by BOTH the foreground spawn
   # here and the background spawn in ShellRegistry (so a backgrounded command
   # can't bypass the jail). Returns [env, *prefix, "bash", "-o", "pipefail",

@@ -17,6 +17,12 @@ RSpec.describe "build persona delegation guidance (#subagent-delegation)" do # r
     expect(prompt).to match(/general subagent has every tool/i)
   end
 
+  it "matches task's synchronous default and opt-in background mode" do
+    expect(prompt).to match(/`task` tool runs subagents SYNCHRONOUSLY by default/i)
+    expect(prompt).to match(/Set `background: true`\s+ONLY/)
+    expect(prompt).not_to match(/`task` tool runs subagents in the BACKGROUND by default/i)
+  end
+
   it "does not promise a child->parent ask channel" do
     expect(prompt).not_to include("ask_parent")
   end

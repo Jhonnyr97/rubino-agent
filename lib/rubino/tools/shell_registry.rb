@@ -391,6 +391,17 @@ module Rubino
         entry.wait_thr.value.exitstatus
       end
 
+      # Mark a finished shell's completion as already delivered to the model —
+      # e.g. by `shell_manage action=wait`, which blocks until exit and returns the
+      # result itself. Shares the fire-once `notified` flag with #notify_completion,
+      # so the reader thread's `[background-shell] … completed` notice is suppressed:
+      # the model already has the result on this turn, a second async notice is
+      # redundant (hermes' _completion_consumed dedup). Best-effort — if the reader
+      # already fired the notice, this is a harmless no-op.
+      def consume_completion(entry)
+        entry.mutex.synchronize { entry.notified = true }
+      end
+
       # Give the reader thread a short window to flush the final readpartial
       # chunk to the log file after the leader has exited, so a shell_manage output
       # call right after status flips to :completed still sees the tail.
@@ -623,12 +634,27 @@ module Rubino
         end
         status = code.nil? || code.zero? ? "completed" : "exited (code #{code})"
         entry.sink.push_notice(
-          "[background-shell] Shell #{entry.id} (`#{entry.command}`) #{status}. " \
+          "[background-shell] Shell #{entry.id} (`#{display_command(entry.command)}`) #{status}. " \
           "Read its output with `shell_manage run_id=#{entry.id} action=output`."
         )
       rescue StandardError
         # Notification is best-effort — never let it crash the reader thread.
         nil
+      end
+
+      # Notices are user-visible runtime context, not an audit log. Collapse the
+      # real home prefix before a command is copied into one so they do not leak
+      # the operator's absolute local path (for example `/Users/name/project`
+      # becomes `~/project`). The full command remains available through the
+      # shell output/logs.
+      def display_command(command)
+        text = command.to_s
+        home = Dir.home.to_s
+        return text if home.empty? || home == "/"
+
+        text.gsub(home, "~")
+      rescue StandardError
+        command.to_s
       end
     end
   end

@@ -6,6 +6,7 @@
 # on EOF and surfaced nothing (lost notification).
 RSpec.describe "Background shell completion notification (US-5)" do
   let(:shell) { Rubino::Tools::ShellTool.new }
+  let(:registry) { Rubino::Tools::ShellRegistry.instance }
 
   # Minimal sink: records every notice pushed to it.
   let(:sink) do
@@ -18,6 +19,16 @@ RSpec.describe "Background shell completion notification (US-5)" do
   end
 
   before { allow(Rubino).to receive(:background_sink).and_return(sink) }
+
+  it "collapses the home prefix in the user-visible command preview" do
+    allow(Dir).to receive(:home).and_return("/Users/example")
+    command = "cd /Users/example/AziendaOS && pwd"
+
+    preview = registry.send(:display_command, command)
+
+    expect(preview).to eq("cd ~/AziendaOS && pwd")
+    expect(preview).not_to include("/Users/example")
+  end
 
   def wait_for(timeout: 5)
     deadline = Time.now + timeout

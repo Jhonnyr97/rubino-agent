@@ -106,14 +106,15 @@ Parameters: command, cwd, timeout, run_in_background, disable_sandbox, compress
 Manage a background shell started by `shell` (`run_in_background: true`), addressed by its `bg_…` `run_id`. One `action` parameter selects what to do:
 
 - `output` — read stdout/stderr (`mode: "new"` default = bytes since last read; `mode: "all"` = full buffer)
-- `tail` — block until new bytes arrive, the process exits, or `timeout` seconds elapse (default 30, max 300)
+- `tail` — block until new bytes arrive, the process exits, or `timeout` seconds elapse (default 30, max 300); use for a brief progress check
+- `wait` — block until the process exits, or `timeout` seconds elapse (default 180, max 600); returns final output and exit code without a polling loop
 - `input` — write `input` text to the process's stdin to answer an interactive prompt (Y/N, menu); a newline is appended unless `enter: false`, and `eof: true` closes stdin
 - `kill` — terminate the process group (SIGTERM, then SIGKILL if still alive)
 
-Replaces the former `shell_output` / `shell_tail` / `shell_input` / `shell_kill` quartet (mirrors Hermes' single `process(action:)`). Approval is **per-action**: `output`/`tail` are read-only and run unprompted; `input`/`kill` are gated like any medium-risk mutation.
+Replaces the former `shell_output` / `shell_tail` / `shell_input` / `shell_kill` quartet and adds lifecycle waiting (mirrors Hermes' single `process(action:)`). Approval is **per-action**: `output`/`tail`/`wait` are read-only and run unprompted; `input`/`kill` are gated like any medium-risk mutation.
 
 ```
-Risk: per-action — output/tail run unprompted (read-only); input/kill are medium (approval-gated)
+Risk: per-action — output/tail/wait run unprompted (read-only); input/kill are medium (approval-gated)
 Parameters: run_id, action, input, mode, enter, eof, timeout
 ```
 
@@ -267,7 +268,7 @@ Parameters: action, name, file_path, description, body, old_str, new_str, conten
 
 ### task
 
-Delegate a sub-task to an isolated subagent run (default: a background subagent that returns a task id immediately; `background: false` runs it inline). Gated by `tools.task`. Subagents keep the `task` tool, so they CAN spawn their own subagents — scoped nesting, bounded by three caps enforced in one place (`BackgroundTasks#reserve`): `tasks.max_depth` (default 2), `tasks.max_children_per_node` (default 3), and `tasks.max_concurrent_total` (default 8). See [agents.md](agents.md).
+Delegate a sub-task to an isolated subagent run (default: synchronous, returning the final result inline; `background: true` opts into a background task that returns an id immediately). Gated by `tools.task`. Subagents keep the `task` tool, so they CAN spawn their own subagents — scoped nesting, bounded by three caps enforced in one place (`BackgroundTasks#reserve`): `tasks.max_depth` (default 2), `tasks.max_children_per_node` (default 3), and `tasks.max_concurrent_total` (default 8). See [agents.md](agents.md).
 
 ```
 Risk: low (the nested run's tools carry their own approval/risk gates)

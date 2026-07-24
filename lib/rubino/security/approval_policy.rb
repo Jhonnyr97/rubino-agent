@@ -640,9 +640,9 @@ module Rubino
         end
       end
 
-      # Per-action approval for shell_manage. output/tail are read-only → never
-      # prompt (:low). input/kill mutate the process → decided exactly as the
-      # :medium shell_input/shell_kill tools were, across every mode.
+      # Per-action approval for shell_manage. output/tail/wait are read-only →
+      # never prompt (:low). input/kill mutate the process → decided exactly as
+      # the :medium shell_input/shell_kill tools were, across every mode.
       def shell_manage_decision(arguments)
         action = (arguments[:action] || arguments["action"]).to_s
         return :allow unless %w[input kill].include?(action)
