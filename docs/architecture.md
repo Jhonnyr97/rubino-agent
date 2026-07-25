@@ -90,7 +90,7 @@ API's `parent_session_id` path.
 - `Registry` — Singleton registry with enable/disable
 - `Result` — Structured result (success/error/denied)
 - The built-in tools (authoritative, drift-checked count and list in [tools.md](tools.md)) + custom tool loader + formatter integration
-- `CustomToolLoader` — loads user-authored tools (the `Rubino.define_tool` DSL) from `~/.rubino/tools/`
+- `CustomToolLoader` — loads user-authored tools from `~/.rubino/tools/` (both a `class Foo < Rubino::Tool` subclass and the `Rubino.define_tool` block DSL), wired into `Registry#register_defaults!` (#610)
 
 ### `compression/`
 Compresses large tool-output content before it lands in context — a distinct

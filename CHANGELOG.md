@@ -163,6 +163,16 @@
   operator's absolute local path, and these synthetic notices are excluded
   from the Esc-Esc rewind picker (they're runtime context, not a user-typed
   turn).
+- **Custom tools (`~/.rubino/tools/*.rb`) are actually loaded now (#610).**
+  `CustomToolLoader#load_all!` had no call site anywhere in the boot path, so
+  a user-authored tool file had zero effect no matter how it was written.
+  `Registry#register_defaults!` now calls it, right before the `Rubino::Tool`
+  safety-net sweep, so a plain `class Foo < Rubino::Tool` subclass — the same
+  DSL every built-in tool uses — registers correctly (it's collected by the
+  `inherited` hook when the file loads, then picked up by that same sweep).
+  The older `Rubino.define_tool do...end` block DSL still works too, and
+  — unlike the class form — can deliberately shadow a same-named built-in,
+  since it registers unconditionally the moment its file loads.
 
 ## [0.5.2.2] - 2026-07-01
 

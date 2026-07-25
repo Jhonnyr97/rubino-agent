@@ -61,6 +61,39 @@ RSpec.describe Rubino::Tools::Registry do
       expect(described_class.find("git")).to be_nil
       expect(described_class.all.map(&:name)).not_to include("git")
     end
+
+    # #610: a user-authored ~/.rubino/tools/*.rb file must actually be picked
+    # up by the real boot path, not just by CustomToolLoader in isolation.
+    # The fixture class is collected into Rubino::Tool's append-only
+    # @_tool_subclasses list the instant its file `load`s — saved/restored
+    # here (same pattern as tool_spec.rb's auto-registration examples) so it
+    # doesn't leak into a LATER example's finalize_registrations! sweep (e.g.
+    # tools_doc_drift_spec.rb's exact registered-tool-count assertion).
+    it "picks up a user-authored custom tool from CustomToolLoader.tool_paths" do
+      saved_subclasses = Rubino::Tool.instance_variable_get(:@_tool_subclasses).dup
+      custom_dir = Rubino::Tools::CustomToolLoader.tool_paths.first
+      FileUtils.mkdir_p(custom_dir)
+      fixture = File.join(custom_dir, "register_defaults_fixture.rb")
+      File.write(fixture, <<~RUBY)
+        class TestRegisterDefaultsFixtureTool < Rubino::Tool
+          describe "register_defaults! integration fixture"
+          risk :low
+
+          def execute
+            ok("fixture ran")
+          end
+        end
+      RUBY
+
+      described_class.register_defaults!
+
+      tool = described_class.find("test_register_defaults_fixture")
+      expect(tool).to be_a(TestRegisterDefaultsFixtureTool)
+    ensure
+      FileUtils.rm_f(fixture)
+      described_class.unregister("test_register_defaults_fixture")
+      Rubino::Tool.instance_variable_set(:@_tool_subclasses, saved_subclasses) if saved_subclasses
+    end
   end
 
   # #582 — the single display-label resolution point both the live tool card

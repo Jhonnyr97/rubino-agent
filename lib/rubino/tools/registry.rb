@@ -145,6 +145,20 @@ module Rubino
           # a small model can't shell-re-inflate the output compression shrank.
           register(Rubino::Tools::RetrieveOutputTool.new) if tool_output_compression_enabled_default?
 
+          # User-authored custom tools (~/.rubino/tools/*.rb, #610). Loaded LAST,
+          # right before the safety-net below, so both authoring styles end up
+          # registered by the time this method returns, through the SAME two
+          # mechanisms a built-in already uses: a `Rubino.define_tool do...end`
+          # block registers itself immediately as its file `load`s (Registry.register
+          # is a plain upsert, so it can shadow a same-named built-in); a
+          # `class Foo < Rubino::Tool` file is merely COLLECTED by the `inherited`
+          # hook when `load` hits the class body, then picked up by
+          # finalize_registrations! immediately below — identically to a stray
+          # built-in that isn't in the explicit list above. finalize_registrations!
+          # only fills in a NAME NOT ALREADY REGISTERED, so unlike the block-DSL
+          # path, a class-DSL custom tool can't shadow a built-in of the same name.
+          CustomToolLoader.new.load_all!
+
           # Safety-net: append (name-sorted, deterministically) any concrete tool
           # not explicitly registered above — e.g. an out-of-tree custom tool.
           # Built-ins are all listed above, so this normally registers nothing.

@@ -2,10 +2,25 @@
 
 module Rubino
   module Tools
-    # Loads user-defined tools from .rubino/tools/ directories.
-    # Users can define tools using a simple Ruby DSL.
+    # Loads user-authored tools from ~/.rubino/tools/*.rb (#610 — wired into
+    # Registry#register_defaults!, right before the finalize_registrations!
+    # safety-net, so both authoring styles below actually register).
     #
-    # Example tool file (.rubino/tools/my_tool.rb):
+    # Preferred: subclass Rubino::Tool, exactly like a built-in tool —
+    #
+    #   # ~/.rubino/tools/deploy.rb
+    #   class DeployTool < Rubino::Tool
+    #     describe "Deploy the application to staging or production"
+    #     string :environment, "Target", enum: %w[staging production]
+    #     risk :high
+    #
+    #     def execute(environment:)
+    #       ok(`./deploy.sh #{environment} 2>&1`)
+    #     end
+    #   end
+    #
+    # Also still supported, a plain block DSL that self-registers immediately
+    # (and, unlike the class form above, CAN shadow a same-named built-in):
     #
     #   Rubino.define_tool do
     #     name "my_custom_tool"
@@ -14,7 +29,7 @@ module Rubino
     #     risk_level :low
     #
     #     execute do |args|
-    #       "Result: #{args['input']}"
+    #       "Result: #{args[:input]}"
     #     end
     #   end
     #

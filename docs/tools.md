@@ -380,47 +380,61 @@ mcp:
 
 ## Custom Tools
 
-Define a tool with the `Rubino.define_tool` DSL in a Ruby file under
-`~/.rubino/tools/` (or `$RUBINO_HOME/tools`) — **home-only by design (#44)**: a
-project's cwd `.rubino/tools` is never scanned, since this loader `load`s
-arbitrary Ruby and a cwd-relative path would let any directory you run rubino
-from execute code unprompted.
+Drop a Ruby file under `~/.rubino/tools/` (or `$RUBINO_HOME/tools`) —
+**home-only by design (#44)**: a project's cwd `.rubino/tools` is never
+scanned, since this loader `load`s arbitrary Ruby and a cwd-relative path
+would let any directory you run rubino from execute code unprompted.
+`CustomToolLoader#load_all!` runs at boot (`Registry#register_defaults!`,
+right before its `Rubino::Tool` safety-net sweep), so a file placed here is
+picked up automatically — no wiring of your own required.
+
+Preferred: subclass `Rubino::Tool`, exactly like a built-in tool —
 
 ```ruby
 # ~/.rubino/tools/deploy.rb
-Rubino.define_tool do
-  name "deploy"
-  description "Deploy the application to staging or production"
+class DeployTool < Rubino::Tool
+  describe "Deploy the application to staging or production"
 
-  input_schema({
-    type: "object",
-    properties: {
-      environment: { type: "string", enum: ["staging", "production"] }
-    },
-    required: ["environment"]
-  })
+  string :environment, "Target environment", enum: %w[staging production]
 
-  risk_level :high
+  risk :high
 
-  execute do |args|
-    env = args[:environment]
-    `./deploy.sh #{env} 2>&1`
+  def execute(environment:)
+    ok(`./deploy.sh #{environment} 2>&1`)
   end
 end
 ```
 
+Also still supported, a plain block DSL that self-registers immediately as its
+file loads (and, unlike the class form, *can* shadow a same-named built-in):
+
+```ruby
+Rubino.define_tool do
+  name "deploy"
+  description "Deploy the application to staging or production"
+  input_schema({ type: "object", properties: { environment: { type: "string", enum: %w[staging production] } }, required: ["environment"] })
+  risk_level :high
+  execute { |args| `./deploy.sh #{args[:environment]} 2>&1` }
+end
+```
+
 Custom tools:
-- **Not wired into any boot path yet** — `CustomToolLoader#load_all!` scans the
-  path above and registers what it finds, but no CLI or server startup
-  currently calls it, so a file dropped in `~/.rubino/tools/` has no effect
-  until something invokes the loader.
-- Once registered, `Registry.register` keys on `tool.name`, so a custom tool
-  sharing a built-in's name silently overwrites it.
-- `risk_level` drives the same `:low`/`:medium`/`:high` approval pipeline as
-  built-in tools — an unrecognized value is treated as non-risky (no approval
-  prompt), so stick to the three documented levels.
-- `execute do |args| ... end` receives a **symbol-keyed** arguments hash
-  (arguments are normalized to symbols before any tool's `call` runs).
+- Both forms are loaded from the same directory, at the same point in boot;
+  mix and match across files as you like.
+- A `class Foo < Rubino::Tool` file is merely *collected* when it loads — it's
+  registered a moment later by the same `finalize_registrations!` sweep a
+  stray built-in would use, which only fills in a name **not already
+  registered**, so it can't shadow a built-in tool. `Rubino.define_tool`
+  registers unconditionally the instant its block runs, so it *can* shadow one
+  — give your tool a distinct name unless overriding a built-in is the point.
+- `risk`/`risk_level` drives the same `:low`/`:medium`/`:high` approval
+  pipeline as built-in tools — an unrecognized value is treated as non-risky
+  (no approval prompt), so stick to the three documented levels.
+- The class form's `execute` receives ordinary keyword arguments, declared
+  with `string`/`integer`/`boolean`/etc like any built-in tool. The block
+  form's `execute do |args| ... end` receives a **symbol-keyed** arguments
+  hash instead (arguments are normalized to symbols before any tool's `call`
+  runs).
 - Can execute any system command or Ruby code.
 
 ---
