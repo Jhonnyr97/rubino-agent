@@ -164,18 +164,27 @@ scheduler.shutdown!                     # at server stop
 
 ### Webhook delivery
 
-`Jobs::WebhookDelivery` is a thin Faraday + faraday-retry client. Best-effort: every failure path (no URL, non-2xx, transport error) is logged and counted, never raised.
+`Jobs::WebhookDelivery` posts on a Faraday connection with its own retry loop (a
+plain `Thread.new`+sleep backoff, not the `faraday-retry` middleware — that gem is
+a dependency but isn't wired into the connection). Delivery is persisted and
+idempotent: every call is recorded in the `webhook_deliveries` table *before* the
+HTTP request fires, keyed by a `request_id` sent as the `X-Rubino-Delivery-Id`
+header (the dedup key a receiver should honor); `Jobs::Scheduler#resume_pending_webhooks!`
+(called at server boot) replays any row a prior process left `pending`, so a crash
+mid-backoff doesn't lose the delivery. Best-effort: every failure path (no URL,
+non-2xx, transport error) is logged and counted, never raised.
 
 | Setting | Value |
 |---|---|
-| URL | `RUBINO_WEBHOOK_URL` env (single URL for the whole process) |
+| URL | `RUBINO_WEBHOOK_URL` env (single URL for the whole process; no per-job override yet) |
+| Signing | HMAC-SHA256 over the body, sent as `X-Rubino-Signature`, when `RUBINO_WEBHOOK_SECRET` (or a per-job `secret:`) is set; omitted otherwise |
 | Timeout | 10s |
-| Retry | 2 attempts, 0.5s initial interval, exponential backoff factor 2 |
-| Retry triggers | `Faraday::TimeoutError`, `Faraday::ConnectionFailed` |
+| Retry | up to 3 attempts total, fixed backoff 5s / 30s / 5min |
+| Retry triggers | any non-2xx response, or a `Faraday::Error` |
 | Payload | `{ job_id, job_name, run_id, status, session_id }` |
 | Metrics | `webhook_deliveries_total{outcome="ok"|"http_error"|"error"}` |
 
-Per-job webhook URLs and signed payloads are planned.
+Per-job webhook URLs are still planned; payload signing already ships (above).
 
 ### Multi-process limitation
 
@@ -321,7 +330,7 @@ In every case the HTTP surface (`/v1/jobs`) does not change. Only **who actually
 
 - **Pluggable backends are designed, not shipped.** The default and only backend is `Sqlite`. The `Jobs::Backend` module above does not exist in the code yet — `Jobs::Queue` is the SQLite implementation directly.
 - **No cluster-safe cron.** The rufus scheduler is single-instance only. Running more than one `rubino server` in front of the same DB will multi-fire every cron job.
-- **No per-job webhook URLs**, no payload signing, no signed JWT-style retry tokens. One URL per process via `RUBINO_WEBHOOK_URL`.
+- **No per-job webhook URLs.** One URL per process via `RUBINO_WEBHOOK_URL`. (Payload signing — HMAC-SHA256 via `RUBINO_WEBHOOK_SECRET` — and delivery idempotency/persistence already ship; see [Webhook delivery](#webhook-delivery).)
 - **No queue web UI.** `rubino jobs list` and `/v1/jobs` are the only inspection surfaces.
 - **No fan-out, no per-tenant queues, no priority classes.** Priority is a single integer column, best-effort.
 - **No automatic dead-row GC.** Failed-past-max-attempts rows stay at `status=dead` until an operator removes them.

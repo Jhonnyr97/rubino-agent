@@ -54,7 +54,7 @@ No API key is configured yet. Pick a provider (or press Enter to skip).
   5) OpenAI-compatible gateway
 Choose a provider [1-5, Enter to skip]: 1
 Paste your OPENAI_API_KEY (input hidden; Enter to skip): ••••••••
-Configured OpenAI (GPT) — recommended default with model gpt-4.1.
+Saved OpenAI (GPT) — recommended default with model gpt-4.1 — run a prompt to verify the key.
 Saved to ~/.rubino/config.yml and ~/.rubino/.env.
 ```
 
@@ -128,18 +128,18 @@ A brand-new user with no key used to see ~80 seconds of silent retries then an e
 ```
 No API key configured for provider 'openai' (model openai/gpt-4.1).
 Set it up one of these ways:
-  • run `rubino setup` for a guided first-run setup, or
-  • add OPENAI_API_KEY=<your-key> to ~/.rubino/.env, or
-  • set providers.openai.api_key in ~/.rubino/config.yml.
+  • run `rubino setup` for a guided first-run setup (creates the files below), or
+  • add OPENAI_API_KEY=<your-key> to ~/.rubino/.env (or run `rubino setup` to create them), or
+  • set providers.openai.api_key in ~/.rubino/config.yml (or run `rubino setup` to create them).
 ```
 
-(The shipped default model `openai/gpt-4.1` resolves to OpenRouter in ruby_llm's registry; this is why a first run without a key or the right provider fails. The cleanest fix is `rubino setup`. See [models-and-keys.md](models-and-keys.md) and [troubleshooting.md](troubleshooting.md).)
+(The resolved provider for the shipped default is `openai` — rubino's own `LLM::ProviderResolver` reads the `openai/` id prefix and routes straight to OpenAI's own API, with no OpenRouter hop. A first run fails simply because `OPENAI_API_KEY` isn't set yet, caught by the credential preflight before any model call. The cleanest fix is `rubino setup`. See [models-and-keys.md](models-and-keys.md) and [troubleshooting.md](troubleshooting.md).)
 
 Run `rubino doctor` at any time to check config, the resolved provider, credentials, and database health.
 
 ## Next steps
 
-- [Models & keys](models-and-keys.md) — per-provider setup blocks and the default→OpenRouter note.
+- [Models & keys](models-and-keys.md) — per-provider setup blocks and how the default resolves to OpenAI's own API.
 - [Commands](commands.md) — every CLI subcommand and slash command.
 - [Configuration](configuration.md) — full reference, env vars, precedence.
 - [Tools](tools.md) — what the agent can do and how each tool is gated.

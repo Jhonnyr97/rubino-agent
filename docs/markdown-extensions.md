@@ -142,8 +142,10 @@ current session id.
 ### Shell injection in skill bodies (`` !`cmd` ``)
 
 Shell-injection blocks (`` !`command` ``) inside skill templates are **disabled by
-default**. Set `commands.shell_injection_enabled: true` to enable them — only do so
-in trusted, controlled environments.
+default**. Set `skills.inline_shell: true` to enable them — only do so in trusted,
+controlled environments. (This is a separate config key from `commands.shell_injection_enabled`,
+which gates the same `` !`cmd` `` syntax in custom **command** templates — see
+[Commands](#commands) below.)
 
 ## Commands
 
@@ -200,8 +202,10 @@ before it ever reaches the model, and a structured `content_scan.blocked` event 
 logged with the source path and matched category. Clean content passes through unchanged.
 
 This mirrors Hermes's two-layer defence (shared pattern set + block-on-match behaviour
-for context files) and runs at all five wiring points: context files, agent `.md` files,
-skill bodies, command templates, and the `memory` tool writes.
+for context files) and runs at all four wiring points: context files, agent `.md` files,
+skill bodies, and command templates. Memory writes go through the separate,
+memory-specific `Memory::ThreatScanner` instead — a different pattern set tuned for a
+long-lived, cross-session channel (see [memory.md](memory.md)).
 
 ## Honest limitations
 
@@ -220,6 +224,7 @@ a silent bug:
 - **`effort`, `isolation`, `color`, `initialPrompt`, `background`** on agent
   definitions are silently ignored (a warning is printed to stderr).
 - **`` !`cmd` `` shell injection in skills is off by default.** Requires
-  `commands.shell_injection_enabled: true`.
+  `skills.inline_shell: true` (a separate key from `commands.shell_injection_enabled`,
+  which only gates command templates).
 - **MCP OAuth** in rubino is not implemented; whatever behaviour you get is from
   the installed `ruby_llm-mcp` version. See [mcp.md](mcp.md#authentication).

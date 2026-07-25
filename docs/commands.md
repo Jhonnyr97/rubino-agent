@@ -210,7 +210,8 @@ Type these inside `rubino chat`. Generated from `BuiltIns::DESCRIPTIONS` (drift-
 | `/exit` | End session |
 | `/quit` | End session |
 
-(`exit`, `quit`, and `bye` without a slash also end the session; Ctrl+D and a double Ctrl+C do too.)
+(`exit`, `quit`, and `bye` without a slash also end the session — as do the vim/less
+reflexes `q`, `:q`, `:wq`, `:quit`; Ctrl+D and a double Ctrl+C do too.)
 
 ### Typing while the agent is working
 

@@ -40,7 +40,7 @@ below describe the shipped (uncompressed) behaviour.
 
 The unified reader. A **text/code file** is returned with line numbers (cat -n style); `offset`/`limit` page through it and long lines are truncated. A **rich document** (PDF, DOCX, XLSX, PPTX, HTML, CSV, JSON, XML) is auto-detected and converted to Markdown **in-process** (no external `markitdown`/`pdftotext`), then returned framed as untrusted user data (nonce-delimited, defanged) — folding in the former standalone `read_attachment` tool.
 
-The document route is driven by the **detected file kind** (fail-closed classification: regular-file check, workspace confine, size cap, magic-bytes-wins MIME) plus the dedicated-converter set, so a text file merely *named* `report.docx` still reads as text while converted-document bytes never ride read's trusted output/`:code`-redaction path (a converted document escalates to the full `:shell` redaction). `offset`/`limit`/`compress` apply to text files only. A document too large to inline is spilled to a file you then page with `read`/`grep`; if a format has no in-process converter (its optional gem isn't installed) an actionable shell-extraction hint is returned instead of raising. Conversion is provided by the in-repo `Rubino::Documents` module, whose CORE converters lean on optional MIT gems (`roo`, `docx`, `pdf-reader`, `ruby_powerpoint`) that are lazily required — none is a hard dependency, and `rubino doctor` reports which formats are available in-process.
+The document route is driven by the **detected file kind** (fail-closed classification: regular-file check, workspace confine, size cap, magic-bytes-wins MIME) plus the dedicated-converter set, so a text file merely *named* `report.docx` still reads as text while converted-document bytes never ride read's trusted output/`:code`-redaction path (a converted document escalates to the full `:shell` redaction). `compress` applies to text/code files only. `offset`/`limit` page a text file by line; for a **PDF** they instead select a **page window** (`offset`=first page, `limit`=max pages) so a large PDF converts only the pages asked for — other document formats ignore `offset`/`limit` and always convert in full. A document too large to inline is spilled to a file you then page with `read`/`grep`; if a format has no in-process converter (its optional gem isn't installed) an actionable shell-extraction hint is returned instead of raising. Conversion is provided by the in-repo `Rubino::Documents` module, whose CORE converters lean on optional MIT gems (`roo`, `docx`, `pdf-reader`, `ruby_powerpoint`) that are lazily required — none is a hard dependency, and `rubino doctor` reports which formats are available in-process.
 
 ```
 Risk: low
@@ -51,6 +51,8 @@ Parameters: file_path, offset, limit, compress
 
 Write content to a file, overwriting any existing content. Creates parent directories if needed. Use `edit` to modify an existing file in place.
 
+Overwriting an **existing** file requires having read it earlier in the same session, with the on-disk content still matching that read — a blind overwrite of a file never read, or one that changed on disk since, is refused (`error_code: unread_overwrite`) so the model can't silently clobber content it never saw. Brand-new files skip the guard.
+
 ```
 Risk: medium
 Parameters: file_path, content
@@ -58,7 +60,9 @@ Parameters: file_path, content
 
 ### edit
 
-Exact string replacement in a file. The old text must match exactly (including whitespace). More precise than full file writes.
+Exact string replacement in a file. `old_string` is matched byte-exact first; on a miss, a normalized **fuzzy fallback** (smart quotes/dashes, exotic whitespace, trailing whitespace, Unicode-form drift) locates the span in — and splices the replacement into — the original bytes, so cosmetic drift in the model's `old_string` doesn't hard-fail the edit (the normalized text itself is never persisted). More precise than full file writes.
+
+Editing a file requires having read it earlier in the same session, with the on-disk content still matching that read — an edit of a file never read, or one that changed on disk since, is refused so the change can't be based on stale context.
 
 For a **single** replacement, pass `old_string`/`new_string` (and `replace_all` to replace every occurrence). For **multiple** replacements in one file, pass an `edits` array instead: the edits apply atomically (all-or-nothing) and sequentially (each later edit sees the result of earlier ones); if any edit fails, no changes are written. Use `old_string`/`new_string` **or** `edits`, not both.
 
@@ -72,6 +76,8 @@ Parameters: file_path, old_string, new_string, replace_all,
 
 Regex content search. Uses ripgrep (rg) if available, falls back to Ruby.
 
+Results are capped at `max_results` **total** matches (not per file); `context` (`-C`), if given, overrides both `before` (`-B`) and `after` (`-A`), and all three are clamped to 50 lines per side. Hitting the cap flags that more matches exist rather than silently truncating. Honors `.gitignore` by default on both the ripgrep and Ruby-fallback paths (a genuinely secret-bearing file like `.env` is still searched — see [security.md](security.md) — only build artifacts / `node_modules` / ignored paths are skipped).
+
 ```
 Risk: low
 Parameters: pattern, path, include, max_results, before, after, context
@@ -79,7 +85,7 @@ Parameters: pattern, path, include, max_results, before, after, context
 
 ### glob
 
-Find files by glob pattern. Returns paths sorted by modification time.
+Find files by glob pattern. Returns paths sorted by modification time (newest first). Honors `.gitignore` by default, like `grep`; set `include_ignored: true` to include git-ignored files (build artifacts, etc).
 
 ```
 Risk: low
@@ -122,6 +128,8 @@ Parameters: run_id, action, input, mode, enter, eof, timeout
 
 Evaluate Ruby code and return the result. The snippet runs in a **separate Ruby process rooted at the workspace**, with the project's `lib/` and the workspace root prepended to `$LOAD_PATH` (like `ruby -Ilib -I. -e ...`) — so `require 'my_project/file'` and relative requires of the code being worked on resolve. A child process also keeps the snippet from crashing or polluting the host agent (it can `exit`, redefine constants, leak globals). (issue #102)
 
+The child goes through the **same OS write-jail** as `shell` (`tools.sandbox`, see [OS write-jail](security.md#os-write-jail)) — Seatbelt (macOS) / Landlock (Linux) confines its writes to `{workspace roots, $TMPDIR, /tmp, /dev/null}`, so a snippet doing `File.write('/etc/x')` is confined exactly like an equivalent `shell` command. When `tools.sandbox.require: true` and no jail mechanism is available on the host, the tool fails **closed** and refuses to spawn rather than run unconfined.
+
 ```
 Risk: medium
 Parameters: code
@@ -129,7 +137,7 @@ Parameters: code
 
 ### web_fetch
 
-Fetch content from a URL and return it as text. Useful for reading documentation, API references, and web pages. Convertible documents (PDF, DOCX, XLSX, PPTX) are fetched, spilled to disk, and converted to Markdown in-process via `Rubino::Documents` (the same engine the `read` tool uses for documents); opaque binaries (images, audio, video, archives) are still refused.
+Fetch content from a URL and return it as text. Useful for reading documentation, API references, and web pages. Convertible documents (PDF, DOCX, XLSX, PPTX) are downloaded and spilled to disk for the `read` tool to convert to Markdown in-process (`web_fetch` itself never converts or inlines a document — see [Document conversion](#document-conversion) below); opaque binaries (images, audio, video, archives) are still refused.
 
 ```
 Risk: low
@@ -157,9 +165,31 @@ Two guarantees so capability is never lost:
 - **Raw escape hatch** — `format: "html"` returns the full raw HTML **verbatim**,
   completely unprocessed, for when the model wants the original page.
 
+Every successful text/HTML fetch is also capped at 100 KB before extraction
+(`format:"text"` and `format:"html"` alike) — a larger page is truncated to
+that ceiling. The full, untruncated response body is still always written to
+`~/.rubino/tool-results/` (a predictable filename from host + path +
+timestamp), with a pointer line appended to the result (`[Full raw body saved
+to … — read it with grep/offset+limit]`), so nothing is permanently lost even
+when the inline result is capped.
+
+When the static HTML looks like a client-rendered SPA shell (an empty
+`#root`/`#app`/`__next` mount point, thin extracted text, React/Angular/
+Next/Nuxt markers, or a hydration data blob), `web_fetch` can re-fetch the
+page through a real headless Chromium (the optional `ferrum` gem) and re-run
+the same extraction on the post-JS DOM, keeping whichever result has more
+content. Controlled by `tools.webfetch.js_rendering` (`auto` default / `off` /
+`always`); inert without `ferrum` + a Chrome/Chromium binary. See
+[configuration.md](configuration.md#toolswebfetch-headless-browser-fallback--private-network-reach).
+
 #### Document conversion
 
-When the response Content-Type is a convertible office format, `web_fetch` spills the raw bytes to disk and converts them to Markdown in-process:
+When the response Content-Type is a convertible office format, `web_fetch`
+downloads the raw bytes and spills them to disk (`~/.rubino/tool-results/`,
+named with the correct extension) instead of refusing them as binary. It does
+**not** convert them itself — the result message points the model at the
+`read` tool, which runs the actual conversion (in-process, via
+`Rubino::Documents`, the same engine `read` uses for any document):
 
 | Format | Content-Type | Optional gem |
 |---|---|---|
@@ -168,9 +198,23 @@ When the response Content-Type is a convertible office format, `web_fetch` spill
 | XLSX | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `roo` |
 | PPTX | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `ruby_powerpoint` |
 
-The converted Markdown is framed as untrusted user data (same nonce-delimited preamble the `read` tool uses for documents). When a format's optional gem isn't installed, the tool returns an actionable hint telling the user to run `rubino setup` (which interactively offers to install `pdf-reader`) or `gem install <name>`. `rubino doctor` reports which document formats are available in-process and names the exact gem for each missing one.
+When `read` converts the saved file, the Markdown is framed as untrusted user
+data (same nonce-delimited preamble `read` uses for any document). If a
+format's optional gem isn't installed (or the format can't be converted for
+another reason), `read` degrades to a generic shell-extraction hint
+(`markitdown`/`pdftotext`/`textutil`) instead of raising — it does not name
+the missing gem at that point. For that, use `rubino doctor`, which reports
+which document formats are available in-process and names the exact gem for
+each missing one; `rubino setup` offers to install `pdf-reader` interactively.
 
-Large converted documents (over the inline text budget, ~100 KB) are written to a temp file with a pointer to read/search them with `read`/`grep`. Documents that exceed the 20 MB conversion cap are refused with a hint to narrow them first.
+`web_fetch`'s own size gate applies to the raw fetched bytes, before any
+conversion is attempted: a document over `attachments.policy.max_file_bytes`
+(25 MB by default) is refused with a message telling the model to download
+and read it itself, rather than being spilled. Once `read` does convert a
+saved document, it applies its own further caps: Markdown over the ~100 KB
+inline budget is written to a temp file with a pointer instead of being
+inlined, and Markdown that would exceed a 20 MB cap is refused with a hint to
+narrow the document first (grep/split the source).
 
 #### HEAD requests
 
@@ -184,13 +228,22 @@ Use HEAD for lightweight link-checking or to inspect Content-Type / Content-Leng
 
 ### web_search
 
-Search the web. Supports Tavily (best), SearXNG, or DuckDuckGo fallback.
+Search the web. Backend priority: **Tavily** (if `TAVILY_API_KEY` is set) →
+**SearXNG** (if `SEARXNG_URL` is set) → **DuckDuckGo**, the keyless default
+that needs no key or config.
 
 ```
 Risk: low
 Parameters: query, max_results
 Env: TAVILY_API_KEY or SEARXNG_URL (optional)
 ```
+
+The DuckDuckGo path tries the full-web `html.duckduckgo.com` scrape first;
+only if that yields nothing does it fall back to the narrower Instant Answer
+API (topic/entity queries only); only if **both** tiers come up empty does it
+return an explicit "Web search unavailable" message naming `TAVILY_API_KEY` /
+`SEARXNG_URL` as the way to get full results — never a silent empty or
+fabricated-looking result.
 
 ### question
 
@@ -251,6 +304,8 @@ Parameters: file_path, filename
 ### vision
 
 Ask a multimodal model to describe or interpret an image (charts, screenshots, diagrams, photos). Provide an optional focused question. Hidden only when no auxiliary vision model is configured and the primary model cannot see.
+
+Before any bytes reach the aux model, `file_path` (declared via the `image` param type) runs through an automatic guard pipeline, in order: workspace containment → existence/regular-file checks → an extension allowlist (`.png .jpg .jpeg .webp .gif .bmp`) → the `attachments.policy.aux_vision_egress` kill-switch (default `true`; set `false` to refuse all egress to the external aux model, see [configuration.md](configuration.md#attachments)) → a magic-bytes content-sniff that rejects a mislabelled or corrupt file even when its extension looks fine (#579). Any guard failure returns a clean error and the aux model is never called.
 
 ```
 Risk: low

@@ -141,13 +141,13 @@ CREATE TABLE oauth_connections (
 
 The repository transparently encodes/decodes `scopes_json`/`metadata_json` so callers see `:scopes` (Array) and `:metadata` (Hash) on read.
 
-Encryption key from `RUBINO_ENCRYPTION_KEY` (32-byte base64). Boot fails if missing in production.
+Encryption key from `RUBINO_ENCRYPTION_KEY` (32-byte base64). `rubino server` validates it at startup and refuses to boot (exit 1) if it's missing or malformed — there's no dev/production distinction in that check. The rest of the CLI (`chat`, `doctor`, ...) treats it as optional, since only the API/OAuth server needs it.
 
 **Tokens are never logged. Ever.** The logger has a redaction filter on `access_token`, `refresh_token`, `client_secret`.
 
 ## Configuration
 
-`config/rubino.yml`:
+`~/.rubino/config.yml` (the same single global config file every other rubino subsystem reads — see [configuration.md](configuration.md)):
 ```yaml
 oauth:
   providers:

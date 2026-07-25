@@ -12,17 +12,18 @@ Yes. `tools.shell` is **on by default** because the agent ships to run inside an
 
 1. **Hardline floor** (`:deny`) — a floor *below* yolo. Catastrophic, unrecoverable commands are denied unconditionally.
 2. **`permissions: deny`** — an explicit deny rule also beats yolo.
-3. **yolo / skip-approvals** — allow-exit (the doom-loop guard still applies).
+3. **yolo / skip-approvals** — the runtime `--yolo` flag (`Modes.skip_approvals?`, not the config `approvals.mode: "skip"` value — see step 9) — allow-exit (the doom-loop guard still applies).
 4. **Doom-loop guard** — breaks an autopilot stuck repeating the same call.
+4b. **Escalation request** (`shell disable_sandbox: true`) — always `:ask`, with a fresh, distinct approval (see [Escalation](#escalation-disable_sandbox) below), even for an otherwise pre-approved command. Below yolo (step 3), above every remaining allow/ask path (steps 5-9).
 5. **`permissions: allow` / `ask`** — remaining explicit rules.
 5b. **Secret-file write gate** — writing/editing `.env`, `.ssh`, `.aws`, etc requires explicit approval.
-5c. **Agent-home read gate** — reading any file under `~/.rubino` (config, memories, session DB) with `read`/`grep`/`glob` requires explicit approval. Skill `load` is not gated.
+5c. **Secret-file read gate** — reading a credential path with `read`/`grep`/`glob` requires explicit approval: everything under `~/.rubino` (config, memories, session DB) plus the project-local `.env` family anywhere on disk and the `$HOME` credential stores (`~/.ssh`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.gnupg`, `~/.azure`, `~/.config/gh`, `.netrc`, `.git-credentials`). Skill `load` is not gated.
 6. **Command allowlist** (prefix match) — pre-approved commands → allow. Then the **read-only auto-allow** at the same seam: a shell command the parser can prove read-only (see [Auto-allowed read-only commands](#auto-allowed-read-only-commands)) → allow.
 6c. **Skill write gate** — `skill(action:)` with `"create"` / `"edit"` / `"patch"` / `"write_file"` / `"delete"` requires explicit approval (a background review fork's writes go through a separate trusted path and bypass this gate).
 7. **Shell confirm policy** — `confirm_all` → ask; `dangerous_only` → ask only if the command matches a dangerous pattern, else allow.
 8a. **Out-of-workspace write widen** — a structured write targeting outside the workspace prompts; approval adds the directory.
 8b/8c. **Structured edit / code-exec symmetry** — under `dangerous_only`, in-workspace edits and the `ruby` tool auto-run.
-9. **Mode fallback** — `skip` allows; `auto` asks only for high-risk tools; `manual` asks for any risky tool.
+9. **Mode fallback** — `approvals.mode: "auto"` asks only for high-risk tools, else allows; `"manual"` **and** `"skip"` both ask for any risky (write/edit/shell) tool, else allow. Config `"skip"` is deliberately **not** a full allow-exit like runtime `--yolo` (step 3) — it exists so headless runs still hit the [fail-closed floor](#headless--non-interactive-approvals-fail-closed) for risky actions instead of silently auto-running them.
 
 ## The hardline floor
 
@@ -115,14 +116,15 @@ A one-shot or scripted run (`rubino prompt`, `chat -q`, or any run with no TTY) 
 
 To opt back into full auto-execute, pass **`--yolo`**; **`--no-yolo`** forces fail-closed even if a yolo default was set. `--yolo` is honored **only** as a CLI flag — a project-local or persisted config can never grant it, so an untrusted checkout can't silently switch a scripted run into auto-execute. The hardline floor and explicit `permissions: deny` rules still apply under `--yolo`. (See [commands.md §Exit codes](commands.md#exit-codes-scripting-around-prompt--one-shot).)
 
-## Deny/approve scope: once vs session
+## Deny/approve scope: once, session, or always
 
-At the approval prompt you can decide for just this call or for the rest of the session. Session approvals are remembered by a **prefix/pattern class**, not the raw command:
+At the approval prompt you can decide for just this call, for the rest of the session, or **always**:
 
-- a **dangerous** command remembers its pattern class (approving `git push --force origin main` once also covers `git push -f other`);
-- a **plain** command remembers only the exact command (approving `git status` does not auto-approve `git diff`).
+- **Once** — approves this call only; nothing is remembered.
+- **Session** — remembered **in-process only** for the rest of the running session (dies with the process; `Run::SessionApprovalCache`), by a **prefix/pattern class**, not the raw command: a **dangerous** command remembers its pattern class (approving `git push --force origin main` once also covers `git push -f other` for the rest of the session), a **plain** command remembers only the exact command (approving `git status` does not auto-approve `git diff`).
+- **Always** — the same class/exact-command scoping as Session, but also written to **disk**: an approve persists a rule to `security.command_allowlist` (`Security::AllowlistPersister`), a "deny always" persists a `permissions: <pattern>: "deny"` rule (`Security::DenyPersister`, which `ApprovalPolicy#decide` checks first — step 2 above). Both survive a process restart and take effect in the live config immediately, no reload needed. The menu offers a broad **prefix** class when one is derivable from a non-dangerous command (e.g. "`git *` commands"), or the narrow/exact command otherwise.
 
-Session approvals live in-process only (an `always`/disk-persistent tier is reserved but not wired). The granularity matches the matcher, so approving `shell ls` never auto-approves `shell rm -rf /`.
+The granularity matches the matcher, so approving `shell ls` never auto-approves `shell rm -rf /`.
 
 ## Abandoned approvals
 
@@ -148,11 +150,27 @@ When a write-jail denial blocks a legitimate write **outside** the workspace, th
 
 Reading any file under `~/.rubino` (config, memories, session DB) with the `read`, `grep`, or `glob` tools requires **explicit approval** — symmetric with the write gate. This closes the gap where a model could silently inspect rubino's own configuration, memories, or session data. The `skill` tool `load` action reads SKILL.md in-process and is **not** gated (it's the primary skill-loading path).
 
-The `shell` tool can still `cat ~/.rubino/*` unprompted — this is defense-in-depth, not a security boundary (the shell runs as the same OS user). The `SecretPath.read_block_error` layer already blocks credential files (`.env`, `.sqlite3`, OAuth tokens) under `~/.rubino` on the structured read path.
+The same `:ask` gate is deliberately broader than just `~/.rubino` (`Security::SecretPath.read_gated?`): it also covers the project-local `.env` family (`.env`, `.env.local`, `.env.development`, `.env.production`, `.env.test`, `.env.staging`, `.envrc`) **anywhere** on disk, and the `$HOME` credential stores — `~/.ssh` (specifically `id_rsa`, `id_ed25519`, `authorized_keys`, `config`), `~/.aws`, `~/.kube`, `~/.docker`, `~/.gnupg`, `~/.azure`, `~/.config/gh` — plus `.netrc`/`.git-credentials` wherever they sit. An auto-**deny** was deliberately rejected in favor of an auto-**ask** here too: denying outright strands the model with no way to request the exception, and read-before-write would deadlock a legitimate edit (approve `edit .env`, then have the mandatory read refused).
+
+The `shell` tool can still `cat ~/.rubino/*` (or `~/.ssh/id_rsa`, a project `.env`, …) unprompted — this is defense-in-depth, not a security boundary (the shell runs as the same OS user); the value still gets redacted on the way out (see [On-demand document reading](#on-demand-document-reading-the-read-tool) below for the `:shell` vs `:code` redaction profiles).
+
+## Outbound-fetch SSRF guard (`web_fetch` / `web_search`)
+
+Every outbound HTTP(S) request the `web_fetch` and `web_search` tools make — the initial GET/HEAD and each redirect hop — passes through `Rubino::Security::UrlSafety` before it dials out (ported from Hermes' `url_safety.py`). This is a different, stronger mechanism than the attachment guard below: it resolves DNS and checks every answer, not just an allowed-host string.
+
+- **Scheme allowlist** — only `http`/`https`; anything else (`file://`, `data:`, …) is refused.
+- **No secrets in the URL** — a URL carrying HTTP userinfo (`user:pass@host`) or a query parameter that looks like a credential (`api_key`, `token`, `password`, `aws_secret_access_key`, …) is refused before any request is made.
+- **DNS resolved and every answer checked** — not just the literal hostname: if *any* resolved address is loopback, private (RFC 1918), CGNAT, link-local (including the cloud-metadata range), reserved, multicast, or the IPv6 equivalents (unique-local, `::1`, IPv4-mapped, …), the request is blocked. A literal IP in the URL is checked the same way.
+- **Cloud-metadata floor always enforced** — `169.254.169.254`-style IMDS ranges and `metadata.google.internal`/`metadata.goog` are blocked even when private-network fetching is otherwise allowed; nothing legitimate ever needs to reach them.
+- **DNS-rebinding safe** — the guard returns the IP(s) it actually validated and the caller pins the connection to that address (TLS SNI/certificate verification still uses the original hostname), so a server can't swap in a private address between the check and the connect.
+- **Redirects re-validated per hop** — `web_fetch` never trusts a `Location` header; each redirect target (up to 5 hops, for both GET and HEAD) goes back through the same guard before it's followed.
+- **Fails closed** — malformed URLs, DNS failures, and unexpected errors all block the request rather than letting it through.
+
+`web_fetch` defaults to `tools.webfetch.allow_private_network: true` — rubino is a local dev agent, so loopback/LAN targets (a localhost dev server) are reachable by default; set it `false` for strict public-only fetching. The cloud-metadata floor above is not affected by that flag either way. `web_search`'s self-hosted SearXNG backend (`SEARXNG_URL`) is queried with the private-network check bypassed by design — its host/port/path are operator-configured, not model-supplied, so it isn't an SSRF vector; every other web_search path (Tavily, both keyless DuckDuckGo tiers) keeps the guard fully on. See [configuration.md](configuration.md#toolswebfetch-headless-browser-fallback--private-network-reach).
 
 ## Attachment SSRF guard
 
-URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped. The same policy gates CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`): a file that fails classification or the size cap is rejected client-side, before any provider call.
+URL attachments are fetched only when the host is in `attachments.allowed_hosts` (plus anything in the `ALLOWED_FILE_URL_HOSTS` env var, comma-separated). Loopback hosts (`localhost`, `127.0.0.1`, `::1`) are always allowed. Empty list + empty env = only loopback is fetchable. The file-attachment policy also fails closed: oversize (>25 MB by default), unsafe, or disallowed-kind files are warned and skipped. The same policy gates CLI image attachments (`-i`/`--image`, `@image` tokens, dropped paths, `/paste`): a file that fails classification or the size cap is rejected client-side, before any provider call. This is a simpler allowlist mechanism than the outbound-fetch SSRF guard above — it does not resolve DNS or check IP ranges, only the hostname string.
 
 ## On-demand document reading (the `read` tool)
 

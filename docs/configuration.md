@@ -4,19 +4,20 @@ All values below are checked against `lib/rubino/config/defaults.rb` (`MODULE_DE
 
 ## File Locations
 
-- **User config:** `~/.rubino/config.yml` (created by `rubino setup`)
-- **Project config:** `.rubino/config.yml` (overrides user config)
+- **Config:** `~/.rubino/config.yml` (created by `rubino setup`)
 - **Secrets:** `~/.rubino/.env`
 - **Database:** `~/.rubino/rubino.sqlite3`
 
 > **`RUBINO_HOME` relocates everything.** When set, the home directory, `config.yml`, `.env`, and the database all follow it (the `database.path` default is a sentinel resolved at read time against the resolved home — issue #96). The CLI and the API server share one resolver, so they never disagree about where state lives.
 
+> **Config is GLOBAL — there is no project-local `config.yml` (#50).** `Config::Loader` reads exactly ONE `config.yml`, under the resolved home (`RUBINO_HOME`, else `~/.rubino`), shared by every rubino invocation on the machine; `/config set` (or `rubino config set`) in one session changes the setting for all of them. A `.rubino/config.yml` dropped into a project directory is **not read** — per-project config is a separate, unbuilt feature, not the current contract. This is distinct from **skills** and **commands**, which DO support a project-local directory alongside the user one (`.rubino/skills` / `.rubino/commands` — see their sections below); only the main `config.yml` is global-only.
+
 ## Precedence (highest to lowest)
 
-1. Environment variables (`RUBINO_*`)
-2. Project-local `.rubino/config.yml`
-3. User global `~/.rubino/config.yml`
-4. Built-in defaults
+1. User global `~/.rubino/config.yml`
+2. Built-in defaults
+
+`RUBINO_HOME` changes WHERE that single `config.yml` lives — it is not a second override layer. There is no generic `RUBINO_*`-env-var-per-config-key mechanism; the specific environment variables listed at the bottom of this page (provider keys, `RUBINO_API_KEY`, etc.) are read directly by the code that uses them, not merged over `config.yml` as a precedence tier.
 
 ## Substitutions
 
@@ -32,7 +33,7 @@ Use in any string value:
 
 ```yaml
 model:
-  default: "openai/gpt-4.1"     # Model identifier (NOTE: resolves to OpenRouter — see models-and-keys.md)
+  default: "openai/gpt-4.1"     # Model identifier (resolves to OpenAI's own API, no OpenRouter hop — see models-and-keys.md)
   provider: "auto"              # auto | openai | anthropic | bedrock | gemini | minimax | gateway
   context_length: null          # Override context window (null = use model default)
   temperature: null             # null = inherit the provider default (no temperature is sent)
@@ -42,7 +43,7 @@ model:
   supports_vision: null         # null = auto-detect from model id; true/false to override
 ```
 
-> The shipped default `openai/gpt-4.1` resolves to OpenRouter in ruby_llm's registry. See [models-and-keys.md](models-and-keys.md) for the per-provider blocks and the fail-fast behavior.
+> The shipped default `openai/gpt-4.1` resolves to OpenAI's own API under `provider: auto` — rubino's own id-prefix resolver (`LLM::ProviderResolver`) picks the provider, not ruby_llm's model registry, so there is no OpenRouter hop. See [models-and-keys.md](models-and-keys.md) for the per-provider blocks and the fail-fast behavior.
 
 ### providers
 
@@ -137,9 +138,9 @@ Each block routes through `LLM::AuxiliaryClient`, so `provider`/`model`/`base_ur
 are all honored: `provider: "main"` (or empty) reuses the primary provider, an empty
 `model` falls back to `model.default`, and a `base_url` points that task at a
 different endpoint. `auxiliary.compression` is the **context-compaction summary**
-model — at the defaults it is the primary model (e.g. MiniMax-M3), unchanged; set
-`provider`/`model`/`base_url` to run compaction summaries on a different
-(OpenAI-compatible) endpoint.
+model — at the defaults it is the primary model (e.g. the shipped default
+`openai/gpt-4.1`), unchanged; set `provider`/`model`/`base_url` to run
+compaction summaries on a different (OpenAI-compatible) endpoint.
 
 ### agent
 
@@ -209,9 +210,9 @@ notifications:
   min_turn_seconds: 10   # a turn must run at least this long before its completion notifies; quick turns stay silent
 ```
 
-- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`). A third event, `blocked`, exists in the enum for a child parked on the human; with subagents now non-blocking it is not raised in normal operation.
+- **Events**: `turn_finished` (only when the turn ran ≥ `min_turn_seconds`), `needs_approval` (the main agent's approval card or a background child flipping to `needs approval`). These are the only two events `UI::Notifier` emits.
 - **Bell hygiene**: the BEL byte is only ever written to a real terminal — never into a pipe — and is routed to the real terminal IO even while the bottom composer owns the screen (BEL doesn't move the cursor).
-- **`command` hook**: runs detached and best-effort (stdio nulled, errors swallowed to the log) with `RUBINO_EVENT` (`turn_finished` | `needs_approval` | `blocked`) and `RUBINO_MESSAGE` in its environment — the seam for `osascript` (macOS), `notify-send` (Linux), or any custom notifier.
+- **`command` hook**: runs detached and best-effort (stdio nulled, errors swallowed to the log) with `RUBINO_EVENT` (`turn_finished` | `needs_approval`) and `RUBINO_MESSAGE` in its environment — the seam for `osascript` (macOS), `notify-send` (Linux), or any custom notifier.
 - **Spam control**: events within ~1s of the last emitted one coalesce into a single signal.
 
 ### reasoning & thinking
@@ -726,7 +727,7 @@ including creation and the 3-level disclosure model.
 commands:
   paths:
     - ".rubino/commands"
-    - "~/.rubino/commands"
+    - "<RUBINO_HOME>/commands"  # sentinel; resolved against the home at read time, like database.path
   shell_injection_enabled: false  # true = allow !`shell` interpolation in command templates
 ```
 

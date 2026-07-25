@@ -36,9 +36,12 @@ workspace file picker. See [agents.md](agents.md).
 
 ### `interaction/`
 - `Lifecycle` — Full turn lifecycle: input → memory → context → model → tools → persist → jobs
-- `State` — State machine (idle → calling_model → executing_tools → finished)
 - `EventBus` — Pub/sub for decoupling core from UI
 - `Events` — All typed event constants
+- `CancelToken` — Thread-safe cooperative cancellation flag threaded through a turn
+- `InputQueue` — Thread-safe hand-off of typed-while-busy input to the REPL loop (queue-by-default type-ahead)
+- `Polishing` — Best-effort post-turn memory-extract/skill-distill drain, off the turn's critical path
+- `Probe` — Ephemeral, read-only side-question against the current session (`/probe`)
 
 ### `context/`
 - `PromptAssembler` — Builds the full prompt from all sources
@@ -66,6 +69,8 @@ through the `memory` tool. See [memory.md](memory.md#how-facts-are-extracted-wri
 - `Repository` — Session CRUD with prefix-matching find
 - `Store` — Message persistence
 - `Message` — Value object with to_context / to_row
+- `Exporter` — Serializes a session transcript to markdown (`/export`, `rubino sessions show`)
+- `Picker` — Interactive arrow-key resume picker (bare `rubino sessions` / `/sessions` on a TTY)
 
 Forking is not a dedicated class: a new session inherits history via the
 API's `parent_session_id` path.
@@ -87,6 +92,24 @@ API's `parent_session_id` path.
 - The built-in tools (authoritative, drift-checked count and list in [tools.md](tools.md)) + custom tool loader + formatter integration
 - `CustomToolLoader` — loads user-authored tools (the `Rubino.define_tool` DSL) from `~/.rubino/tools/`
 
+### `compression/`
+Compresses large tool-output content before it lands in context — a distinct
+concern from `Context::Compressor` (which compacts whole-conversation history).
+- `Compressor` — Entry point that routes a piece of tool-read content to a compression strategy
+- `ContentRouter` — The single content-routing seam every tool output passes through
+- `DiffCompressor`, `JsonCompressor`, `LogCompressor` — Format-specific compressors
+- `*CodeSkeleton` (Ruby/Python/TypeScript/TSX/JavaScript/tree-sitter) — Language-aware code-to-skeleton compressors
+
+### `attachments/`
+- `Policy` — Reads the secure-by-default knobs from config (`attachments.policy`: classification + the `max_file_bytes` cap)
+- `Classify` — Deterministic, no-LLM attachment classifier with a fail-closed default
+- `Defang` — Structural prompt-injection defense for inlined untrusted file content
+
+### `documents/`
+Non-image file → markdown conversion (PDF, docx, xlsx, pptx) used by `read`/`web_fetch`/attachments.
+- `Registry` — Ordered registry of document converters (mirrors `Tools::Registry`'s shape)
+- `Html` — The HTML → Markdown core (markitdown-style conversion)
+
 ### `llm/`
 - `RubyLLMAdapter` — Wraps ruby_llm (chat, stream, structured output)
 - `ProviderResolver` — Auto-detects provider from model name
@@ -104,22 +127,41 @@ Experimental — booted at chat startup when `mcp.servers` is configured
 - `PatternMatcher` — Wildcard pattern matching for permissions
 - `DoomLoopDetector` — Detects repeated identical tool calls
 - `CommandAllowlist` — Pre-approved shell commands
+- `HardlineGuard` — The non-yolo-overridable floor of always-blocked destructive commands
+- `Sandbox` — OS-level write-jail (Landlock/Seatbelt) confining tool writes to the workspace
+- `ContentScanner` — Prompt-injection/promptware scanner for externally-loaded `.md` content (agents, skills, commands, context files) — see [markdown-extensions.md](markdown-extensions.md#security)
+- `Redactor` — Masks secret-shaped values (API keys, tokens) in tool output before it reaches the model or the transcript
 
 ### `skills/`
 - `Skill` — Parsed SKILL.md with YAML frontmatter
 - `Registry` — Discovery from configured paths
 - `SkillTool` — Tool for on-demand skill loading
+- `Installer` — Installs skills from a git repo (`rubino skills install`)
+- `ContentPreprocessor` — Template-variable substitution + optional inline-shell expansion for skill bodies
 
 ### `commands/`
 - `Command` — Parsed command.md with template rendering
 - `Loader` — Discovery from configured paths
 - `Executor` — Handles slash commands and built-ins
+- `BuiltIns` — Single source of truth for built-in slash command names + descriptions (`/help`, tab-completion, and [commands.md](commands.md) all read this)
 
 ### `api/`
 - `Server` — Rack + Puma boot
 - `Router` — pattern-based dispatcher
 - `Middleware::{Auth,ErrorHandler,JsonParser}` — Bearer auth, typed-error mapping, JSON body parsing
+- `Middleware::RateLimit` — Token-bucket rate limiter (per-IP for open routes, per-bearer-token for authenticated ones)
+- `Middleware::Observability` — Outermost middleware: per-request metrics + one JSON log line
 - `Operations::*` — request handlers (sessions, runs, approvals, clarifications, skills, models, files, cron jobs, oauth)
+
+### `run/`
+A `Run` is one user-input → assistant-response execution driven from the HTTP API or a cron tick (as opposed to the interactive CLI REPL, which drives `Agent::Runner` directly).
+- `Executor` — Runs an `Agent::Runner` in a background thread, persisting per-run events
+- `Repository` — Run CRUD
+- `Recorder` — Bridges `Interaction::EventBus` to per-run persisted events
+- `EventStore` — Persists per-run events for SSE replay (Last-Event-ID) and audit
+- `ApprovalGate` / `GateRegistry` — Synchronizes async HTTP approval/clarification decisions with the in-thread run loop
+- `AttachmentDownloader` — Fetches URL attachments passed on a run
+- `SessionApprovalCache` — Remembers approval decisions that should survive past the current call
 
 ### `oauth/`
 - `Provider` (+ `Github`, `Google`) — provider abstraction with PKCE auth flow

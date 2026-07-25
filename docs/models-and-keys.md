@@ -37,9 +37,9 @@ Historically the risk here was silent failure: a brand-new user with no key woul
   ```
   No API key configured for provider 'openai' (model openai/gpt-4.1).
   Set it up one of these ways:
-    • run `rubino setup` for a guided first-run setup, or
-    • add OPENAI_API_KEY=<your-key> to ~/.rubino/.env, or
-    • set providers.openai.api_key in ~/.rubino/config.yml.
+    • run `rubino setup` for a guided first-run setup (creates the files below), or
+    • add OPENAI_API_KEY=<your-key> to ~/.rubino/.env (or run `rubino setup` to create them), or
+    • set providers.openai.api_key in ~/.rubino/config.yml (or run `rubino setup` to create them).
   ```
 
 The simplest fix is `rubino setup`. A bare `gpt-4.1` with `provider: openai` (shown below) resolves identically — both route to OpenAI's own API.
