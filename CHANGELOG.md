@@ -128,6 +128,42 @@
   and `write` cover its use, and unified diffs are the format small local models
   most often corrupt. Built-in tool count is now 26 (was 28).
 
+### Added
+
+- **`shell_manage` gains a `wait` action.** Blocks until the background process
+  exits (or `timeout` elapses — default 180s, max 600s) and returns its final
+  output plus exit code in one call, so a long job is awaited without a
+  `tail`/`output` poll loop (mirrors Hermes' `process(action="wait")`). `tail`
+  keeps its role as a quick progress peek (blocks on new bytes/exit/`timeout`,
+  default 30s/max 300s). `wait` is read-only (`:low`, unprompted) alongside
+  `output`/`tail`; a positive explicit `timeout` always wins over the action's
+  own default. When `wait` already delivered the result, the async
+  `[background-shell] … completed` notice is suppressed so the model isn't
+  told twice.
+
+### Changed
+
+- **`task` now runs synchronously by default; `background: true` opts in.**
+  Every `task` call previously backgrounded unconditionally (see the
+  background-by-default entry further below). The model now gets the child's
+  result inline by default — matching Claude Code's subagent default — and
+  backgrounds a subagent only when it has other useful work to do meanwhile.
+  `background: false` is now just the explicit spelling of the default
+  synchronous path; both paths share the same nesting caps and ownership
+  stamping.
+
+### Fixed
+
+- **Background completion notices land on time under streaming, and stop
+  leaking the local path.** `[background-shell]`/`[background-task]` notices
+  now deliver at the next tool boundary instead of one iteration late, so a
+  shell or subagent that finishes mid-turn no longer goes unseen until after
+  a stale answer was already committed. The shell completion notice also
+  collapses `$HOME` to `~` in the echoed command so it never leaks the
+  operator's absolute local path, and these synthetic notices are excluded
+  from the Esc-Esc rewind picker (they're runtime context, not a user-typed
+  turn).
+
 ## [0.5.2.2] - 2026-07-01
 
 ### Added
