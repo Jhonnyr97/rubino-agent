@@ -189,10 +189,19 @@ skill **usage**.
 
 This is exactly the event you want to measure. Loading a body:
 
-- returns the body (prefixed `Skill '<name>' loaded:`) to the model, and
-- if the skill is a directory with bundled files, appends a list of those files so
-  the model knows what it can pull next, and
+- returns the body wrapped in a `<skill_content name="...">` block, followed by a
+  "Skill directory: ..." line reminding the model that relative paths in the skill
+  are relative to that directory, and
+- if the skill is a directory with bundled files, appends a `<skill_resources>`
+  list of those files so the model knows what it can pull next, and
+- prepends a "⚠ Setup needed" note ahead of the body when the skill declares
+  required environment variables that are currently missing (a deterministic
+  `ENV.key?` check — no LLM call), and
 - emits the `SKILL_LOADED` observability signal (see below).
+
+Calling `skill(name)` again for a skill already loaded this session is a no-op: it
+returns "Skill '<name>' is already active in this session." instead of re-emitting
+the body.
 
 If the named skill doesn't exist, the tool returns the list of available skills; if
 it exists but is disabled, it returns a distinct "disabled" message.
@@ -260,13 +269,16 @@ refuses to overwrite an existing skill. The new skill is immediately
 discoverable. `action` defaults to `"load"`, so existing `skill(name:)` calls
 are unaffected.
 
-Both paths emit `SKILL_CREATED` (`{ name:, file_path: }`) on the turn-scoped bus
-and count toward `skills_created_total` (see Observability).
+Both paths emit `SKILL_CREATED` (`{ name:, file_path:, origin: }`, where `origin`
+is `"review"` for the background review fork or `"foreground"` for an in-turn
+call) on the turn-scoped bus and count toward `skills_created_total` (see
+Observability).
 
 ## Observability
 
-You can measure skill *use* — not just that skills exist — through one event and two
-metrics (added in #132).
+You can measure skill *use* — not just that skills exist — through two events
+(`SKILL_LOADED` added in #132; `SKILL_UPDATED` added alongside the edit/patch/
+write_file/delete actions) and two metrics.
 
 ### The `SKILL_LOADED` event
 
@@ -281,6 +293,23 @@ on the turn-scoped event bus. The recorder/SSE layer surfaces it as **`skill.loa
 
 It fires once per successful body load. Loading a Level-3 bundled file does **not**
 emit it — the signal tracks the level-2 "skill is now in use" transition.
+
+### The `SKILL_UPDATED` event
+
+When an *existing* skill is modified via `action: "edit"` / `"patch"` /
+`"write_file"` / `"delete"`, the tool emits `SKILL_UPDATED` on the turn-scoped
+event bus. The interactive REPL uses it to surface a background review fork's
+writes in the timeline — a foreground call already renders as a `● skill` tool
+row, but the review fork's Null UI would otherwise swallow the write silently.
+
+- **Internal symbol:** `Interaction::Events::SKILL_UPDATED`
+- **Payload:** `{ name:, action:, origin: }` — `action` is one of `"edit"` /
+  `"patch"` / `"write_file"` / `"delete"`; `origin` is `"review"` or
+  `"foreground"`, same semantics as `SKILL_CREATED`.
+
+Unlike `SKILL_LOADED`, it has no Recorder/SSE mapping (no `skill.updated` API
+event) and isn't counted by a Prometheus metric — it's currently a CLI-REPL-only
+signal.
 
 ### Metrics
 

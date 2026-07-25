@@ -85,7 +85,7 @@ API's `parent_session_id` path.
 - `Registry` — Singleton registry with enable/disable
 - `Result` — Structured result (success/error/denied)
 - The built-in tools (authoritative, drift-checked count and list in [tools.md](tools.md)) + custom tool loader + formatter integration
-- `CustomToolLoader` — DSL for user-defined tools
+- `CustomToolLoader` — loads user-authored tools (the `Rubino.define_tool` DSL) from `~/.rubino/tools/`
 
 ### `llm/`
 - `RubyLLMAdapter` — Wraps ruby_llm (chat, stream, structured output)

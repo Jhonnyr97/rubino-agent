@@ -259,7 +259,7 @@ Parameters: file_path, question
 
 ### skill
 
-Load a skill body (Level 2) and any bundled files (Level 3) on demand, or author/maintain skills: `action: "create"` (new), `"edit"`/`"patch"`/`"write_file"` (update a home-authored skill), `"delete"` (remove one). The agent sees available skills (name + description) up front and calls this to pull in the full instructions only when relevant. After a complex, repeatable task it can also distil what it did into a new skill. The write actions are approval-gated and confined to the home skills dir (bundled skills are protected); they run in-process, so deleting a skill works where a shell `rm` under the OS write-jail cannot. Gated by `tools.skill`. See **[docs/skills.md](skills.md)** for the skill system — the 3-level disclosure, creating skills (the post-turn job + the on-demand tool), authoring `SKILL.md` files, and the `SKILL_LOADED` / `SKILL_CREATED` observability signals.
+Load a skill body (Level 2) and any bundled files (Level 3) on demand, or author/maintain skills: `action: "create"` (new), `"edit"`/`"patch"`/`"write_file"` (update a home-authored skill), `"delete"` (remove one). The agent sees available skills (name + description) up front and calls this to pull in the full instructions only when relevant. After a complex, repeatable task it can also distil what it did into a new skill. The write actions are approval-gated and confined to the home skills dir (bundled skills are protected); they run in-process, so deleting a skill works where a shell `rm` under the OS write-jail cannot. Gated by `tools.skill`. See **[docs/skills.md](skills.md)** for the skill system — the 3-level disclosure, creating skills (the post-turn job + the on-demand tool), authoring `SKILL.md` files, and the `SKILL_LOADED` / `SKILL_CREATED` / `SKILL_UPDATED` observability signals.
 
 ```
 Risk: low
@@ -301,6 +301,15 @@ Tools from connected MCP servers are automatically registered with a prefix:
 server_name_tool_name
 ```
 
+The prefixed name is capped at 64 characters (`MCPToolWrapper::MAX_NAME_LENGTH`) so a
+hostile/buggy server can't register an arbitrarily long name.
+
+```
+Risk: medium — fixed for every MCP tool regardless of server claims (risky?: true,
+      sandbox: none); not configurable per-tool or per-server
+Redaction: :shell (explicit fail-safe for output from outside rubino's control)
+```
+
 Configure MCP servers in `config.yml`:
 
 ```yaml
@@ -316,10 +325,14 @@ mcp:
 
 ## Custom Tools
 
-Create Ruby files in `.rubino/tools/`:
+Define a tool with the `Rubino.define_tool` DSL in a Ruby file under
+`~/.rubino/tools/` (or `$RUBINO_HOME/tools`) — **home-only by design (#44)**: a
+project's cwd `.rubino/tools` is never scanned, since this loader `load`s
+arbitrary Ruby and a cwd-relative path would let any directory you run rubino
+from execute code unprompted.
 
 ```ruby
-# .rubino/tools/deploy.rb
+# ~/.rubino/tools/deploy.rb
 Rubino.define_tool do
   name "deploy"
   description "Deploy the application to staging or production"
@@ -335,17 +348,25 @@ Rubino.define_tool do
   risk_level :high
 
   execute do |args|
-    env = args["environment"]
+    env = args[:environment]
     `./deploy.sh #{env} 2>&1`
   end
 end
 ```
 
 Custom tools:
-- Are automatically discovered and registered
-- Can override built-in tools by name
-- Support all risk levels and approval flows
-- Can execute any system command or Ruby code
+- **Not wired into any boot path yet** — `CustomToolLoader#load_all!` scans the
+  path above and registers what it finds, but no CLI or server startup
+  currently calls it, so a file dropped in `~/.rubino/tools/` has no effect
+  until something invokes the loader.
+- Once registered, `Registry.register` keys on `tool.name`, so a custom tool
+  sharing a built-in's name silently overwrites it.
+- `risk_level` drives the same `:low`/`:medium`/`:high` approval pipeline as
+  built-in tools — an unrecognized value is treated as non-risky (no approval
+  prompt), so stick to the three documented levels.
+- `execute do |args| ... end` receives a **symbol-keyed** arguments hash
+  (arguments are normalized to symbols before any tool's `call` runs).
+- Can execute any system command or Ruby code.
 
 ---
 ## Inline Tool Card (`live_card`)

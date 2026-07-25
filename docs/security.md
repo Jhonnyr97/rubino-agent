@@ -18,7 +18,7 @@ Yes. `tools.shell` is **on by default** because the agent ships to run inside an
 5b. **Secret-file write gate** — writing/editing `.env`, `.ssh`, `.aws`, etc requires explicit approval.
 5c. **Agent-home read gate** — reading any file under `~/.rubino` (config, memories, session DB) with `read`/`grep`/`glob` requires explicit approval. Skill `load` is not gated.
 6. **Command allowlist** (prefix match) — pre-approved commands → allow. Then the **read-only auto-allow** at the same seam: a shell command the parser can prove read-only (see [Auto-allowed read-only commands](#auto-allowed-read-only-commands)) → allow.
-6c. **Skill write gate** — `skill(action: "create")` requires explicit approval.
+6c. **Skill write gate** — `skill(action:)` with `"create"` / `"edit"` / `"patch"` / `"write_file"` / `"delete"` requires explicit approval (a background review fork's writes go through a separate trusted path and bypass this gate).
 7. **Shell confirm policy** — `confirm_all` → ask; `dangerous_only` → ask only if the command matches a dangerous pattern, else allow.
 8a. **Out-of-workspace write widen** — a structured write targeting outside the workspace prompts; approval adds the directory.
 8b/8c. **Structured edit / code-exec symmetry** — under `dangerous_only`, in-workspace edits and the `ruby` tool auto-run.
