@@ -5,7 +5,7 @@ module Rubino
     # Duck-typed contract for a pluggable memory backend.
     #
     # A backend owns the WRITE path (store / replace / forget), the READ path
-    # the prompt assembler depends on (user_profile / project_context /
+    # the prompt assembler depends on (user_profile /
     # retrieve), and the admin surface that powers `rubino memory ...`
     # (list / find). The method set is the union of what the rest of the gem
     # already calls today — extracting this interface is a mechanical refactor,
@@ -57,11 +57,6 @@ module Rubino
       # User-profile text (String) or nil.
       def user_profile
         raise NotImplementedError, "#{self.class} must implement #user_profile"
-      end
-
-      # Project-context text (String) or nil.
-      def project_context
-        raise NotImplementedError, "#{self.class} must implement #project_context"
       end
 
       # Memories relevant to the turn. `query` lets a relevance-aware backend

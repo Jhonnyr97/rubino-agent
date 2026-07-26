@@ -26,8 +26,20 @@ The agent loop, the in-chat `/memory` view, the `/status` panel, the `rubino mem
 One declarative **fact** per row. Facts carry a `kind` (`user_profile`, `preference`, `fact`, `project`, `env`, …), the source session, a confidence, optional entity tags, and bi-temporal validity columns (`valid_from` / `valid_to`).
 
 - **User profile** (`user_profile` facts) — durable facts about you, metered against `memory.user_char_limit`.
-- **Project context** (`project` / `env` facts) — facts about the codebase/environment.
+- **Project/codebase facts** (`project` / `env` facts) — tagged as project-related, but recalled from the same **global** pool as everything else (see below).
 - **General facts** — everything else.
+
+**Memory is global, not scoped per directory or project.** There is one fact
+store per rubino installation; nothing partitions recall by the directory
+rubino was launched from. A fact saved while working in one repo can surface
+in a session started in a completely unrelated one — this matches Hermes and
+Codex, whose own built-in memory pipelines are likewise global (Codex's
+`cwd`-based filtering, for example, scopes session/thread **listing**, not
+memory recall). The upside: durable facts about *you* (preferences, working
+style) follow you everywhere instead of needing to be re-taught in every repo.
+The tradeoff: with a short/generic query, recall falls back to plain recency,
+so what surfaces can be whatever you saved most recently in *any* project —
+not necessarily this one.
 
 ### How facts are extracted (write path)
 
@@ -90,7 +102,7 @@ The agent persists facts autonomously via the `memory` tool (gated by `tools.mem
 - `action: add` — record a new fact.
 - `action: replace` — supersede an existing fact (`old_text` selects it).
 - `action: remove` — hard-delete a fact.
-- `target: user` writes the user profile; `target: project` records a durable project/codebase fact (surfaced as `[Project Context]`); `target: memory` writes general memory.
+- `target: user` writes the user profile; `target: project` tags a durable project/codebase fact (kind: `project` — recalled from the same global pool as everything else, not a separate per-project context); `target: memory` writes general memory.
 
 The tool stores **one atomic fact per call** — separate facts go in separate calls so each can be superseded or forgotten independently. Every write is confirmed deterministically in chat by the tool-result line, e.g.:
 

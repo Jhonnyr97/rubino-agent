@@ -312,7 +312,10 @@ memory:
   auto_extract_interval: 10  # throttle inter-turn extraction to ~every N turns (nil/<=1 = every turn)
   auto_save: true
   user_profile_enabled: true
-  project_context_enabled: true
+  project_context_enabled: true  # AGENTS.md/CLAUDE.md/.rubino.md/.cursorrules file discovery,
+                                  # injected as "# Project Context" (unrelated to the SQLite
+                                  # backend's "project"/"env" kind facts, which recall from the
+                                  # same global pool as everything else — see docs/memory.md)
   memory_char_limit: 2200    # injection budget at RETRIEVAL time
   user_char_limit: 1375
   ingest_char_limit: null    # cap on the live set at STORE time (null = unbounded)

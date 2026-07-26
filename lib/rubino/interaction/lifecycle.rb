@@ -261,7 +261,6 @@ module Rubino
           backend = Memory::Backends.build(config: @config)
           context = {
             user_profile: backend.user_profile,
-            project_context: backend.project_context,
             relevant_memories: backend.retrieve(session_id: @session[:id], query: query)
           }
           recalled = context[:relevant_memories]

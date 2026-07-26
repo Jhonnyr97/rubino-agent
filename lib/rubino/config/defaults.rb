@@ -410,6 +410,11 @@ module Rubino
           "auto_extract_interval" => 10,
           "auto_save" => true,
           "user_profile_enabled" => true,
+          # Gates PromptAssembler#load_project_context — the AGENTS.md/CLAUDE.md/
+          # .rubino.md/.cursorrules FILE discovery injected as "# Project Context"
+          # (Context::FileDiscovery). Despite the shared name, this is UNRELATED
+          # to the SQLite backend's "project"/"env" KIND facts (those recall from
+          # the same global pool as every other fact — see docs/memory.md).
           "project_context_enabled" => true,
           "memory_char_limit" => 2200,
           "user_char_limit" => 1375,

@@ -29,7 +29,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
     # review fork, stubbed to a no-op here via the nil system prompt).
     let(:backend) do
       bk = instance_double(Rubino::Memory::Backends::Sqlite)
-      allow(bk).to receive_messages(user_profile: nil, project_context: nil, retrieve: [])
+      allow(bk).to receive_messages(user_profile: nil, retrieve: [])
       bk
     end
 

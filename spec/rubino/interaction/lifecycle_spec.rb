@@ -337,13 +337,13 @@ RSpec.describe Rubino::Interaction::Lifecycle do
     it "routes recall through the configured memory backend, passing the query" do
       backend = instance_double(
         Rubino::Memory::Backends::Sqlite,
-        user_profile: "UP", project_context: "PC", retrieve: %i[m1]
+        user_profile: "UP", retrieve: %i[m1]
       )
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
       expect(backend).to receive(:retrieve).with(session_id: "sess-1", query: "hello")
 
       result = lifecycle.send(:load_memory, "hello")
-      expect(result).to eq(user_profile: "UP", project_context: "PC", relevant_memories: %i[m1])
+      expect(result).to eq(user_profile: "UP", relevant_memories: %i[m1])
     end
 
     it "returns an empty hash when memory is disabled" do

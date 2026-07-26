@@ -17,7 +17,7 @@ RSpec.describe Rubino::Memory::SqliteGraph do
   def memory_cfg(overrides = {})
     {
       "enabled" => true, "backend" => "sqlite",
-      "user_profile_enabled" => true, "project_context_enabled" => true,
+      "user_profile_enabled" => true,
       "memory_char_limit" => 4000, "user_char_limit" => 1375,
       "sqlite" => { "vector" => false }
     }.merge(overrides)

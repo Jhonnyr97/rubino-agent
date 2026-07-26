@@ -31,7 +31,7 @@ RSpec.describe Rubino::Commands::Handlers::Memory do
     test_configuration(
       "memory" => {
         "enabled" => true, "backend" => "sqlite",
-        "user_profile_enabled" => true, "project_context_enabled" => true,
+        "user_profile_enabled" => true,
         "memory_char_limit" => 2200, "user_char_limit" => 1375,
         "sqlite" => { "vector" => false }
       }

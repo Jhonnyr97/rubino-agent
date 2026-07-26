@@ -32,7 +32,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "ignore_rules" do
     described_class.new(
       session: session,
       memory_context: empty_memory,
-      config: test_configuration("memory" => { "project_context_enabled" => true }),
+      config: test_configuration,
       ignore_rules: ignore_rules
     ).build.first[:content]
   end

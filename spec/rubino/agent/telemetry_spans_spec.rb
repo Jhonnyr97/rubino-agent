@@ -204,7 +204,7 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
   describe "Lifecycle → search_memory span" do
     it "records the recall with a relevant-memories count and no query text by default" do
       config = test_configuration("memory" => { "enabled" => true })
-      backend = double("MemoryBackend", user_profile: nil, project_context: nil,
+      backend = double("MemoryBackend", user_profile: nil,
                                         retrieve: [{ text: "fact one" }, { text: "fact two" }])
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
       lifecycle = Rubino::Interaction::Lifecycle.new(
@@ -230,7 +230,7 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
     it "records the retrieved facts as a gen_ai.retrieval.documents event under capture_content" do
       allow(Rubino::Telemetry).to receive(:capture_content?).and_return(true)
       config = test_configuration("memory" => { "enabled" => true })
-      backend = double("MemoryBackend", user_profile: nil, project_context: nil,
+      backend = double("MemoryBackend", user_profile: nil,
                                         retrieve: [{ id: "f1", kind: "project", content: "uses Kamal" }])
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
       lifecycle = Rubino::Interaction::Lifecycle.new(
@@ -248,7 +248,7 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
 
     it "marks the recall a miss when nothing relevant is injected" do
       config = test_configuration("memory" => { "enabled" => true })
-      backend = double("MemoryBackend", user_profile: nil, project_context: nil, retrieve: [])
+      backend = double("MemoryBackend", user_profile: nil, retrieve: [])
       allow(Rubino::Memory::Backends).to receive(:build).and_return(backend)
       lifecycle = Rubino::Interaction::Lifecycle.new(
         session: { id: "sess-4" }, event_bus: Rubino::Interaction::EventBus.new,
@@ -370,7 +370,7 @@ RSpec.describe "Telemetry spans" do # rubocop:disable RSpec/DescribeClass
         ] }
     end
     let(:backend) do
-      double("MemoryBackend", user_profile: nil, project_context: nil,
+      double("MemoryBackend", user_profile: nil,
                               retrieve: [{ id: "a", kind: "project", content: "runs on Incus VMs" }],
                               last_retrieval: explain)
     end

@@ -149,15 +149,6 @@ module Rubino
           text.length > limit ? text[0...limit] : text
         end
 
-        def project_context
-          return nil unless @config.dig("memory", "project_context_enabled")
-
-          rows = live_dataset.where(kind: %w[project env]).order(Sequel.desc(:created_at)).limit(10).all
-          return nil if rows.empty?
-
-          rows.map { |r| r[:text] }.join("\n")
-        end
-
         # HYBRID recall over LIVE facts: FTS5/BM25 on `query` (and vector KNN when
         # available) fused via RRF and kind-weighted as the direct relevance
         # ranking, then graph/recency-supplemented and greedily packed under the

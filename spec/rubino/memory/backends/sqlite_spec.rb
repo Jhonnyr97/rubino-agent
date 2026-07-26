@@ -11,7 +11,7 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
   def default_memory_cfg(overrides = {})
     {
       "enabled" => true, "backend" => "sqlite",
-      "user_profile_enabled" => true, "project_context_enabled" => true,
+      "user_profile_enabled" => true,
       "memory_char_limit" => 2200, "user_char_limit" => 1375,
       "sqlite" => { "vector" => false }
     }.merge(overrides)
@@ -291,17 +291,11 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
     end
   end
 
-  describe "#user_profile / #project_context" do
+  describe "#user_profile" do
     it "concats live user_profile facts under the user budget" do
       backend.store(kind: "user_profile", content: "User name is Nilthon.")
       backend.store(kind: "user_profile", content: "User is a Rails engineer.")
       expect(backend.user_profile).to include("Nilthon", "Rails engineer")
-    end
-
-    it "returns project + env facts for project_context" do
-      backend.store(kind: "project", content: "Uses Capistrano for deploy.")
-      backend.store(kind: "env", content: "Runs on cloud VMs.")
-      expect(backend.project_context).to include("Capistrano", "cloud")
     end
 
     it "excludes superseded facts from user_profile" do

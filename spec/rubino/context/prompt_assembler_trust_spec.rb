@@ -29,7 +29,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "folder-trust" do
     described_class.new(
       session: session,
       memory_context: empty_memory,
-      config: test_configuration("memory" => { "project_context_enabled" => true })
+      config: test_configuration
     ).build.first[:content]
   end
 

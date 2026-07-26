@@ -15,10 +15,13 @@ module Rubino
       VALID_ACTIONS = %w[add replace remove].freeze
       VALID_TARGETS = %w[memory user project].freeze
 
-      # target → memory kind. "user" is the user_profile slot; "project" is the
-      # durable project/codebase slot (surfaced as [Project Context]); "memory"
-      # is the catch-all "fact" kind. Other kinds (preference, env, …) are
-      # written by the background review fork, not directly through this tool.
+      # target → memory kind. "user" is the user_profile slot; "project" tags a
+      # fact as project/codebase-related (kind: "project", recalled through the
+      # same global pool as everything else — NOT a separate per-project scope,
+      # matching Hermes/Codex: memory here is one global store, not partitioned
+      # per directory); "memory" is the catch-all "fact" kind. Other kinds
+      # (preference, env, …) are written by the background review fork, not
+      # directly through this tool.
       TARGET_TO_KIND = {
         "memory" => "fact", "user" => "user_profile", "project" => "project"
       }.freeze
@@ -30,17 +33,18 @@ module Rubino
       describe "Persist facts across sessions. Use action=add to record a new fact, " \
                   "replace to update an existing fact (substring match on old_text), " \
                   "or remove to delete one. target=user writes to the user profile; " \
-                  "target=project records a durable project/codebase fact (surfaced as " \
-                  "[Project Context]); target=memory writes to general memory. " \
-                  "Store ONE atomic fact per call — make separate calls for separate " \
-                  "facts so each can be superseded or forgotten independently. " \
+                  "target=project tags a durable project/codebase fact; " \
+                  "target=memory writes to general memory. All facts recall from the " \
+                  "same global store regardless of target or which directory rubino was " \
+                  "run from. Store ONE atomic fact per call — make separate calls for " \
+                  "separate facts so each can be superseded or forgotten independently. " \
                   "Content is scanned for prompt-injection / exfiltration patterns and " \
                   "subject to a character budget — refusals are reported in the output."
 
       params do
         string :action, enum: VALID_ACTIONS, description: "add, replace, or remove"
         string :target, enum: VALID_TARGETS,
-                        description: "memory (general), user (user profile), or project (durable project/codebase fact)"
+                        description: "memory (general), user (user profile), or project (tags a project/codebase fact)"
         string :content, description: "New content (required for add and replace)"
         string :old_text, description: "Substring of existing memory to match (required for replace and remove)"
         array :entities, description: "Optional: key entity names mentioned in this fact " \

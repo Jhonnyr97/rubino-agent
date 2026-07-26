@@ -276,7 +276,7 @@ Parameters: todos[] (content, status, priority)
 
 ### memory
 
-Persist facts across sessions. `action=add` records a new fact, `replace` updates an existing one, `remove` deletes one. `target=user` writes the user profile; `target=project` records a durable project/codebase fact (surfaced as `[Project Context]`); `target=memory` writes general memory. An optional `entities` array names key entities in the fact (people, projects, tools, systems) to feed the memory graph — consulted only when `memory.sqlite.graph_extraction` is `supplied`, otherwise entities are derived automatically and it can be omitted. Content is scanned for prompt-injection / exfiltration patterns and subject to a character budget.
+Persist facts across sessions. `action=add` records a new fact, `replace` updates an existing one, `remove` deletes one. `target=user` writes the user profile; `target=project` tags a durable project/codebase fact; `target=memory` writes general memory. All facts recall from the same global store regardless of target or which directory rubino was run from. An optional `entities` array names key entities in the fact (people, projects, tools, systems) to feed the memory graph — consulted only when `memory.sqlite.graph_extraction` is `supplied`, otherwise entities are derived automatically and it can be omitted. Content is scanned for prompt-injection / exfiltration patterns and subject to a character budget.
 
 ```
 Risk: low
