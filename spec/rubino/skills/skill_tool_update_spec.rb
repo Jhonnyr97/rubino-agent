@@ -20,7 +20,13 @@ RSpec.describe Rubino::Skills::SkillTool do
   let(:registry) { Rubino::Skills::Registry.new(config: config) }
   let(:tool)     { described_class.new(registry: registry) }
 
+  # SkillTool's default "load" action resolves enablement through
+  # Skills::StateRepository, which queries Rubino.database — the real
+  # RUBINO_HOME SQLite, not migrated in a clean test environment (no
+  # `skill_states` table). Point it at the migrated in-memory test DB,
+  # mirroring spec/rubino/skills/skills_spec.rb and spec/support/api_request_helper.rb.
   before do
+    with_test_db
     allow(Rubino).to receive(:configuration).and_return(config)
     allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
   end
