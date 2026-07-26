@@ -920,7 +920,8 @@ module Rubino
         # AGENTS.md / skills.
         setup_workspace_and_trust!(ui, interactive: true)
 
-        runner = build_runner(session_id: session_resolver.resolve_session_id(auto_resume: true), ui: ui)
+        auto_resume = Rubino.configuration.chat_auto_resume?
+        runner = build_runner(session_id: session_resolver.resolve_session_id(auto_resume: auto_resume), ui: ui)
 
         # Scope tier-2 paste files under the CURRENT session's artifacts dir
         # (<home>/sessions/<id>/paste_N.txt). The closure reads the local

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`chat.auto_resume` config to opt out of bare-`chat` auto-resume.** A bare
+  `rubino chat` (no `--new`/`--resume`/`--continue`) has resumed the most
+  recent resumable session for the launch dir by default since #99; that
+  default is now a documented config knob (`chat.auto_resume`, default
+  `true`) instead of being hardcoded, so it can be turned off to always start
+  fresh. Explicit `--resume`/`--continue`/`--session` are unaffected either
+  way.
+
 ## [0.5.3] - 2026-07-26
 
 ### Added

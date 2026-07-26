@@ -142,6 +142,16 @@ model — at the defaults it is the primary model (e.g. the shipped default
 `openai/gpt-4.1`), unchanged; set `provider`/`model`/`base_url` to run
 compaction summaries on a different (OpenAI-compatible) endpoint.
 
+### chat
+
+```yaml
+chat:
+  auto_resume: true   # Bare `rubino chat` (no --new/--resume/--continue) resumes the last
+                       # session for the launch dir instead of starting fresh. Set to false
+                       # to make a bare `chat` always start new (explicit --resume/--continue
+                       # /--session are unaffected either way).
+```
+
 ### agent
 
 ```yaml

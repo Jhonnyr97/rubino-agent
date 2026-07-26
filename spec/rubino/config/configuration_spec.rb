@@ -80,6 +80,17 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  describe "#chat_auto_resume?" do
+    it "defaults to true (bare chat auto-resumes the last session for the dir)" do
+      expect(config.chat_auto_resume?).to be true
+    end
+
+    it "only an explicit false disables auto-resume" do
+      cfg = test_configuration("chat" => { "auto_resume" => false })
+      expect(cfg.chat_auto_resume?).to be false
+    end
+  end
+
   describe "notification accessors (attention bell + command hook)" do
     it "defaults: enabled, bell on, no command, 10s long-turn threshold" do
       expect(config.notifications_enabled?).to be true

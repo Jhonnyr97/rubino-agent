@@ -165,6 +165,16 @@ module Rubino
           # endpoint) to get semantic recall with NO paid API — local-first,
           # off by default. See docs/memory.md.
         },
+        "chat" => {
+          # A bare `rubino chat` (no --new/--resume/--continue) auto-resumes the
+          # most recent resumable session for the launch dir (#99) instead of
+          # starting fresh, so closing the terminal and reopening it in the
+          # same project continues where you left off. Set to false to make a
+          # bare `chat` always start a new session (the old --new becomes the
+          # implicit default); explicit --resume/--continue/--session are
+          # unaffected either way.
+          "auto_resume" => true
+        },
         "agent" => {
           # OUTER rail on tool iterations, enforced in IterationBudget alongside
           # max_tool_iterations (#414): the budget caps at min(max_tool_iterations,

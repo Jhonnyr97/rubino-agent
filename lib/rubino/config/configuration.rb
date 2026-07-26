@@ -110,6 +110,13 @@ module Rubino
         value.positive? ? value : UI::PasteStore::DEFAULT_THRESHOLD_TOKENS
       end
 
+      # -- Chat section --
+      # A bare `chat` auto-resumes the last session for the launch dir unless
+      # explicitly disabled (see config/defaults.rb "chat" for the rationale).
+      def chat_auto_resume?
+        dig("chat", "auto_resume") != false
+      end
+
       # -- Notifications section (UI::Notifier: attention bell + hook) --
       # enabled/bell are on unless explicitly false; command is nil unless a
       # non-empty string is set; min_turn_seconds falls back to the default.
