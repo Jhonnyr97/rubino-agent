@@ -27,8 +27,11 @@ module Rubino
     #   - No lock (`git worktree lock`) and no age-based stale-worktree pruner
     #     (Hermes' #7, lower priority per the build brief) — left as a
     #     follow-up. A worktree from a killed process is simply left behind
-    #     (see #cleanup! docs): an acceptable cost, never a corruption risk,
-    #     since nothing here ever touches the user's real checkout.
+    #     (see #cleanup! docs): an acceptable (disk-only) cost, never a
+    #     corruption risk — the one write this class makes to the real
+    #     checkout is the one-line `.gitignore` append (#ensure_gitignore_entry!,
+    #     best-effort, never blocks isolation); everything else (every tool
+    #     call for the session) lands in the isolated worktree instead.
     #   - No `.worktreeinclude` (copying gitignored files into the worktree) —
     #     not requested and adds real attack surface (path traversal /
     #     symlink-escape) for a feature nobody asked for yet.

@@ -527,7 +527,7 @@ module Rubino
             base_url = resolve_embedding_base_url(provider, cfg)
 
             llm = RubyLLM::Configuration.new
-            apply_embedding_credentials!(llm, provider, cfg)
+            apply_embedding_credentials!(llm, provider, cfg, base_url)
             set_provider_base_url(llm, provider, base_url) unless base_url.empty?
             llm.default_embedding_model = model unless model.empty?
 
@@ -559,11 +559,11 @@ module Rubino
         # config's own key, else the provider block, else ENV, else a placeholder
         # (local/custom gateways accept any bearer). Independent of whether the
         # main adapter has configured RubyLLM yet.
-        def apply_embedding_credentials!(llm, provider, cfg)
+        def apply_embedding_credentials!(llm, provider, cfg, base_url)
           setter = "#{provider}_api_key"
           return unless llm.respond_to?(setter)
 
-          key = resolve_embedding_api_key(provider, cfg)
+          key = resolve_embedding_api_key(provider, cfg, base_url)
           llm.public_send("#{setter}=", key) unless key.empty?
         rescue NoMethodError
           nil
@@ -576,12 +576,20 @@ module Rubino
         # "Invalid API key" and vector recall silently degrades. So ENV is used
         # ONLY for the default hosted endpoint; a redirected one reuses the main
         # model provider's key (usually the same gateway) before any placeholder.
-        def resolve_embedding_api_key(provider, cfg)
+        #
+        # +base_url+ is the CALLER's already-resolved value (#resolve_embedding_base_url,
+        # own base_url else the provider block's) — not re-derived from cfg["base_url"]
+        # alone, so this agrees with what the call is actually redirected to. A
+        # provider-block-only redirect (aux config sets neither api_key nor
+        # base_url, but providers.<name>.base_url does) previously read this
+        # method's OWN narrower base_url (cfg["base_url"], always blank in that
+        # case) and concluded "no redirect" — handing the redirected endpoint the
+        # hosted ENV key it rejects.
+        def resolve_embedding_api_key(provider, cfg, base_url)
           key = cfg["api_key"].to_s.strip
           key = @config.dig("providers", provider, "api_key").to_s.strip if key.empty?
           return key unless key.empty?
 
-          base_url = cfg["base_url"].to_s.strip
           # No custom endpoint → the provider's hosted default, where the ambient
           # ENV key is the right credential.
           return ENV.fetch("#{provider.upcase}_API_KEY", "").to_s.strip if base_url.empty?

@@ -844,7 +844,7 @@ On a clean session exit:
 
 A launch directory that isn't a git repository — or any other git failure (an empty/unborn repo with no commit yet, `git worktree add` refusing) — degrades gracefully: the session still starts, unredirected, exactly as if `worktree.enabled` were `false`, with a one-line notice explaining why.
 
-Not yet implemented (deliberately deferred, not required for the core create → redirect → clean-or-keep lifecycle above): locking the worktree for the session's duration (`git worktree lock`) and an age-based pruner for orphaned worktrees left behind by a killed (`kill -9`) process. A leftover, un-pruned `.worktrees/rubino-*` directory from a crash is an accepted (disk-only) cost — it never corrupts your real checkout, since nothing in this feature ever writes to it.
+Not yet implemented (deliberately deferred, not required for the core create → redirect → clean-or-keep lifecycle above): locking the worktree for the session's duration (`git worktree lock`) and an age-based pruner for orphaned worktrees left behind by a killed (`kill -9`) process. A leftover, un-pruned `.worktrees/rubino-*` directory from a crash is an accepted (disk-only) cost — it never corrupts your real checkout. The one write this feature does make to your real checkout is the one-line `.gitignore` append in step 2 above (best-effort — a permissions hiccup there degrades to a cosmetic gap, never blocks isolation); nothing else here ever touches it — every read/write/edit/grep/glob/shell call for the session lands in the isolated worktree instead.
 
 ### otel
 

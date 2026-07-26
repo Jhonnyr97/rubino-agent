@@ -108,12 +108,42 @@ module Rubino
           end
       end
 
+      # The stable directory identity used to stamp/scope session cwd (creation,
+      # per-cwd resume, `sessions list`) — see Session::Repository#default_cwd.
+      # Captured once per boot via #capture_session_root!, called at the very
+      # top of CLI::ChatCommand#setup_workspace_and_trust!, BEFORE
+      # Session::Worktree.setup! can redirect primary_root at an isolated
+      # worktree path. Falls back live to primary_root when never captured
+      # (every spec, and any boot path that skips that call) — byte-identical
+      # to today. Without this, worktree.enabled stamps a fresh session's cwd
+      # to a throwaway `.worktrees/rubino-<id>` path that is DELETED at session
+      # end, so no later launch from the real dir could ever auto-resume it,
+      # and a repo with worktree.enabled could never auto-resume ANY session
+      # (each run gets a brand-new random worktree path that matches nothing).
+      def session_root
+        @session_root || primary_root
+      end
+
+      def capture_session_root!
+        @session_root = primary_root
+      end
+
+      # Clears ONLY the captured session root, restoring #session_root to its
+      # live primary_root passthrough. Used by the global spec before-hook so
+      # a #capture_session_root! call in one example (e.g. exercising
+      # setup_workspace_and_trust!) never leaks into the next, WITHOUT wiping
+      # added roots or the thread-local cwd another before/around hook set up.
+      def reset_session_root!
+        @session_root = nil
+      end
+
       # Test/teardown hook: drop all added roots AND clear this thread's session
       # cwd (the primary is always derived live from config/cwd, so it can't be
       # reset here).
       def reset!
         @mutex.synchronize { @added = [] }
         reset_cwd!
+        reset_session_root!
       end
 
       # Clears ONLY the thread-local session cwd, leaving added roots intact.

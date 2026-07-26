@@ -463,13 +463,18 @@ module Rubino
         SecureRandom.uuid
       end
 
-      # The directory to stamp a new session with: the workspace primary root
-      # (terminal.cwd when set, else the process cwd) — the same value the
-      # sandbox, @-picker and shell agree is "the" root. Defensive fallback to
-      # Dir.pwd if Workspace isn't loaded (e.g. a bare repo spec).
+      # The directory to stamp a new session with: the STABLE session root
+      # (terminal.cwd when set, else the process cwd, captured once at boot —
+      # see Workspace#session_root), not the live workspace primary root.
+      # They diverge only when worktree.enabled redirects primary_root at an
+      # isolated, throwaway worktree path; using that path here would stamp
+      # every session's cwd with a directory that gets deleted at session end
+      # and never recurs, permanently breaking per-cwd auto-resume/list.
+      # Defensive fallback to Dir.pwd if Workspace isn't loaded (e.g. a bare
+      # repo spec).
       def default_cwd
         if defined?(Rubino::Workspace)
-          Rubino::Workspace.primary_root
+          Rubino::Workspace.session_root
         else
           Dir.pwd
         end

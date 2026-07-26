@@ -112,6 +112,13 @@ RSpec.configure do |config|
 
   config.before do
     Rubino.reset!
+    # Workspace.session_root is captured (once) by #capture_session_root! in
+    # production boot, outside Rubino.reset!'s reach — an example that
+    # exercises that path (e.g. setup_workspace_and_trust!) would otherwise
+    # leak its captured root into every later example under config.order =
+    # :random. Only this ivar is cleared here; added roots / thread-local cwd
+    # stay opt-in via each spec's own Workspace.reset!, unchanged.
+    Rubino::Workspace.reset_session_root!
     # RubyLLM keeps a PROCESS-GLOBAL config (RubyLLM.config) that Rubino.reset!
     # does NOT clear. A spec building a non-isolated adapter (isolate_config:
     # false) — e.g. an openai_compatible one — writes openai_api_base/key etc.

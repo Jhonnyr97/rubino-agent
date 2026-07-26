@@ -143,6 +143,30 @@ RSpec.describe Rubino::Session::Worktree do
       wt&.cleanup!
     end
 
+    it "does NOT redirect session cwd stamping: a new session is still scoped to the real repo, " \
+       "not the throwaway worktree path" do
+      enable_worktree!
+      # Mirrors CLI::ChatCommand#setup_workspace_and_trust!, which captures
+      # the session root BEFORE calling Session::Worktree.setup! (see
+      # Workspace#session_root docs) — without that ordering, every session
+      # created under worktree.enabled would stamp its cwd to a path that
+      # gets deleted at session end and never recurs, permanently breaking
+      # per-cwd auto-resume/list (the bug this test guards against).
+      Rubino::Workspace.capture_session_root!
+
+      wt = described_class.setup!
+      expect(Rubino::Workspace.primary_root).to eq(wt.path)
+
+      repository = Rubino::Session::Repository.new(db: test_database.db)
+      session = repository.create(source: "cli")
+
+      expect(session[:cwd]).to eq(repo)
+      expect(session[:cwd]).not_to eq(wt.path)
+    ensure
+      wt&.cleanup!
+      Rubino::Workspace.reset_session_root!
+    end
+
     it "degrades gracefully — no isolation, no crash — when the launch dir is not a git repository" do
       dir = Dir.mktmpdir("rubino_worktree_nongit")
       Rubino.configuration.set("worktree", "enabled", true)

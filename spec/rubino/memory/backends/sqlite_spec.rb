@@ -432,8 +432,36 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
         }
       )
       b = described_class.new(config: cfg, db: db)
-      key = b.send(:resolve_embedding_api_key, "openai", cfg.auxiliary_config("embedding"))
+      emb_cfg = cfg.auxiliary_config("embedding")
+      base_url = b.send(:resolve_embedding_base_url, "openai", emb_cfg)
+      key = b.send(:resolve_embedding_api_key, "openai", emb_cfg, base_url)
       expect(key).to eq("gw-key")
+    end
+
+    it "also detects a PROVIDER-BLOCK-ONLY redirect for api_key purposes, not just the aux config's own base_url" do
+      # auxiliary.embedding sets neither api_key nor base_url — only
+      # providers.openai.base_url redirects the call (the same "inherits the
+      # resolved provider's own base_url" case as the test above). Before this
+      # fix, #resolve_embedding_api_key re-derived "is this redirected?" from
+      # cfg["base_url"] alone (always blank here), concluded "no redirect", and
+      # handed the redirected local gateway the hosted ENV key it rejects.
+      ENV["OPENAI_API_KEY"] = "sk-hosted-should-not-be-used"
+      cfg = test_configuration(
+        "model" => { "provider" => "openai" },
+        "providers" => { "openai" => { "base_url" => "http://127.0.0.1:8000/v1" } },
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => { "embedding" => { "provider" => "openai", "model" => "bge-m3" } }
+      )
+      b = described_class.new(config: cfg, db: db)
+      emb_cfg = cfg.auxiliary_config("embedding")
+      base_url = b.send(:resolve_embedding_base_url, "openai", emb_cfg)
+
+      key = b.send(:resolve_embedding_api_key, "openai", emb_cfg, base_url)
+
+      expect(key).not_to eq("sk-hosted-should-not-be-used")
+      expect(key).to eq("local")
+    ensure
+      ENV.delete("OPENAI_API_KEY")
     end
 
     it "inherits the resolved provider's own base_url when auxiliary.embedding sets no base_url of its own (the leak fix)" do

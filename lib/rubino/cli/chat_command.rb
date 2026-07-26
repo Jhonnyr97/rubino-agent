@@ -2940,6 +2940,13 @@ module Rubino
       # a system prompt (so an untrusted dir's AGENTS.md/skills are withheld).
       # +interactive+ false (one-shot/-q) skips the prompt entirely.
       def setup_workspace_and_trust!(ui, interactive:)
+        # Stamp the stable session-cwd identity FIRST, while primary_root is
+        # still the real launch dir — Session::Worktree.setup! below may
+        # redirect primary_root at an isolated worktree path, and session
+        # creation/resume scoping must keep using the real dir, not that
+        # throwaway path (see Workspace#session_root).
+        Rubino::Workspace.capture_session_root!
+
         # worktree.enabled: resolved BEFORE anything below reads
         # Workspace.primary_root, so a successful redirect makes the trust
         # gate, --add-dir, and every tool call downstream see the isolated
