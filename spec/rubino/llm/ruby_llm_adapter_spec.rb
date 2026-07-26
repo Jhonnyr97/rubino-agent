@@ -523,7 +523,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   describe "native anthropic: config-based api_key/base_url (no env var set)" do
     let(:cfg) do
       test_configuration(
-        "model" => { "provider" => "anthropic", "default" => "claude-sonnet-4-5", "temperature" => 0.3, "context_length" => nil },
+        "model" => { "provider" => "anthropic", "default" => "claude-sonnet-4-5", "temperature" => 0.3,
+                     "context_length" => nil },
         "providers" => { "anthropic" => { "api_key" => "sk-ant-config-only", "base_url" => "http://localhost:8000/v1" } }
       )
     end
@@ -550,7 +551,8 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   describe "native gemini: config-based api_key (no env var set)" do
     it "sets gemini_api_key from config alone" do
       cfg = test_configuration(
-        "model" => { "provider" => "gemini", "default" => "gemini-2.0-flash", "temperature" => 0.3, "context_length" => nil },
+        "model" => { "provider" => "gemini", "default" => "gemini-2.0-flash", "temperature" => 0.3,
+                     "context_length" => nil },
         "providers" => { "gemini" => { "api_key" => "gem-config-only" } }
       )
       described_class.new(model_id: "gemini-2.0-flash", config: cfg)
