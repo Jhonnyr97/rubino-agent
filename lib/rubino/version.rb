@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Rubino
-  VERSION = "0.5.2.2"
+  VERSION = "0.5.3"
 
   # The ONE product tagline (#559). Both chrome surfaces that introduce rubino —
   # the `rubino --help` banner (CLI::Commands::TAGLINE) and the first-run chat

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-26
+
 ### Added
 
 - **Opt-in OpenTelemetry tracing** (`otel:` config, default OFF). With the
@@ -173,6 +175,18 @@
   The older `Rubino.define_tool do...end` block DSL still works too, and
   — unlike the class form — can deliberately shadow a same-named built-in,
   since it registers unconditionally the moment its file loads.
+- **The exit-time `--resume` hint always prints the short id, not the session
+  title.** `print_resume_hint` used to prefer the human-readable title (free
+  text — sometimes a whole sentence, with spaces that break shell copy-paste
+  and no uniqueness guarantee) over the session id. It now always shows the
+  same short 8-char id `print_auto_resume_line` and `find_by_id_or_title`'s
+  prefix match already agree on.
+- **A second paste immediately after a collapsed one no longer vanishes into
+  the first placeholder.** Two consecutive large pastes used to coalesce into
+  the SAME `[Pasted text #N]` chip, silently growing its line count with no
+  visible change — the second paste looked like it did nothing. Each paste is
+  handled independently again: a small one inlines as plain text, a large one
+  gets its own distinct placeholder.
 
 ## [0.5.2.2] - 2026-07-01
 
