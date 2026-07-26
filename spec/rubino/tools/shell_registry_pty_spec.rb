@@ -34,7 +34,11 @@ RSpec.describe Rubino::Tools::ShellRegistry, "#spawn (PTY / interactive mode)" d
     wait_for(entry, "name?")
     registry.write_input(entry, "Alice")
 
-    out = wait_for(entry, "got=Alice")
+    # Wait for the LAST line the child prints — "got=Alice" lands microseconds
+    # before "istty=..." in the same shell invocation, so waiting on the
+    # earlier needle raced the read and could return before the istty= line
+    # was flushed into the buffer, truncating the assertion below.
+    out = wait_for(entry, "istty=")
     expect(out).to include("got=Alice")   # the process RECEIVED our input
     expect(out).to include("istty=yes")   # ...and it ran on a real tty (pipe → "no")
   end
