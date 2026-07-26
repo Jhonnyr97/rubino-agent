@@ -526,6 +526,7 @@ module Rubino
       @database = nil
       @event_bus = nil
       @agent_registry = nil
+      @logger = nil
     end
 
     # Returns the home directory path. Delegates to the SAME resolver the
