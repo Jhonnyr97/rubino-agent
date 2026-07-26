@@ -341,7 +341,25 @@ module Rubino
       # +handoff+ is retained for call-site compatibility but no longer branches:
       # the ONLY handoff caller (chat_command `/new`) is interactive, already
       # covered by the @interactive branch below.
+      #
+      # RUNS AT MOST ONCE per Runner instance (#hang-after-answer). Both
+      # one-shot exit paths (text and --json) call `runner.end_session!`
+      # unconditionally on the success path AND again from their `ensure`
+      # block's best-effort `finalize_oneshot_session!` safety net — a second
+      # call was intended to be a harmless no-op (the DB-status half already
+      # is: Session::Repository#end_session! no-ops an already-ended row), but
+      # this SIDE-EFFECTFUL half had no such guard, so a normal, healthy
+      # `rubino -q` run silently ran the WHOLE memory+skill review agent turn
+      # TWICE — doubling its aux-LLM cost every time, and, when the primary was
+      # unreachable, doubling the wasted dead-primary retry tax too (verified:
+      # each inline call rebuilds its own FallbackChain fresh at the primary,
+      # so two calls means two ~20-30s dead-host probes stacked back to back
+      # before either one's fallback engages).
       def flush_memory_on_session_end!(handoff: false) # rubocop:disable Lint/UnusedMethodArgument
+        return if @memory_flush_done
+
+        @memory_flush_done = true
+
         # Request both surfaces; the job provides the config-intersection gate
         # AND the combined-prompt path when both are enabled.
         surfaces = []
@@ -360,8 +378,38 @@ module Rubino
         if @interactive
           Jobs::Queue.new.enqueue("BackgroundReviewJob", payload, drain_inline: false)
         else
-          Jobs::Handlers::BackgroundReviewJob.new.perform(payload)
+          run_inline_review_bounded!(payload)
         end
+      rescue StandardError
+        nil
+      end
+
+      # The headless one-shot's inline review (#hang-after-answer), bounded by
+      # jobs.inline_review_timeout_seconds (default 90s) so a still-unreachable
+      # backend can't hold a scripted `rubino -q` process hostage indefinitely.
+      # This is the OUTER safety net: the review's OWN FallbackChain already
+      # recovers a single dead primary within agent.api_retry_total_timeout_seconds
+      # (~30s), so the common case never touches this bound at all.
+      #
+      # Runs the job on its own thread and simply stops WAITING at the deadline
+      # rather than killing it: Ruby does not block process exit on a live,
+      # non-joined thread (verified — `exit`/falling off the end never waits
+      # for background threads), so the review may keep working after this
+      # method returns and any memory/skill write it manages to finish still
+      # lands. Nothing is lost, just no longer awaited.
+      def run_inline_review_bounded!(payload)
+        timeout = @config.dig("jobs", "inline_review_timeout_seconds")
+        timeout = timeout.to_f.positive? ? timeout.to_f : 90.0
+
+        thread = Thread.new { Jobs::Handlers::BackgroundReviewJob.new.perform(payload) }
+        # Never let a straggling review thread dump a raw backtrace after this
+        # process has moved on (mirrors Interaction::Polishing#start) — the job
+        # already isolates its own failures; this is belt-and-braces.
+        thread.report_on_exception = false
+        return if thread.join(timeout)
+
+        Rubino.logger&.warn(event: "jobs.background_review.inline_timeout",
+                            session_id: @session[:id], timeout_seconds: timeout)
       rescue StandardError
         nil
       end

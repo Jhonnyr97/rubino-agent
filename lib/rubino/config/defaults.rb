@@ -463,7 +463,28 @@ module Rubino
           # bumping attempts so a genuinely stuck job still goes terminal at
           # max_attempts rather than re-running forever. Generous (15 min) so a
           # legitimately slow aux-LLM job is never yanked out from under itself.
-          "lock_lease_seconds" => 900
+          "lock_lease_seconds" => 900,
+          # Hard wall-clock bound (seconds) on the HEADLESS one-shot's inline
+          # end-of-session review (Agent::Runner#flush_memory_on_session_end! →
+          # BackgroundReviewJob), the single unified memory+skill catch-all that
+          # runs synchronously before a `rubino -q` process can exit (there is
+          # no live REPL/worker to drain it later). That review builds its OWN
+          # fresh provider/model adapter and restarts the fallback chain at the
+          # PRIMARY (by design — every turn deserves a fresh attempt with the
+          # preferred model), so a dead/unreachable primary makes it re-pay the
+          # SAME retry/backoff tax the just-finished visible turn already paid
+          # once. agent.api_retry_total_timeout_seconds (~30s default) bounds
+          # that single retry ladder; this is the OUTER safety net for when even
+          # that isn't enough (every configured fallback also unreachable, or a
+          # slow-but-working local model) — a scripted one-shot caller must get
+          # control back promptly once the VISIBLE answer is already printed,
+          # not hang on best-effort background housekeeping. Runs the review on
+          # its own thread and simply stops WAITING at the deadline: Ruby does
+          # not block process exit on a live non-joined thread, so the review
+          # may keep working in the background and any memory/skill write it
+          # completes before then still lands — nothing is lost, just no longer
+          # awaited.
+          "inline_review_timeout_seconds" => 90
         },
         # Session/spill cleanup (opportunistic at startup, not a cron job).
         # Deletes ENDED sessions older than period_days + their spill files.
