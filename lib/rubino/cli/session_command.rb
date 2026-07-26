@@ -310,8 +310,13 @@ module Rubino
         # Pass the RESOLVED full id, not the user's short id (#352): the
         # Compressor now re-resolves internally too, but feeding it the full id
         # keeps the contract explicit and the not-found path honest.
+        #
+        # force: true — matches the interactive `/compact` slash command
+        # (Commands::Executor#handle_compact). `sessions compact ID` is an
+        # explicit manual override, so it must actually compact even when the
+        # session is under the auto-compaction threshold, not silently no-op.
         compressor = Context::Compressor.new(session_id: session[:id])
-        result = compressor.compact!
+        result = compressor.compact!(force: true)
 
         # A no-op compaction must NOT print the "┄ compacted · saved 0 tok ┄"
         # fake success (#352): a session with nothing to compact (0 messages, or

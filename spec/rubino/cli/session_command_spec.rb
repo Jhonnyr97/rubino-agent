@@ -294,6 +294,34 @@ RSpec.describe Rubino::CLI::SessionCommand do
           expect(e.message).not_to match(/too few messages/i)
         }
     end
+
+    # THIS FIX: `sessions compact ID` is an explicit manual override — like the
+    # interactive `/compact` — and must actually compact a session that clears
+    # the minimum-messages floor but sits under the auto-compaction TOKEN
+    # threshold, instead of silently deferring to the same :below_threshold
+    # no-op the AUTOMATIC path takes. Uses a REAL Compressor (only the paid
+    # SummaryBuilder call is stubbed) so a missing `force: true` on the CLI's
+    # `compact!` call would surface here as a no-op instead of a genuine
+    # compaction.
+    it "actually compacts a session under the auto-compact token threshold (force: true, not a no-op)" do
+      session = repo.create(source: "cli", title: "under threshold", model: "m", provider: "p")
+      store = Rubino::Session::Store.new(db: db.db)
+      # 40 short messages clears the minimum-messages floor (28 by default) but
+      # is nowhere near the token-budget compaction threshold — an UNFORCED
+      # compact! would return a :below_threshold no-op (see the #500 spec
+      # above and Context::Compressor spec's equivalent "no-ops (auto path)").
+      40.times { |i| store.create(session_id: session[:id], role: "user", content: "short #{i}") }
+
+      allow(Rubino::Context::SummaryBuilder).to receive(:new)
+        .and_return(instance_double(Rubino::Context::SummaryBuilder, build: "the summary"))
+
+      sessions_before = db.db[:sessions].count
+      described_class.new.compact(session[:id][0, 8])
+
+      expect(db.db[:sessions].count).to eq(sessions_before + 1) # a child session was forked
+      expect(repo.find(session[:id])[:status]).to eq("compacted")
+      expect(ui.messages.map { |m| m[:level] }).to include(:compression_finished)
+    end
   end
 
   # Item 3: bare `rubino sessions` LISTS (off a TTY) rather than printing the
