@@ -15,6 +15,17 @@
   `[formatter] ...` note — and the session's read-tracker is refreshed with
   the real post-formatter bytes so a follow-up edit isn't spuriously refused
   as "changed on disk since last read". See `docs/configuration.md#formatters`.
+- **`worktree.enabled` now actually isolates a session in a git worktree** (it
+  previously shipped as a dead config key with no reader). When `true` and the
+  launch dir is a git repo, rubino creates `<repo>/.worktrees/rubino-<id>` on a
+  new `rubino/<id>` branch off the repo's current HEAD, redirects the
+  session's workspace root at it, and tells the model (via `prompts.preamble`)
+  to commit its work there. On a clean exit: no commits ⇒ silently removed;
+  one or more commits ⇒ kept, with the path/branch/review commands printed —
+  rubino never merges or pushes this branch itself, only a human does via
+  normal git. A non-git launch dir (or any other git failure) degrades
+  gracefully to running unisolated, exactly like the feature being off. See
+  the `worktree` section in [docs/configuration.md](docs/configuration.md).
 
 - **`chat.auto_resume` config to opt out of bare-`chat` auto-resume.** A bare
   `rubino chat` (no `--new`/`--resume`/`--continue`) has resumed the most

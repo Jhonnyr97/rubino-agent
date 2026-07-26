@@ -811,18 +811,40 @@ prompts:
 > replace the built-in "build" agent. See [agents.md](agents.md). There is
 > deliberately no config-key equivalent.
 
-### clarify / worktree / privacy
+### clarify / privacy
 
 ```yaml
 clarify:
   timeout: 600          # seconds to wait for a clarification answer before proceeding with best judgement
 
-worktree:
-  enabled: false        # run in a git worktree
-
 privacy:
   redact_pii: false
 ```
+
+### worktree
+
+Isolates a session's file-touching work in a throwaway git worktree instead of your checked-out branch — so autonomous/`--yolo` runs ("let it work, I'll review the diff after") are reviewable and discardable via normal git, never touching your real working tree while the agent runs.
+
+```yaml
+worktree:
+  enabled: false        # true = isolate this session in a linked git worktree
+```
+
+Resolved once, at session start, before the agent loop (or any tool call) runs — the same `setup_workspace_and_trust!` chokepoint that seeds `--add-dir` roots and the folder-trust gate. When `enabled: true` and the launch directory is inside a git repository:
+
+1. Creates `<repo_root>/.worktrees/rubino-<id>` on a new `rubino/<id>` branch, branched from the repo's current `HEAD` — captured as a fixed commit SHA (not a moving ref), so a commit landing in your real checkout later in the session can't shift the base out from under the exit-time "any commits?" check. Branching from local `HEAD` (no `fetch`) is deliberate: the worktree is created inside the very checkout you're already sitting in, so local `HEAD` is the freshest ref available — unlike a tool that ships its own separately-updated clone, there's no staleness to correct for.
+2. Appends `.worktrees/` to the repo's `.gitignore` if it isn't already there.
+3. Redirects the session's effective workspace root (`Workspace.primary_root` — the same seam the interactive shell's `cd` already redirects through) at the new worktree path. Every read/write/edit/grep/glob/shell call for the rest of the session resolves against the isolated worktree, not the original checkout.
+4. Appends a short note to the assembled system prompt (the existing `prompts.preamble` layer — no new prompt-injection mechanism) telling the model it's working in an isolated worktree and must commit its work there before the session ends.
+
+On a clean session exit:
+
+- **No commits** ahead of the captured base commit ⇒ the worktree and its branch are removed silently — nothing of value was created. Uncommitted/untracked files alone don't count; only commits survive.
+- **One or more commits** ⇒ both are **kept**, and rubino prints the exact path, branch name, and the `git` commands to review/diff/merge/discard it. **rubino never merges, pushes, or opens a pull request on this branch itself** — a human reviews and merges (or discards) it manually via normal `git` after the session ends.
+
+A launch directory that isn't a git repository — or any other git failure (an empty/unborn repo with no commit yet, `git worktree add` refusing) — degrades gracefully: the session still starts, unredirected, exactly as if `worktree.enabled` were `false`, with a one-line notice explaining why.
+
+Not yet implemented (deliberately deferred, not required for the core create → redirect → clean-or-keep lifecycle above): locking the worktree for the session's duration (`git worktree lock`) and an age-based pruner for orphaned worktrees left behind by a killed (`kill -9`) process. A leftover, un-pruned `.worktrees/rubino-*` directory from a crash is an accepted (disk-only) cost — it never corrupts your real checkout, since nothing in this feature ever writes to it.
 
 ### otel
 

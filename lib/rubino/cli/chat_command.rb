@@ -530,6 +530,13 @@ module Rubino
         # (end_session! rescues internally, no-ops an unpersisted/already-ended
         # row), so re-running it after the success-path call is harmless.
         finalize_oneshot_session!(runner)
+        # worktree.enabled: clean up (silently discard, or print the
+        # kept path/branch) on every one-shot exit path — success, interrupt,
+        # or error — the same "always runs" guarantee as the line above.
+        # No-op when isolation was never active. STDOUT stays answer-only
+        # (dir_notice routes to STDERR headless); ui: nil is fine here — the
+        # headless branch of #dir_notice never touches it.
+        finalize_worktree!(interactive: false)
         recorder&.detach!
         restore_logger(prev_log_io)
       end
@@ -720,6 +727,10 @@ module Rubino
         # it never lingers status=active with a stale owner_pid. Idempotent and
         # best-effort.
         finalize_oneshot_session!(runner)
+        # worktree.enabled: same cleanup as the text path's ensure — goes
+        # to STDERR only (#dir_notice headless branch), so the stdout JSON
+        # contract is untouched.
+        finalize_worktree!(interactive: false)
         recorder&.detach!
         restore_logger(prev_log_io)
       end
@@ -1305,6 +1316,13 @@ module Rubino
         # print_resume_hint no-ops on a nil/empty session, so a brand-new untouched
         # session still prints nothing.
         session_resolver.print_resume_hint(ui, runner.session) if interacted || session_resolver.resuming_session?
+
+        # worktree.enabled: clean up on this clean interactive exit —
+        # silently discards an isolated worktree with no commits, or prints the
+        # kept path/branch (as the LAST line of the session, after the resume
+        # hint, so it isn't lost above later output). No-op when isolation was
+        # never active.
+        finalize_worktree!(ui: ui, interactive: true)
 
         # Field standard: a session that surfaced an AUTH/credential error must
         # NOT report success on exit (git/gh/Claude Code/Codex all exit non-zero
@@ -2922,9 +2940,20 @@ module Rubino
       # a system prompt (so an untrusted dir's AGENTS.md/skills are withheld).
       # +interactive+ false (one-shot/-q) skips the prompt entirely.
       def setup_workspace_and_trust!(ui, interactive:)
+        # worktree.enabled: resolved BEFORE anything below reads
+        # Workspace.primary_root, so a successful redirect makes the trust
+        # gate, --add-dir, and every tool call downstream see the isolated
+        # worktree path as "the" workspace — not the user's real checkout.
+        # Config-gated no-op (nil) when the feature is off, matching today's
+        # behaviour byte-for-byte. @worktree_session is read back by
+        # #finalize_worktree! at every clean session-exit chokepoint.
+        @worktree_session = Session::Worktree.setup!
+        announce_worktree_session(ui, interactive: interactive)
+
         gate = TrustGate.new(ui: ui, interactive: interactive, ignore_rules: opt(:ignore_rules) || false)
 
-        # Primary root first — the dir rubino was launched in.
+        # Primary root first — the dir rubino was launched in (the worktree
+        # path when isolation just redirected it above).
         gate.ensure_trust(Rubino::Workspace.primary_root)
 
         Array(opt(:add_dir)).each do |dir|
@@ -2939,6 +2968,50 @@ module Rubino
         rescue ArgumentError => e
           dir_notice(ui, "--add-dir #{dir}: #{e.message}", interactive: interactive, error: true)
         end
+      end
+
+      # Surfaces the outcome of Session::Worktree.setup! on the right
+      # stream, mirroring #dir_notice: styled ui when interactive, plain STDERR
+      # when headless. @worktree_session is nil when worktree.enabled isn't
+      # set — the common case — so this is a no-op then. When the feature IS
+      # on, either #active? (isolation is live — name the path/branch so the
+      # user knows where their tool calls are actually landing) or #notice
+      # (degraded — a non-git dir or a git failure; the session still starts,
+      # with NO isolation) fires, never both, never neither.
+      def announce_worktree_session(ui, interactive:)
+        session = @worktree_session
+        return unless session
+
+        if session.active?
+          message = "worktree   #{collapse_home(session.path)}  (branch #{session.branch})"
+          dir_notice(ui, message, interactive: interactive)
+        else
+          dir_notice(ui, session.notice, interactive: interactive, error: true)
+        end
+      end
+
+      # Runs on every CLEAN session-exit path (interactive quit, one-shot
+      # success/error/interrupt) — see the call sites in #run_interactive and
+      # the shared one-shot `ensure` blocks. No-ops when worktree isolation was
+      # never active: the common `worktree.enabled: false` case, and
+      # the degraded case, both leave @worktree_session either nil or
+      # #active? false, so Session::Worktree#cleanup! itself no-ops.
+      #
+      # A discarded (no-commits) worktree is silent by design (matches
+      # Session::Worktree#cleanup!'s doc) — nothing to tell the user. A KEPT
+      # worktree prints the ready-made :message naming the exact path/branch
+      # and the `git` commands to review/merge/discard it; this method itself
+      # never merges or pushes anything.
+      def finalize_worktree!(ui: nil, interactive: true)
+        result = @worktree_session&.cleanup!
+        return unless result && result[:kept]
+
+        dir_notice(ui, result[:message], interactive: interactive)
+      rescue StandardError
+        # Best-effort, mirroring #finalize_oneshot_session!: called from every
+        # exit-path ensure/teardown, so a cleanup hiccup must never mask the
+        # run's real outcome or raise out of a signal-adjacent teardown path.
+        nil
       end
 
       # Emits a --add-dir status/error notice on the right stream: the styled ui

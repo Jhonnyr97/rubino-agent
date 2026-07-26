@@ -234,6 +234,14 @@ module Rubino
         dig("clarify", "timeout") || Defaults.dig("clarify", "timeout")
       end
 
+      # -- Worktree section --
+      # Run the session's file-touching work in an isolated git worktree
+      # instead of the user's real checkout (Session::Worktree). Default
+      # false — an explicit true is required to opt in.
+      def worktree_enabled?
+        dig("worktree", "enabled") == true
+      end
+
       # -- Prompts section --
       # The customer-facing preamble prepended to every assembled system
       # prompt. nil/empty disables the layer.
