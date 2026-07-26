@@ -149,6 +149,20 @@ RSpec.describe Rubino::Tools::ReadTool do
     expect(out.bytesize).to be <= 110_000 # cap + footer slack, not the full 200KB
   end
 
+  # `file_read.max_chars` was a dead config key: the tool always used the
+  # hardcoded MAX_OUTPUT_BYTES constant regardless of what was configured.
+  it "honors a CONFIGURED file_read.max_chars, not just the 100_000 default" do
+    Rubino.configuration.set("file_read", "max_chars", 5_000)
+    path = File.join(tmp_dir, "wide_small_cap.txt")
+    # 100 lines × 2000 chars ≈ 200KB rendered — over the configured 5KB cap.
+    File.write(path, Array.new(100) { "x" * 2000 }.join("\n"))
+    out = payload(tool.call("file_path" => path, "limit" => 100))
+    expect(out).to include("window capped at ~5KB")
+    expect(out.bytesize).to be <= 15_000 # cap + footer slack, nowhere near 100KB/200KB
+  ensure
+    Rubino.configuration.set("file_read", "max_chars", nil)
+  end
+
   describe "duplicate-read nudge" do
     let(:tracker) { Rubino::Tools::ReadTracker.new }
 

@@ -368,6 +368,15 @@ module Rubino
         tool_output_compression_logs["enabled"] == true
       end
 
+      # Hard cap on the bytes a single `read` returns (mirrors
+      # tool_output_capture_max_bytes's coerce-to-positive-floor style). Falls
+      # back to the shipped default (100_000, ReadTool::MAX_OUTPUT_BYTES) when
+      # missing/non-positive so a misconfig can't silently disable the cap.
+      def file_read_max_chars
+        value = dig("file_read", "max_chars").to_i
+        value.positive? ? value : Defaults.dig("file_read", "max_chars")
+      end
+
       # -- Security section --
       # Seconds a run blocks on a human approval/clarification before the gate
       # gives up and AUTO-DENIES (freeing the worker thread). nil = wait

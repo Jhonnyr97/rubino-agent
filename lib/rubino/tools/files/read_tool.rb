@@ -21,10 +21,12 @@ module Rubino
 
       DEFAULT_LIMIT  = 2000
       MAX_LINE_WIDTH = 2000
-      # Hard cap on the bytes a single read returns (~25k tokens at 4 bytes/tok,
-      # matching Claude Code's read gate). A window of 2000 lines × 2000 chars
-      # could otherwise build multiple MB in memory and blow up prefill/TTFT;
-      # past this we stop and tell the model to narrow the range or grep.
+      # DEFAULT hard cap on the bytes a single read returns (~25k tokens at 4
+      # bytes/tok, matching Claude Code's read gate) — used when
+      # `file_read.max_chars` is absent/misconfigured. A window of 2000 lines ×
+      # 2000 chars could otherwise build multiple MB in memory and blow up
+      # prefill/TTFT; past this we stop and tell the model to narrow the range
+      # or grep. See #max_output_bytes for the config-driven live value.
       MAX_OUTPUT_BYTES = 100_000
       # Refuse to spill a CONVERTED document larger than this (≈20MB, matching
       # Gemini's cap). Attachments::Classify already caps the SOURCE size; this
@@ -393,6 +395,16 @@ module Rubino
         false
       end
 
+      # Live byte cap for a single read, from config (`file_read.max_chars`)
+      # when wired, else MAX_OUTPUT_BYTES — mirrors the shell tool's
+      # capture_max_bytes resolution style so `file_read.max_chars` is no
+      # longer a dead config key.
+      def max_output_bytes
+        Rubino.configuration.file_read_max_chars
+      rescue StandardError
+        MAX_OUTPUT_BYTES
+      end
+
       # Compact gutter for the TRANSCRIPT body only: line numbers right-aligned
       # to the widest number shown, then two spaces (` 1  # Calc`), instead of
       # the model-facing cat -n gutter (6-wide + tab ≈ 14 columns of padding).
@@ -413,6 +425,7 @@ module Rubino
         last_line   = offset + limit - 1
         last_shown  = offset - 1
         byte_capped = false
+        output_cap  = max_output_bytes
 
         # Open as UTF-8 regardless of the process locale (#273): under a bare
         # C/POSIX locale the default external encoding is US-ASCII, which would
@@ -438,7 +451,7 @@ module Rubino
             # Stop before the window grows past the byte cap (a few thousand
             # very long lines). Better to hand back a bounded head + a "narrow
             # it" footer than to build megabytes the model can't use anyway.
-            if out.bytesize >= MAX_OUTPUT_BYTES
+            if out.bytesize >= output_cap
               byte_capped = true
               break
             end
@@ -452,7 +465,7 @@ module Rubino
           "#{display_path}: offset #{offset} is past end of file (#{total_lines} lines)"
         else
           footer = if byte_capped
-                     "\n[window capped at ~#{MAX_OUTPUT_BYTES / 1000}KB after #{printed} line(s) " \
+                     "\n[window capped at ~#{output_cap / 1000}KB after #{printed} line(s) " \
                        "(lines #{offset}-#{last_shown} of #{total_lines}); continue with " \
                        "offset=#{last_shown + 1}, or grep to target what you need]"
                    elsif total_lines > last_line
