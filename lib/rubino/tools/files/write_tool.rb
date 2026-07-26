@@ -52,6 +52,13 @@ module Rubino
         # the read-gate (r5 B2) and a re-read sees it as authoritative.
         @read_tracker&.note_write(expanded, content)
 
+        # `formatters:` config hook — best-effort, never fails this call. When
+        # a formatter actually ran, report/preview the REAL final on-disk
+        # bytes (not what the model sent) so verb/bytes/lines/preview below
+        # never lie about what's actually there.
+        fmt = run_formatters!(expanded, file_path)
+        content = fmt[:final_content] if fmt && fmt[:final_content]
+
         verb  = existed ? "overwrote" : "created"
         bytes = content.to_s.bytesize
         lines = content.to_s.lines.size
@@ -60,6 +67,7 @@ module Rubino
                    body_kind: :plain }
         preview = content_preview(content)
         result[:body] = preview if preview
+        result[:output] = "#{result[:output]}\n#{fmt[:note]}" if fmt && fmt[:note]
         result
       rescue StandardError => e
         "Error writing #{file_path}: #{e.message}"

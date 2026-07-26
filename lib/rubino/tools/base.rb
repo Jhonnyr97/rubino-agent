@@ -506,6 +506,42 @@ module Rubino
           error_code: :stale_read }
       end
 
+      # ── Post-write formatter hook (`formatters:` config) ──
+
+      # Runs any configured formatter matching +expanded+ (Formatters.run)
+      # right after a SUCCESSFUL write/edit. When the formatter changed the
+      # file, refreshes the read-tracker with the REAL final on-disk bytes
+      # (not what this call itself wrote) so the next edit's stale-read gate
+      # reflects what the formatter actually left behind — the formatter's
+      # own rewrite is otherwise indistinguishable from "changed on disk by
+      # something else" and would spuriously trip r5 B2.
+      #
+      # Returns nil when formatters are unconfigured / nothing matched, else
+      # { note: String or nil, final_content: String or nil } — `final_content`
+      # is the freshly re-read bytes whenever the formatter actually ran
+      # (regardless of whether it changed anything), so a caller that reports
+      # byte/line counts or a content preview (WriteTool) can use the bytes
+      # that are ACTUALLY on disk rather than what the model originally sent.
+      #
+      # NEVER raises: Formatters.run already never raises, and the re-read
+      # here is defensively rescued too, so a formatter can never turn a
+      # successful write/edit into a tool error.
+      def run_formatters!(expanded, display_path)
+        outcome = Formatters.run(expanded, display_path: display_path)
+        return nil unless outcome
+
+        final = begin
+          File.binread(expanded)
+        rescue StandardError
+          nil
+        end
+        @read_tracker&.note_write(expanded, final) if final
+        { note: outcome[:note], final_content: final }
+      rescue StandardError => e
+        Rubino.logger&.warn(event: "formatters.hook_error", error: e.message, error_class: e.class.name)
+        nil
+      end
+
       def overwrite_guard_error(expanded, display_path)
         return nil unless @read_tracker
 

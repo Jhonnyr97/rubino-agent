@@ -153,13 +153,18 @@ module Rubino
         # "changed on disk since last read" (r5 B2).
         @read_tracker&.note_write(expanded, new_content)
 
+        # `formatters:` config hook — best-effort, never fails this call.
+        fmt = run_formatters!(expanded, file_path)
+
         added   = new_string.to_s.lines.size
         removed = old_string.to_s.lines.size
-        { output: "Edit applied: #{replaced_count} replacement(s) in #{file_path}",
-          metrics: "#{replaced_count} replacement#{"s" if replaced_count != 1} · " \
-                   "+#{added * replaced_count} −#{removed * replaced_count}",
-          body: build_diff_preview(old_string, new_string, replaced_count),
-          body_kind: :diff }
+        result = { output: "Edit applied: #{replaced_count} replacement(s) in #{file_path}",
+                   metrics: "#{replaced_count} replacement#{"s" if replaced_count != 1} · " \
+                            "+#{added * replaced_count} −#{removed * replaced_count}",
+                   body: build_diff_preview(old_string, new_string, replaced_count),
+                   body_kind: :diff }
+        result[:output] = "#{result[:output]}\n#{fmt[:note]}" if fmt && fmt[:note]
+        result
       rescue StandardError => e
         # Mirror WriteTool: a read-only/permission-denied target (Errno::EACCES)
         # or any other filesystem error returns a clean, uniform message rather
@@ -201,11 +206,17 @@ module Rubino
         # Refresh-on-own-write so a follow-up edit to this file isn't refused
         # as "changed on disk since last read" (r5 B2).
         @read_tracker&.note_write(expanded, working)
-        { output: "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}",
-          metrics: "#{edits.size} edit#{"s" if edits.size != 1} · " \
-                   "#{applied_count} replacement#{"s" if applied_count != 1}",
-          body: build_multi_diff_preview(edits),
-          body_kind: :diff }
+
+        # `formatters:` config hook — best-effort, never fails this call.
+        fmt = run_formatters!(expanded, file_path)
+
+        result = { output: "Applied #{edits.size} edit(s), #{applied_count} replacement(s) in #{file_path}",
+                   metrics: "#{edits.size} edit#{"s" if edits.size != 1} · " \
+                            "#{applied_count} replacement#{"s" if applied_count != 1}",
+                   body: build_multi_diff_preview(edits),
+                   body_kind: :diff }
+        result[:output] = "#{result[:output]}\n#{fmt[:note]}" if fmt && fmt[:note]
+        result
       rescue StandardError => e
         "Error editing #{file_path}: #{e.message}"
       end

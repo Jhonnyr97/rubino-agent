@@ -741,7 +741,7 @@ commands:
 
 ### formatters
 
-No formatters ship by default (`formatters: {}` — empty). Configure per-glob format commands, run after a write/edit touches a matching file:
+No formatters ship by default (`formatters: {}` — empty; this whole feature is inert until you add a key). Configure per-glob format commands, run after a `write`/`edit` tool call **successfully** touches a matching file:
 
 ```yaml
 formatters:
@@ -750,6 +750,44 @@ formatters:
   "*.ts": "prettier --write"
   "*.py": "black"
 ```
+
+Implemented by `Rubino::Formatters` (`lib/rubino/formatters.rb`), wired into both file-editing tools (`Tools::WriteTool` / `Tools::EditTool`, single-edit and `edits`-array forms alike):
+
+- **Matching.** Each key is a glob (the same engine `permissions:` uses,
+  `Security::PatternMatcher`) matched against the touched file's **basename**,
+  not its full path — `"*.rb"` means "any `.rb` file", regardless of which
+  directory it lives in. The **first** matching key in `formatters:`
+  declaration order wins; only one formatter runs per file. A key mapped to a
+  blank/whitespace command is skipped.
+- **Argument contract.** The file's absolute path is appended as the command's
+  **last shell argument** (shell-escaped) — exactly how you'd type
+  `rubocop -A --fail-level=fatal path/to/file.rb` by hand. There is no
+  `{file}`-style placeholder: every example above already expects the path as
+  a trailing positional argument, so this is both the simplest contract and
+  the one that matches real CLI usage.
+- **Trust.** The command string comes from your own `config.yml` — the same
+  trust tier as `permissions:` patterns and `mcp.servers` commands — so it is
+  **not** approval-gated. It still runs through the identical OS write-jail
+  every shell spawn goes through (`Tools::ShellTool.sandboxed_bash_argv` →
+  `tools.sandbox`): a formatter is a trusted command, not a license to bypass
+  the sandbox.
+- **Execution.** Synchronous — the write/edit call blocks briefly (bounded by
+  a 30s internal timeout; a hung/misconfigured command is TERM'd then KILL'd)
+  so the on-disk content already reflects the formatted result the instant
+  the tool call returns.
+- **Failure handling.** A non-zero exit, a timeout, or a spawn error is
+  best-effort: it **never** fails the write/edit call (the file itself was
+  already written) — it only appends a one-line `[formatter] ...` note to the
+  tool's output (plus a structured `formatters.run_failed` log line) and
+  leaves the file exactly as the failed command left it.
+- **Quiet on a no-op success.** When the formatter runs and changes nothing
+  (the file was already properly formatted), nothing is appended — only a
+  real reformat or a failure is worth telling the model/user about.
+- **Read-tracker refresh.** When a formatter changes the file, the tool
+  re-reads the real final bytes and refreshes the session's read-tracker with
+  them, so the *next* edit's stale-read guard reflects what the formatter
+  actually left on disk (not what the model originally sent) instead of
+  spuriously tripping "changed on disk since last read".
 
 ### prompts
 

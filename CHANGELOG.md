@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`formatters:` config is now wired up (was a 100% dead stub since 0.1.0).**
+  `formatters: { "*.rb": "rubocop -A --fail-level=fatal" }` now actually runs:
+  after a `write`/`edit` tool call successfully touches a file, the first
+  matching glob's command runs with the file's absolute path appended as the
+  trailing shell argument (shell-escaped), through the same OS write-jail
+  every shell spawn uses. Synchronous and bounded (30s), so the on-disk
+  content already reflects the formatted result when the call returns. A
+  failing/timed-out formatter never fails the write/edit — it only appends a
+  `[formatter] ...` note — and the session's read-tracker is refreshed with
+  the real post-formatter bytes so a follow-up edit isn't spuriously refused
+  as "changed on disk since last read". See `docs/configuration.md#formatters`.
+
 - **`chat.auto_resume` config to opt out of bare-`chat` auto-resume.** A bare
   `rubino chat` (no `--new`/`--resume`/`--continue`) has resumed the most
   recent resumable session for the launch dir by default since #99; that
