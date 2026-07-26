@@ -14,7 +14,7 @@ module Rubino
     # Two checks, intentionally narrow (false positives would block legitimate
     # config more than the original bug):
     #   * unknown key  — the path doesn't exist in Defaults AND isn't under an
-    #                    open-map section (providers.<name>, quick_commands, …)
+    #                    open-map section (providers.<name>, permissions, …)
     #                    where arbitrary child keys are expected.
     #   * type / format — when the schema seeds a NON-nil scalar default at the
     #                    leaf, the coerced value must be the same coarse type
@@ -187,7 +187,7 @@ module Rubino
       end
 
       # Yields [keys_array, leaf_value] for every scalar/array leaf in a nested
-      # config hash. Open-map sections (providers.<name>, quick_commands, …) are
+      # config hash. Open-map sections (providers.<name>, permissions, …) are
       # walked the same way; the unknown-key check is intentionally shallow
       # (top-level only) so their arbitrary child keys are not flagged.
       def each_leaf(node, prefix = [], &block)

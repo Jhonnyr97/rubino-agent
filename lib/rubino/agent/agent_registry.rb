@@ -113,15 +113,12 @@ module Rubino
                  ))
       end
 
-      # Loads a prompt for a role. Checks the customer config for an
-      # explicit override first (prompts.overrides.<role>) and falls back
-      # to the built-in agent/prompts/<role>.txt. Missing files resolve
-      # to an empty string so a stripped-down distribution doesn't crash
-      # the registry at boot.
+      # Loads the built-in agent/prompts/<role>.txt for a role. Missing files
+      # resolve to an empty string so a stripped-down distribution doesn't
+      # crash the registry at boot. To replace a built-in role's prompt
+      # wholesale, use a file-based agent override (docs/agents.md) instead —
+      # there is no config-key equivalent.
       def load_prompt(name)
-        override = Rubino.configuration.prompts_override_for(name)
-        return override if override
-
         path = File.join(PROMPTS_DIR, "#{name}.txt")
         # Read as UTF-8 explicitly: the built-in prompts carry non-ASCII glyphs
         # (em-dashes), so relying on the locale default_external crashes under a

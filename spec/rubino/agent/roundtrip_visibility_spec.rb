@@ -105,7 +105,7 @@ RSpec.describe Rubino::Agent::Loop do
   let(:event_bus) { Rubino::Interaction::EventBus.new }
   let(:config) do
     test_configuration(
-      "streaming" => { "enabled" => true, "transport" => "off" },
+      "streaming" => { "enabled" => true },
       "display" => { "streaming" => true },
       "model" => { "provider" => "openai", "default" => "gpt-4o", "temperature" => 0.3 }
     )

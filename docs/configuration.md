@@ -98,11 +98,6 @@ auxiliary:
     model: ""            # Specific model for compression
     base_url: null
     timeout: 120
-  approval:
-    provider: "main"
-    model: ""
-    base_url: null
-    timeout: 30
   vision:                # `vision` tool delegates here so a text-only primary can "see"
     provider: "main"
     model: ""            # "auto-vision" lets an OpenAI-compatible gateway pick
@@ -270,9 +265,6 @@ paste:
 
 streaming:
   enabled: true
-  transport: "off"
-  edit_interval: 0.3
-  buffer_threshold: 40
 
 context:
   engine: "compressor"
@@ -766,14 +758,19 @@ prompts:
   environment:
     enabled: true                # inject an [Environment] block (date/OS/cwd/git/runtimes/PATH utilities)
     extra_utilities: []          # extra binaries to probe beyond the defaults
-  overrides: {}                  # prompts.overrides.<role> fully replaces a built-in role prompt
   prompt_cache: true             # emit Anthropic prompt-cache breakpoints (cache_control) on the
                                  # stable system prefix + last tool definition, so the fixed prompt
                                  # prefix is cached across turns (#311). Honored by anthropic-family
                                  # providers; others ignore it
 ```
 
-### clarify / worktree / privacy / quick_commands
+> To fully replace a built-in role's prompt (and optionally its tools,
+> permissions, or model too), use a file-based agent override instead — drop a
+> `.md` file under `~/.rubino/agents/build.md` or `.rubino/agents/build.md` to
+> replace the built-in "build" agent. See [agents.md](agents.md). There is
+> deliberately no config-key equivalent.
+
+### clarify / worktree / privacy
 
 ```yaml
 clarify:
@@ -784,8 +781,6 @@ worktree:
 
 privacy:
   redact_pii: false
-
-quick_commands: {}      # named one-line shortcuts
 ```
 
 ### otel

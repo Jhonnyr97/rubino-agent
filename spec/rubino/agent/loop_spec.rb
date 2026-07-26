@@ -1248,9 +1248,7 @@ RSpec.describe Rubino::Agent::Loop do
 
   describe "streaming mode" do
     let(:streaming_config) do
-      test_configuration("streaming" => { "enabled" => true, "transport" => "off",
-                                          "edit_interval" => 0.3, "buffer_threshold" => 40,
-                                          "cursor" => " ▉" },
+      test_configuration("streaming" => { "enabled" => true, "cursor" => " ▉" },
                          "display" => { "streaming" => true, "show_reasoning" => false,
                                         "language" => "en", "runtime_footer" => { "enabled" => false },
                                         "interim_assistant_messages" => false })
@@ -1794,7 +1792,7 @@ RSpec.describe Rubino::Agent::Loop do
     end
 
     let(:streaming_config) do
-      test_configuration("streaming" => { "enabled" => true, "transport" => "off" },
+      test_configuration("streaming" => { "enabled" => true },
                          "display" => { "streaming" => true, "show_reasoning" => false })
     end
     let(:question_tool) do

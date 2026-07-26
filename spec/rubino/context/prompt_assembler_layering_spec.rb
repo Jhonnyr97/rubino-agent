@@ -30,12 +30,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
       expect(prompt).to include("rubino")
     end
 
-    it "honours prompts.overrides.build when set" do
-      # Override is resolved through AgentRegistry — the assembler itself
-      # falls back to the file-based default unless an agent_definition is
-      # explicitly passed, so this test asserts the file-level fallback is
-      # the built-in build prompt (the override is verified via
-      # AgentRegistry below).
+    it "includes the built-in build prompt's core guidance" do
       prompt = system_prompt(config: test_configuration)
       expect(prompt).to include("Smallest change that solves the task")
     end
@@ -45,8 +40,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     it "includes the preamble when configured" do
       config = test_configuration("prompts" => {
                                     "preamble" => "You work for ACME Corp.",
-                                    "environment" => { "enabled" => false, "extra_utilities" => [] },
-                                    "overrides" => {}
+                                    "environment" => { "enabled" => false, "extra_utilities" => [] }
                                   })
       prompt = system_prompt(config: config)
       expect(prompt).to include("[Product]\nYou work for ACME Corp.")
@@ -55,8 +49,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     it "omits the [Product] block when preamble is blank" do
       config = test_configuration("prompts" => {
                                     "preamble" => "   ",
-                                    "environment" => { "enabled" => false, "extra_utilities" => [] },
-                                    "overrides" => {}
+                                    "environment" => { "enabled" => false, "extra_utilities" => [] }
                                   })
       prompt = system_prompt(config: config)
       expect(prompt).not_to include("[Product]")
@@ -73,8 +66,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     it "is suppressed when prompts.environment.enabled is false" do
       config = test_configuration("prompts" => {
                                     "preamble" => nil,
-                                    "environment" => { "enabled" => false, "extra_utilities" => [] },
-                                    "overrides" => {}
+                                    "environment" => { "enabled" => false, "extra_utilities" => [] }
                                   })
       prompt = system_prompt(config: config)
       expect(prompt).not_to include("[Environment]")
@@ -186,8 +178,7 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
     it "places Identity before Product before Environment" do
       config = test_configuration("prompts" => {
                                     "preamble" => "PRODUCT_MARKER",
-                                    "environment" => { "enabled" => true, "extra_utilities" => [] },
-                                    "overrides" => {}
+                                    "environment" => { "enabled" => true, "extra_utilities" => [] }
                                   })
       prompt = system_prompt(config: config)
       identity_pos = prompt.index("[Identity]")
@@ -196,29 +187,5 @@ RSpec.describe Rubino::Context::PromptAssembler, "layering" do
       expect(identity_pos).to be < product_pos
       expect(product_pos).to be < env_pos
     end
-  end
-end
-
-RSpec.describe Rubino::Agent::AgentRegistry, "prompt overrides" do
-  it "uses prompts.overrides.<role> when configured" do
-    override_text = "CUSTOM BUILD PROMPT — used by ACME Corp."
-    raw = Rubino::Config::Defaults.to_hash
-    raw["prompts"] = { "preamble" => nil,
-                       "environment" => { "enabled" => true, "extra_utilities" => [] },
-                       "overrides" => { "build" => override_text } }
-    custom = Rubino::Config::Configuration.new(raw: raw, home_path: "/tmp")
-    allow(Rubino).to receive(:configuration).and_return(custom)
-
-    registry = described_class.new(load_file_agents: false)
-    expect(registry.find("build").system_prompt).to eq(override_text)
-  end
-
-  it "falls back to the built-in prompt when no override is set" do
-    raw = Rubino::Config::Defaults.to_hash
-    default = Rubino::Config::Configuration.new(raw: raw, home_path: "/tmp")
-    allow(Rubino).to receive(:configuration).and_return(default)
-
-    registry = described_class.new(load_file_agents: false)
-    expect(registry.find("build").system_prompt).to include("[Identity]")
   end
 end

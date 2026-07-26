@@ -256,16 +256,6 @@ module Rubino
         Array(dig("prompts", "environment", "extra_utilities")).map(&:to_s)
       end
 
-      # Returns the override string for a given role name, or nil if the
-      # built-in default prompt should be used.
-      def prompts_override_for(role)
-        value = dig("prompts", "overrides", role.to_s)
-        return nil if value.nil?
-
-        text = value.to_s.strip
-        text.empty? ? nil : text
-      end
-
       # -- Run lifecycle section --
       # Returns Float seconds (or nil to disable). EventsOperation uses this
       # to bound how long a "running" row can go without producing a new

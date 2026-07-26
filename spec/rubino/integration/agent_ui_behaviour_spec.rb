@@ -107,8 +107,7 @@ RSpec.describe "Agent behaviour observable from the UI" do
   describe "2. Streaming del testo" do
     let(:streaming_config) do
       test_configuration(
-        "streaming" => { "enabled" => true, "transport" => "off",
-                         "edit_interval" => 0.3, "buffer_threshold" => 40, "cursor" => " ▉" },
+        "streaming" => { "enabled" => true, "cursor" => " ▉" },
         "display" => { "streaming" => true, "show_reasoning" => false,
                        "language" => "en",
                        "runtime_footer" => { "enabled" => false },

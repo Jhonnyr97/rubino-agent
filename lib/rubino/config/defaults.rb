@@ -117,12 +117,6 @@ module Rubino
             "base_url" => nil,
             "timeout" => 120
           },
-          "approval" => {
-            "provider" => "main",
-            "model" => "",
-            "base_url" => nil,
-            "timeout" => 30
-          },
           # Multimodal aux. When set, the `vision` tool delegates here so a
           # text-only primary can still "see" an image. `provider: "main"`
           # reuses the primary's provider/base_url; otherwise both can be
@@ -386,10 +380,7 @@ module Rubino
           "effort" => nil
         },
         "streaming" => {
-          "enabled" => true,
-          "transport" => "off",
-          "edit_interval" => 0.3,
-          "buffer_threshold" => 40
+          "enabled" => true
         },
         "context" => {
           "engine" => "compressor",
@@ -951,9 +942,6 @@ module Rubino
         #     process — re-probed every boot, not every turn.
         #   prompts.environment.extra_utilities — additional binaries to
         #     probe beyond EnvironmentInspector::DEFAULT_UTILITIES.
-        #   prompts.overrides.<role> — full replacement of the built-in
-        #     role prompt (escape hatch; prefer preamble for incremental
-        #     tweaks).
         #   prompts.prompt_cache — when true (default) the assembler emits
         #     Anthropic prompt-cache breakpoints (cache_control) on the stable
         #     system prefix and the last tool definition, so the fixed prompt
@@ -961,16 +949,18 @@ module Rubino
         #     tail (fresh relevant-memories + post-compaction summary) is kept
         #     AFTER the system breakpoint so the cached bytes stay byte-stable.
         #     Honored by anthropic-family providers; other providers ignore it.
+        # To fully replace a built-in role's prompt (and optionally its tools,
+        # permissions, or model too) use a file-based agent override instead —
+        # drop a .md under ~/.rubino/agents/<role>.md or .rubino/agents/<role>.md.
+        # See docs/agents.md. There is deliberately no config-key equivalent.
         "prompts" => {
           "preamble" => nil,
           "environment" => {
             "enabled" => true,
             "extra_utilities" => []
           },
-          "overrides" => {},
           "prompt_cache" => true
         },
-        "quick_commands" => {},
         "mcp" => {
           "servers" => {}
         },
