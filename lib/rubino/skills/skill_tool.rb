@@ -100,6 +100,10 @@ module Rubino
         @presentation ||= Tools::ToolPresentationCLI.new
       end
 
+      # Actions that AUTHOR or MUTATE a skill file (as opposed to "load", the
+      # read-only default). Gated on skills.enabled? — see #call.
+      MUTATING_ACTIONS = %w[create edit patch write_file delete].freeze
+
       # action: "load" (default) — three-level progressive disclosure:
       #   skill(name)                       -> Level 2: SKILL.md body
       #   skill(name, file_path: "ref.md")  -> Level 3: one bundled file
@@ -108,6 +112,17 @@ module Rubino
         arguments = arguments.transform_keys(&:to_sym) if arguments.respond_to?(:transform_keys)
 
         action = (arguments[:action] || "load").to_s
+
+        # docs/configuration.md: "skills.enabled: false turns off both the
+        # distillation cost and the create affordance" — the SAME switch
+        # skills_auto_distill? already reads. Distillation was correctly
+        # gated; this closes the other half (create/edit/patch/write_file/
+        # delete were never checked at all). `load` is a SEPARATE concern
+        # (gated only by `tools.skill`, per docs/skills.md) and must keep
+        # working — a user disabling authoring may still want the agent to
+        # read/use existing skills.
+        return skills_disabled_message(action) if MUTATING_ACTIONS.include?(action) && !skills_enabled?
+
         case action
         when "create"     then return create(arguments)
         when "edit"       then return edit(arguments)
@@ -471,6 +486,18 @@ module Rubino
 
       def disabled(skill_name)
         "Skill '#{skill_name}' is disabled."
+      end
+
+      def skills_enabled?
+        Rubino.configuration.skills_enabled?
+      rescue StandardError
+        true
+      end
+
+      def skills_disabled_message(action)
+        "Cannot #{action} a skill: skill authoring is disabled (skills.enabled: false). " \
+          "Loading/using existing skills still works; ask an operator to set " \
+          "skills.enabled: true to re-enable creating, editing, or deleting skills."
       end
     end
   end

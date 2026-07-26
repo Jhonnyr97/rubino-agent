@@ -292,12 +292,24 @@ module Rubino
         positive_interval(dig("memory", "auto_extract_interval"))
       end
 
+      # Master switch for the skills feature's WRITE surface (default true):
+      # periodic distillation (#skills_auto_distill?) AND the `skill` tool's
+      # authoring actions (create/edit/patch/write_file/delete — SkillTool
+      # gates on this directly). Reading a skill (`skill` tool, action:
+      # "load") is a SEPARATE concern gated only by `tools.skill` (the
+      # ordinary per-tool registry switch) — this flag does not touch it, so
+      # skills.enabled: false still lets the agent load/use existing skills,
+      # just not author new ones or modify existing ones.
+      def skills_enabled?
+        dig("skills", "enabled") != false
+      end
+
       # Post-turn skill distillation. Defaults to true (skills feature on +
       # distill key absent ⇒ distill on), mirroring memory_auto_extract? as the
       # gate for an aux-spending background job. Turning skills off disables it
       # too, since there is no point distilling skills that won't be loaded.
       def skills_auto_distill?
-        return false unless dig("skills", "enabled") != false
+        return false unless skills_enabled?
 
         value = dig("skills", "auto_distill")
         value.nil? || value == true

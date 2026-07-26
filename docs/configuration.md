@@ -707,13 +707,16 @@ skills:
 ```
 
 The agent loads a skill's instructions on demand (`tools.skill` gates the loading
-tool). With `skills.enabled` (default true) the agent also creates skills: the
+tool). With `skills.enabled` (default true) the agent also authors skills: the
 warm-prefix review fork (`BackgroundReviewJob`, shared with memory extraction)
-lets the agent agentically distil complex, repeatable runs into a new skill —
-inter-turn every `skills.auto_distill_interval` turns and once at session end —
-and the agent can author one on demand via `skill(action: "create", ...)`.
-Setting `skills.enabled: false` turns off both the distillation cost and the
-create affordance.
+lets the agent agentically distil complex, repeatable runs into a new or updated
+skill — inter-turn every `skills.auto_distill_interval` turns and once at session
+end — and the agent can create/edit/patch/write_file/delete one on demand via the
+`skill` tool's matching `action`. Setting `skills.enabled: false` turns off both
+the distillation cost and the on-demand AUTHORING actions (`create`, `edit`,
+`patch`, `write_file`, `delete` all refuse cleanly); `action: "load"` (reading an
+existing skill) is unaffected — it is gated only by `tools.skill`, so the agent
+can still use previously-authored skills with `skills.enabled: false`.
 
 Skill activity is exported on `GET /v1/metrics` as two Prometheus counters:
 

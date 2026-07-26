@@ -29,6 +29,13 @@ RSpec.describe Rubino::Skills::SkillTool do
     with_test_db
     allow(Rubino).to receive(:configuration).and_return(config)
     allow(Rubino::Config::Loader).to receive(:default_home_path).and_return(@home)
+    # SkillTool/Registry#enabled? resolves through Skills::StateRepository,
+    # which queries Rubino.database — the real RUBINO_HOME SQLite, not
+    # migrated in a clean test environment (no `skill_states` table). Point it
+    # at the migrated in-memory test DB (mirrors skills_spec.rb's `with_test_db`
+    # for the same class) so a plain "load" call — exercised below by the
+    # skills.enabled: false spec — doesn't blow up on a missing table.
+    with_test_db
   end
 
   def create_demo(body: "# Demo\n\nstep one\n")
@@ -152,6 +159,71 @@ RSpec.describe Rubino::Skills::SkillTool do
         Rubino.with_review_toolset(%w[skill]) { tool.call("action" => "delete", "name" => "demo") }
       end
       expect(captured.last).to include(origin: "review", action: "delete", name: "demo")
+    end
+  end
+
+  # docs/configuration.md: "skills.enabled: false turns off both the
+  # distillation cost and the create affordance". skills_auto_distill? already
+  # honored this for the background review fork; the `skill` TOOL's own
+  # mutating actions never checked it at all. `load` is a SEPARATE concern
+  # (docs/skills.md: gated only by `tools.skill`) and must keep working even
+  # with skills.enabled: false — a user may still want the agent to read/use
+  # existing skills while disabling new authoring.
+  describe "skills.enabled: false gates authoring, not load (#capacity)" do
+    let(:disabled_config) { test_configuration("skills" => { "paths" => [@write_dir], "enabled" => false }) }
+
+    before { create_demo } # seed a real skill (with skills ENABLED) to edit/patch/delete below
+
+    it "refuses create with a clean message, writing nothing" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("action" => "create", "name" => "new-one", "description" => "d", "body" => "# b\n")
+      expect(out).to match(/disabled/i)
+      expect(File.exist?(File.join(@write_dir, "new-one", "SKILL.md"))).to be(false)
+    end
+
+    it "refuses edit with a clean message, leaving the file untouched" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("action" => "edit", "name" => "demo", "body" => "# nope\n")
+      expect(out).to match(/disabled/i)
+      expect(skill_md).not_to include("nope")
+    end
+
+    it "refuses patch with a clean message, leaving the file untouched" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("action" => "patch", "name" => "demo", "old_str" => "step one", "new_str" => "changed")
+      expect(out).to match(/disabled/i)
+      expect(skill_md).not_to include("changed")
+    end
+
+    it "refuses write_file with a clean message, writing nothing" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("action" => "write_file", "name" => "demo",
+                      "file_path" => "references/notes.md", "content" => "x")
+      expect(out).to match(/disabled/i)
+      expect(File.exist?(File.join(@write_dir, "demo", "references", "notes.md"))).to be(false)
+    end
+
+    it "refuses delete with a clean message, leaving the skill in place" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("action" => "delete", "name" => "demo")
+      expect(out).to match(/disabled/i)
+      expect(File.exist?(File.join(@write_dir, "demo", "SKILL.md"))).to be(true)
+    end
+
+    it "still LOADS the existing skill — load is not gated by skills.enabled" do
+      allow(Rubino).to receive(:configuration).and_return(disabled_config)
+      out = tool.call("name" => "demo") # action defaults to "load"
+      expect(out).to include('<skill_content name="demo">')
+    end
+
+    it "a bare skills.enabled (absent key, not false) is unaffected — default stays enabled" do
+      # No skills.enabled key at all (only "paths" overridden) — the shallow
+      # test_configuration merge drops the whole "skills" defaults subtree, so
+      # this also pins nil (absent) reading as enabled, not just literal true.
+      cfg = test_configuration("skills" => { "paths" => [@write_dir] })
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+      out = tool.call("action" => "edit", "name" => "demo", "body" => "# still on\n")
+      expect(out).to include("Updated skill 'demo'")
     end
   end
 

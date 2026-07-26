@@ -226,7 +226,13 @@ So the disclosure ladder is: **index (Level 1) → body (Level 2) → references
 
 Beyond loading existing skills, the agent can author new ones so a complex,
 repeatable task is captured once and reused. There are two mechanisms — both
-gated by `skills.enabled` (default true).
+gated by `skills.enabled` (default true). This same flag gates every mutating
+`skill` tool action — `create`, `edit`, `patch`, `write_file`, `delete` — so
+`skills.enabled: false` disables the distillation job *and* refuses all five
+on demand, cleanly, with no exception raised. It does **not** gate `action:
+"load"` (the default): reading/using an already-authored skill is a separate
+concern gated only by `tools.skill` (see [configuration.md#skills](configuration.md#skills)),
+so existing skills stay usable even with authoring turned off.
 
 ### 1. Agentic review-fork distillation (primary)
 

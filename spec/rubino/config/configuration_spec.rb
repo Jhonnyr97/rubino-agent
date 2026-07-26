@@ -160,6 +160,26 @@ RSpec.describe Rubino::Config::Configuration do
     end
   end
 
+  # #skills_enabled? is the master switch SkillTool gates its authoring
+  # actions (create/edit/patch/write_file/delete) on, and skills_auto_distill?
+  # / prompt_assembler's skills_feature_enabled? both delegate to it now — one
+  # source of truth for "is the skills feature on" (default true).
+  describe "skills accessors" do
+    it "defaults to enabled when the key is absent" do
+      expect(config.skills_enabled?).to be true
+    end
+
+    it "is disabled only on an explicit false" do
+      expect(test_configuration("skills" => { "enabled" => false }).skills_enabled?).to be false
+      expect(test_configuration("skills" => { "enabled" => true }).skills_enabled?).to be true
+    end
+
+    it "skills_auto_distill? stays false whenever skills_enabled? is false, regardless of auto_distill" do
+      cfg = test_configuration("skills" => { "enabled" => false, "auto_distill" => true })
+      expect(cfg.skills_auto_distill?).to be false
+    end
+  end
+
   describe "tool accessors" do
     it "returns tool enabled status" do
       expect(config.tool_enabled?("ruby")).to be true

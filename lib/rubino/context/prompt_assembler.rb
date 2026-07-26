@@ -500,8 +500,7 @@ module Rubino
       end
 
       def skills_feature_enabled?
-        value = @config.dig("skills", "enabled")
-        value.nil? || value == true
+        @config.skills_enabled?
       end
 
       # True when the `skill` tool is exposed to the model this turn. Honors the
