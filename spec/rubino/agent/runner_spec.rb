@@ -5,7 +5,8 @@ RSpec.describe Rubino::Agent::Runner do
   let(:null_ui) { Rubino::UI::Null.new }
 
   let(:fake_lifecycle) do
-    instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE", last_stop_reason: nil)
+    instance_double(Rubino::Interaction::Lifecycle, execute: "RESPONSE", last_stop_reason: nil,
+                                                      last_cache_read_tokens: nil)
   end
 
   # Holds the session the Lifecycle reports active AFTER a turn. Defaults to the
