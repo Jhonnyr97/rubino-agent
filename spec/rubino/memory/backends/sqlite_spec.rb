@@ -436,6 +436,46 @@ RSpec.describe Rubino::Memory::Backends::Sqlite do
       expect(key).to eq("gw-key")
     end
 
+    it "inherits the resolved provider's own base_url when auxiliary.embedding sets no base_url of its own (the leak fix)" do
+      # The natural move docs/memory.md's own tuning example shows: mirror the
+      # MAIN provider under auxiliary.embedding (provider + model) without also
+      # duplicating base_url, since the provider already has one. Before this
+      # fix, embedding_opts left base_url unset in that case, so the call fell
+      # back to RubyLLM's real hosted endpoint — a live leak of a connection
+      # attempt (and whatever key resolved) to the provider's real host, even
+      # though the SAME provider is correctly pointed at a local gateway for the
+      # main model. #resolve_embedding_base_url must inherit providers.<name>.base_url.
+      cfg = test_configuration(
+        "model" => { "provider" => "openai" },
+        "providers" => { "openai" => { "base_url" => "http://127.0.0.1:8000/v1", "api_key" => "local" } },
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => { "embedding" => { "provider" => "openai", "model" => "bge-m3" } }
+      )
+      b = described_class.new(config: cfg, db: db)
+      emb_cfg = cfg.auxiliary_config("embedding")
+
+      expect(b.send(:resolve_embedding_base_url, "openai", emb_cfg)).to eq("http://127.0.0.1:8000/v1")
+
+      opts = b.send(:embedding_opts, emb_cfg)
+      inner = opts[:context].instance_variable_get(:@config)
+      expect(inner.openai_api_base).to eq("http://127.0.0.1:8000/v1")
+    end
+
+    it "an explicit auxiliary.embedding.base_url still wins over the provider's own" do
+      cfg = test_configuration(
+        "model" => { "provider" => "openai" },
+        "providers" => { "openai" => { "base_url" => "http://127.0.0.1:8000/v1", "api_key" => "local" } },
+        "memory" => default_memory_cfg("sqlite" => { "vector" => true }),
+        "auxiliary" => {
+          "embedding" => { "provider" => "openai", "model" => "bge-m3", "base_url" => "http://127.0.0.1:9000/v1" }
+        }
+      )
+      b = described_class.new(config: cfg, db: db)
+      emb_cfg = cfg.auxiliary_config("embedding")
+
+      expect(b.send(:resolve_embedding_base_url, "openai", emb_cfg)).to eq("http://127.0.0.1:9000/v1")
+    end
+
     it "stores an embedding blob on insert when vector mode is on and embed succeeds" do
       cfg = test_configuration(
         "memory" => default_memory_cfg("sqlite" => { "vector" => true }),

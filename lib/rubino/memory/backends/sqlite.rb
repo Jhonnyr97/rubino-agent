@@ -524,7 +524,7 @@ module Rubino
           @embedding_opts ||= begin
             provider = resolve_embedding_provider(cfg)
             model    = cfg["model"].to_s.strip
-            base_url = cfg["base_url"].to_s.strip
+            base_url = resolve_embedding_base_url(provider, cfg)
 
             llm = RubyLLM::Configuration.new
             apply_embedding_credentials!(llm, provider, cfg)
@@ -535,6 +535,24 @@ module Rubino
             opts.merge!(model: model, provider: provider.to_sym, assume_model_exists: true) unless model.empty?
             opts
           end
+        end
+
+        # The embedding call's base_url: the aux config's own `base_url` first,
+        # else the resolved provider's own `providers.<provider>.base_url` —
+        # mirroring #resolve_embedding_api_key's fallback chain. Without this,
+        # pointing the MAIN model at a local gateway via providers.<name>.base_url
+        # and then mirroring that provider/model under auxiliary.embedding (the
+        # natural move, and the one docs/memory.md's own tuning example shows)
+        # still left the embed call's base_url unset — so it silently fell back
+        # to RubyLLM's real hosted default endpoint, carrying whatever key
+        # resolved (including an ambient ENV key), a live leak to the real
+        # provider on every recall/save. Confirmed via a black-holed real host
+        # in a live E2E session before this fix, and again after.
+        def resolve_embedding_base_url(provider, cfg)
+          own = cfg["base_url"].to_s.strip
+          return own unless own.empty?
+
+          @config.dig("providers", provider, "base_url").to_s.strip
         end
 
         # Resolve the embedding provider's api_key deterministically: the aux
