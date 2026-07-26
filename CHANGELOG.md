@@ -197,6 +197,18 @@
   visible change — the second paste looked like it did nothing. Each paste is
   handled independently again: a small one inlines as plain text, a large one
   gets its own distinct placeholder.
+- **Custom slash commands now expand in one-shot mode.** `rubino chat -q
+  "/mycommand args"` (and `rubino prompt "/mycommand args"`) used to send that
+  literal, unrendered string straight to the model — `.rubino/commands/*.md`
+  templates only ever expanded inside the interactive `rubino chat` REPL.
+  One-shot now checks the query against the same `Commands::Loader` the REPL
+  uses and, on a match, sends the rendered template (`$ARGUMENTS`/`$1..$9`,
+  `@file` refs, the opt-in `!`-shell injection, and `agent:` frontmatter
+  routing) as the turn's content instead. Scoped to custom commands only —
+  built-ins (`/model`, `/new`, `/compact`, …), agent-pin switching, skill
+  invocation, and `--preview` remain interactive-only, so an unrecognized
+  `/name` (or ordinary text that merely starts with `/`) still passes through
+  unchanged.
 
 ## [0.5.2.2] - 2026-07-01
 

@@ -410,6 +410,8 @@ Custom commands live as Markdown templates in `.rubino/commands/` (project) or `
 
 `/commands` lists the available custom commands and explains how to author them. See the [README](../README.md) for the template format (`$ARGUMENTS`, YAML frontmatter).
 
+**One-shot mode expands them too.** `rubino chat -q "/test authentication module"` (and `rubino prompt "/test authentication module"`) render the SAME template — `$ARGUMENTS`/`$1..$9`, `@file` refs, the opt-in `!`-shell injection — before the turn runs, so the model never sees the literal, unrendered `/name args` line. This is scoped to custom commands only: built-in slash commands (`/model`, `/new`, `/compact`, …), agent-pin switching, skill invocation, and `--preview` stay interactive-only (they either mutate REPL/session state one-shot has no channel for, or need a live confirmation prompt one-shot doesn't have). A one-shot query that starts with `/` but doesn't name a known custom command — including a bare unknown name, or ordinary text that happens to start with a path like `/etc/hosts` — is sent through unchanged, exactly as before.
+
 ### Primary agents: `/agent`, `/<name>`, and Tab
 
 Each turn runs under an **agent** — a persona with its own system prompt and tool scope. The built-ins are `build` (full access, the default) and `plan` (read-only analysis); `explore` and `general` are subagents you invoke one-shot. Switching the primary agent changes who answers the *next* turn:

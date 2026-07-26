@@ -286,14 +286,61 @@ module Rubino
       # own bits (text: model echo + activity trace + skill capture; JSON: the
       # system_init frame + transcript baseline) around it.
       def setup_oneshot(query, ui:, announce_session: true)
+        query, command_agent = expand_oneshot_custom_command(query)
         text, image_paths = Chat::ImageInbox.resolve_oneshot(query, opt(:image))
         requested_session_id = session_resolver.resolve_session_id
         runner = build_runner(session_id: requested_session_id, ui: ui,
                               announce_session: announce_session, interactive: false)
         warn_if_resume_forked(requested_session_id, runner)
         note_if_resuming_compacted_parent(runner)
+        apply_oneshot_command_agent!(runner, command_agent)
         recorder = Output::TurnRecorder.new.attach!
         [runner, text, image_paths, recorder]
+      end
+
+      # One-shot custom-command expansion: `-q "/mycommand args"` used to
+      # send that literal string straight to the model — custom commands
+      # (.rubino/commands/*.md et al, discovered via the SAME Commands::Loader
+      # the interactive REPL uses) only ever expanded inside `rubino chat`.
+      # Renders the template ($ARGUMENTS/$1.. substitution, @file refs, the
+      # opt-in `!`-shell injection — all synchronous already, so this never
+      # blocks on stdin) BEFORE the text reaches ImageInbox, so an @image ref
+      # inside the EXPANDED template (or the invocation's own arguments) is
+      # still picked up exactly as it would be for a plain one-shot prompt.
+      #
+      # Deliberately narrow: this recognizes ONLY a known custom command name —
+      # not the full interactive Commands::Executor dispatcher. Built-ins
+      # (/model, /new, /compact, /branch, …), agent-pin switching, and skill
+      # invocation stay interactive-only: docs/commands.md frames slash
+      # commands as "typed inside an interactive `rubino chat`", one-shot has
+      # no signal channel for most of those results (:new_session,
+      # :compact_into, :branch, …), and a one-shot prompt that merely STARTS
+      # with "/" (a file path, "/etc/hosts explain this file") must keep
+      # working as a plain prompt instead of erroring as an "unknown command".
+      # Returns [text, agent_name_or_nil] — text unchanged when +query+ isn't a
+      # recognized custom command.
+      def expand_oneshot_custom_command(query)
+        loader = Rubino::Commands::Loader.new
+        return [query, nil] unless loader.slash_command?(query)
+
+        name, arguments = loader.parse(query)
+        command = name && loader.find(name)
+        return [query, nil] unless command
+
+        [command.render(arguments), command.agent]
+      end
+
+      # Applies a custom command's `agent:` frontmatter to a one-shot run — the
+      # same one-turn routing an interactive `/<agent> <message>` gets from
+      # run_turn (#320), minus the sticky-pin restore (a one-shot process exits
+      # right after its single turn, so there's nothing to restore). An
+      # unknown/blank agent name leaves the runner's default Definition
+      # untouched.
+      def apply_oneshot_command_agent!(runner, agent_name)
+        return if agent_name.nil? || agent_name.to_s.strip.empty?
+
+        definition = one_shot_agent_definition(agent_name)
+        runner.agent_definition = definition if definition && runner.respond_to?(:agent_definition=)
       end
 
       def run_oneshot(query)
