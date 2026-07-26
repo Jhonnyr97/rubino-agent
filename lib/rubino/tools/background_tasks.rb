@@ -262,6 +262,23 @@ module Rubino
       # phrase a reason-specific at-capacity message.
       attr_reader :last_refusal_reason
 
+      # Live cap values, from config when wired, else the built-in constants (so
+      # a bare registry in a unit test with no Configuration still has sane
+      # caps). PUBLIC so TaskTool#capacity_message can interpolate the SAME
+      # resolved value #refusal_reason enforced against — the message can never
+      # drift from what enforcement actually used.
+      def max_depth
+        config_int(:tasks_max_depth, MAX_DEPTH)
+      end
+
+      def max_children_per_node
+        config_int(:tasks_max_children_per_node, MAX_CHILDREN_PER_NODE)
+      end
+
+      def max_concurrent_total
+        config_int(:tasks_max_concurrent_total, MAX_CONCURRENT_TOTAL)
+      end
+
       # Binds the live worker thread + child runner to a reserved entry so the
       # registry can later cancel it. Done after reserve so the entry exists in
       # the map before the thread starts (no race on completion writing back).
@@ -680,20 +697,6 @@ module Rubino
         return :per_owner if live_children >= max_children_per_node
 
         nil
-      end
-
-      # Live cap values, from config when wired, else the built-in constants (so a
-      # bare registry in a unit test with no Configuration still has sane caps).
-      def max_depth
-        config_int(:tasks_max_depth, MAX_DEPTH)
-      end
-
-      def max_children_per_node
-        config_int(:tasks_max_children_per_node, MAX_CHILDREN_PER_NODE)
-      end
-
-      def max_concurrent_total
-        config_int(:tasks_max_concurrent_total, MAX_CONCURRENT_TOTAL)
       end
 
       def config_int(accessor, fallback)

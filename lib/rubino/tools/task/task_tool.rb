@@ -527,20 +527,25 @@ module Rubino
       # instead of one undifferentiated "at capacity". The message must NOT
       # recommend `background: false`: the sync path enforces the same ceilings
       # (#196), so it is not an escape hatch.
+      #
+      # Interpolates registry_bg.max_depth / #max_children_per_node /
+      # #max_concurrent_total — the SAME config-resolved values #reserve just
+      # enforced against — rather than the class constants, so the message can
+      # never drift from what a user actually configured (tasks.max_depth etc).
       def capacity_message(registry_bg)
         case registry_bg.last_refusal_reason
         when :depth
-          "Max nesting depth reached: subagents can only nest #{Tools::BackgroundTasks::MAX_DEPTH} " \
+          "Max nesting depth reached: subagents can only nest #{registry_bg.max_depth} " \
           "levels deep. This subagent is too deep to delegate further — do the work " \
           "directly, or report back so a shallower agent can split it up."
         when :per_owner
-          "At capacity: this agent already has #{Tools::BackgroundTasks::MAX_CHILDREN_PER_NODE} " \
+          "At capacity: this agent already has #{registry_bg.max_children_per_node} " \
           "subagents running. Wait for one to finish (you'll get a " \
           "`[background-task]` message), check it with task_result, or do the work " \
           "directly."
         else # :global (or any future ceiling)
           "At capacity: the maximum number of subagents " \
-          "(#{Tools::BackgroundTasks::MAX_CONCURRENT_TOTAL}) are already running across all " \
+          "(#{registry_bg.max_concurrent_total}) are already running across all " \
           "agents. Wait for one to finish (you'll get a `[background-task]` message), " \
           "check it with task_result, or do the work directly."
         end

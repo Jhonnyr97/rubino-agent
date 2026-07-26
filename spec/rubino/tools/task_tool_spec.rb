@@ -1278,6 +1278,29 @@ RSpec.describe Rubino::Tools::TaskTool do
       expect(out).to include("At capacity")
       expect(out).not_to include("background: false")
     end
+
+    it "interpolates the CONFIGURED cap into the refusal message, not the class default (#capacity_message)" do
+      cfg = test_configuration("tasks" => { "max_depth" => 1 })
+      allow(Rubino).to receive(:configuration).and_return(cfg)
+
+      root = registry.reserve(subagent: "explore", prompt: "root") # depth 0
+      never_runs = Class.new do
+        def run!(_input, **_opts) = raise("must not run — reserve refuses first")
+        def cancel!; end
+      end.new
+
+      # With the DEFAULT max_depth (2) a depth-0 owner could still spawn a
+      # depth-1 child. With the CONFIGURED max_depth (1), that same spawn must
+      # be refused — proving the trip itself is config-driven — and the
+      # message must say "1", never the hardcoded default "2".
+      out = Rubino.with_current_subagent_id(root.id) do
+        described_class.new(runner_factory: ->(_d) { never_runs })
+                       .call("subagent" => "general", "prompt" => "too deep", "background" => false)
+      end
+
+      expect(out).to include("Max nesting depth reached: subagents can only nest 1 levels deep")
+      expect(out).not_to include("nest 2 levels deep")
+    end
   end
 
   describe "task_stop tool" do
