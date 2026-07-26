@@ -177,7 +177,40 @@ RSpec.describe Rubino::Interaction::ImageInput do
       result = described_class.parse("see @#{big}")
 
       expect(result.image_paths).to be_empty
-      expect(result.rejected.first[:reason]).to match(/exceeds the \d+ MB attachment limit/)
+      expect(result.rejected.first[:reason]).to match(/exceeds the [\d.]+ KB attachment limit/)
+    end
+
+    # A configured max_file_bytes UNDER 1 MB (a small-cap profile, or just a
+    # test-sized config) used to render as a nonsensical "exceeds the 0 MB
+    # attachment limit" — plain integer division (bytes / 1_048_576) truncates
+    # any sub-MB byte count to 0. The rejection logic was always correct; only
+    # the message's number was wrong. Assert the figure is byte-accurate (KB
+    # here) and never the misleading literal "0 MB", against a byte-sized cap
+    # (1000) matching the brief's own example.
+    it "never renders '0 MB' for a small (sub-MB) max_file_bytes cap" do
+      big = make_png("small_cap.png", padding: 2000)
+      allow(Rubino::Attachments::Policy).to receive(:max_file_bytes).and_return(1000)
+
+      result = described_class.parse("see @#{big}")
+
+      expect(result.image_paths).to be_empty
+      reason = result.rejected.first[:reason]
+      expect(reason).not_to include("0 MB")
+      expect(reason).to match(/exceeds the [\d.]+ KB attachment limit/)
+    end
+
+    # Unit-level coverage of the formatting boundary itself (KB below 1 MB, MB
+    # at/above it) without needing to fabricate multi-MB fixture files.
+    describe ".format_byte_limit" do
+      it "renders sub-MB caps in KB, never truncating to a bare 0" do
+        expect(described_class.format_byte_limit(1000)).to eq("1.0 KB")
+        expect(described_class.format_byte_limit(16)).to match(/\A0\.\d+ KB\z/)
+      end
+
+      it "renders MB-scale caps in MB with one decimal place" do
+        expect(described_class.format_byte_limit(26_214_400)).to eq("25.0 MB") # shipped default
+        expect(described_class.format_byte_limit(5_000_000)).to eq("4.8 MB")
+      end
     end
 
     it "rejects an image when :image is not in allow_kinds" do

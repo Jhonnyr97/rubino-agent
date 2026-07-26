@@ -104,7 +104,7 @@ module Rubino
         cls = Attachments::Classify.call(path)
         unless cls.safe
           if cls.reason.to_s.start_with?("exceeds max_file_bytes")
-            return "exceeds the #{Attachments::Policy.max_file_bytes / 1_048_576} MB attachment limit"
+            return "exceeds the #{format_byte_limit(Attachments::Policy.max_file_bytes)} attachment limit"
           end
 
           return cls.reason
@@ -113,6 +113,20 @@ module Rubino
         return "image attachments are disabled by policy (allow_kinds)" unless Attachments::Policy.allow_kind?(:image)
 
         nil
+      end
+
+      # Byte-accurate figure for the attachment-too-large message. A plain
+      # `bytes / 1_048_576` (integer division) truncates to a literal 0 for any
+      # configured cap under 1 MB (e.g. a small max_file_bytes in tests/a
+      # locked-down profile), rendering the confusing "exceeds the 0 MB
+      # attachment limit". KB for a sub-MB cap, MB (one decimal place,
+      # matching chat_command.rb's image-size report) otherwise.
+      def format_byte_limit(bytes)
+        if bytes < 1_048_576
+          "#{(bytes / 1024.0).round(1)} KB"
+        else
+          "#{(bytes / 1_048_576.0).round(1)} MB"
+        end
       end
 
       # Normalises a raw token into an absolute filesystem path: strips
