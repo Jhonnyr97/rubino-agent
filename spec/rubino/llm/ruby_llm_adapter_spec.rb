@@ -486,6 +486,108 @@ RSpec.describe Rubino::LLM::RubyLLMAdapter do
   end
 
   # -----------------------------------------------------------------------
+  # Native openai/anthropic/gemini/bedrock now honor `providers.<name>.api_key`
+  # / `base_url` from config.yml alone — config alone used to be silently
+  # ignored for these four ("dedicated wiring" only ever read the native ENV
+  # var), even though both are documented as settable per-provider and the
+  # CredentialCheck preflight already treated a config-only api_key as usable.
+  # -----------------------------------------------------------------------
+
+  describe "native openai: config-based api_key/base_url (no env var set)" do
+    let(:cfg) do
+      test_configuration(
+        "model" => { "provider" => "openai", "default" => "gpt-4o", "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "openai" => { "api_key" => "sk-config-only", "base_url" => "http://localhost:8000/v1" } }
+      )
+    end
+
+    it "sets openai_api_key from config alone" do
+      described_class.new(model_id: "gpt-4o", config: cfg)
+      expect(RubyLLM.config.openai_api_key).to eq("sk-config-only")
+    end
+
+    it "sets openai_api_base from config" do
+      described_class.new(model_id: "gpt-4o", config: cfg)
+      expect(RubyLLM.config.openai_api_base).to eq("http://localhost:8000/v1")
+    end
+
+    it "config api_key wins over an ambient ENV var" do
+      ENV["OPENAI_API_KEY"] = "sk-env-should-lose"
+      described_class.new(model_id: "gpt-4o", config: cfg)
+      expect(RubyLLM.config.openai_api_key).to eq("sk-config-only")
+    ensure
+      ENV.delete("OPENAI_API_KEY")
+    end
+  end
+
+  describe "native anthropic: config-based api_key/base_url (no env var set)" do
+    let(:cfg) do
+      test_configuration(
+        "model" => { "provider" => "anthropic", "default" => "claude-sonnet-4-5", "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "anthropic" => { "api_key" => "sk-ant-config-only", "base_url" => "http://localhost:8000/v1" } }
+      )
+    end
+
+    it "sets anthropic_api_key from config alone" do
+      described_class.new(model_id: "claude-sonnet-4-5", config: cfg)
+      expect(RubyLLM.config.anthropic_api_key).to eq("sk-ant-config-only")
+    end
+
+    it "sets anthropic_api_base from config (previously a complete no-op)" do
+      described_class.new(model_id: "claude-sonnet-4-5", config: cfg)
+      expect(RubyLLM.config.anthropic_api_base).to eq("http://localhost:8000/v1")
+    end
+
+    it "the OAuth env precedence still outranks a configured static key" do
+      ENV["ANTHROPIC_TOKEN"] = "oauth-should-win"
+      described_class.new(model_id: "claude-sonnet-4-5", config: cfg)
+      expect(RubyLLM.config.anthropic_api_key).to eq("oauth-should-win")
+    ensure
+      ENV.delete("ANTHROPIC_TOKEN")
+    end
+  end
+
+  describe "native gemini: config-based api_key (no env var set)" do
+    it "sets gemini_api_key from config alone" do
+      cfg = test_configuration(
+        "model" => { "provider" => "gemini", "default" => "gemini-2.0-flash", "temperature" => 0.3, "context_length" => nil },
+        "providers" => { "gemini" => { "api_key" => "gem-config-only" } }
+      )
+      described_class.new(model_id: "gemini-2.0-flash", config: cfg)
+      expect(RubyLLM.config.gemini_api_key).to eq("gem-config-only")
+    end
+  end
+
+  describe "Bedrock: config-based access/secret/session (no env vars set)" do
+    let(:cfg) do
+      test_configuration(
+        "providers" => {
+          "bedrock" => {
+            "api_key" => "AKIACONFIGONLY",
+            "secret_key" => "config-secret",
+            "session_token" => "config-session"
+          }
+        }
+      )
+    end
+
+    it "sets bedrock_api_key/secret_key/session_token from config alone" do
+      described_class.new(model_id: "anthropic.claude-sonnet-4-5", config: cfg)
+      expect(RubyLLM.config.bedrock_api_key).to eq("AKIACONFIGONLY")
+      expect(RubyLLM.config.bedrock_secret_key).to eq("config-secret")
+      expect(RubyLLM.config.bedrock_session_token).to eq("config-session")
+    end
+
+    it "region still follows ENV/default, not config (no shipped-default ambiguity)" do
+      ENV["BEDROCK_REGION"] = "eu-central-1"
+      described_class.new(model_id: "anthropic.claude-sonnet-4-5", config: cfg)
+      expect(RubyLLM.config.bedrock_region).to eq("eu-central-1")
+    ensure
+      ENV.delete("BEDROCK_REGION")
+    end
+  end
+
+  # -----------------------------------------------------------------------
   # Audit fixes — provider auto-detect for reasoning models (#5)
   # -----------------------------------------------------------------------
 

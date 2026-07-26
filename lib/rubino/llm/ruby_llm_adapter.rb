@@ -647,36 +647,63 @@ module Rubino
           RubyLLM.instance_variable_set(:@logger, nil)
         end
 
-        c.openai_api_key    = ENV["OPENAI_API_KEY"]    if ENV["OPENAI_API_KEY"]
+        # openai/anthropic/gemini/bedrock each get "dedicated wiring" here
+        # (as opposed to the generic native_ruby_llm_provider branch below) —
+        # but until now that wiring only ever consulted the native ENV var,
+        # never `providers.<name>.api_key`/`base_url`, even though both are
+        # documented as settable per-provider (docs/configuration.md) and the
+        # CredentialCheck preflight already treated a config-only api_key as
+        # "usable". Route all four through the same config-first-then-env
+        # resolution the generic branch already uses (#native_provider_api_key),
+        # so config alone is enough and the preflight verdict matches reality.
+        key = resolved_native_key("openai", "OPENAI_API_KEY")
+        c.openai_api_key = key if key
+        base = present_base_url(@config.provider_config("openai"))
+        c.openai_api_base = base if base
 
         # Anthropic credential resolution — replicate hermes precedence:
         #   1. ANTHROPIC_TOKEN              → OAuth (bearer)
         #   2. CLAUDE_CODE_OAUTH_TOKEN      → OAuth (bearer)
-        #   3. Neither OAuth env set + ANTHROPIC_API_KEY set → static key wins
-        #      (x-api-key); do NOT consult the borrowed store (seed gate).
+        #   3. Neither OAuth env set + an explicit key (config
+        #      providers.anthropic.api_key, else ANTHROPIC_API_KEY) → static
+        #      key wins (x-api-key); do NOT consult the borrowed store (seed gate).
         #   4. Else → borrowed store CredentialSources.resolve("anthropic")
-        oauth_env_token = ENV["ANTHROPIC_TOKEN"] || ENV["CLAUDE_CODE_OAUTH_TOKEN"]
+        oauth_env_token = ENV["ANTHROPIC_TOKEN"] || ENV.fetch("CLAUDE_CODE_OAUTH_TOKEN", nil)
         if oauth_env_token && !oauth_env_token.strip.empty?
           @oauth_token = { api_key: oauth_env_token.strip, source: "env_oauth", _env_oauth: true }
           c.anthropic_api_key = oauth_env_token.strip
-        elsif ENV["ANTHROPIC_API_KEY"] && !ENV["ANTHROPIC_API_KEY"].strip.empty?
+        elsif (static_key = resolved_native_key("anthropic", "ANTHROPIC_API_KEY"))
           # Static key wins — do not consult the borrowed store.
-          c.anthropic_api_key = ENV["ANTHROPIC_API_KEY"]
+          c.anthropic_api_key = static_key
           @oauth_token = nil
         else
           # No static key, try the borrowed Claude Code OAuth store.
           @oauth_token = CredentialSources.resolve("anthropic")
           c.anthropic_api_key = @oauth_token[:api_key] if @oauth_token
         end
+        anthropic_base = present_base_url(@config.provider_config("anthropic"))
+        c.anthropic_api_base = anthropic_base if anthropic_base
 
-        c.gemini_api_key    = ENV["GEMINI_API_KEY"]    if ENV["GEMINI_API_KEY"]
+        key = resolved_native_key("gemini", "GEMINI_API_KEY")
+        c.gemini_api_key = key if key
 
-        # Bedrock IAM credentials (Mode 2 / 3)
-        if ENV["BEDROCK_API_KEY"] && ENV["BEDROCK_SECRET_KEY"]
-          c.bedrock_api_key       = ENV["BEDROCK_API_KEY"]
-          c.bedrock_secret_key    = ENV["BEDROCK_SECRET_KEY"]
+        # Bedrock IAM credentials (Mode 2 / 3) — config first, then ENV, for
+        # the access/secret/session fields (no shipped default, so "present in
+        # config" unambiguously means "user set it"). `region` is deliberately
+        # EXCLUDED from this config-first treatment: unlike the others, it
+        # ships a non-blank default ("us-east-1", config/defaults.rb), so a
+        # config-first read would always win over an explicit BEDROCK_REGION
+        # override with nothing to distinguish "shipped default" from "user
+        # override" — kept as plain ENV-else-default, unchanged from before.
+        bedrock_cfg    = @config.provider_config("bedrock")
+        bedrock_access = nonblank(bedrock_cfg["api_key"]) || ENV.fetch("BEDROCK_API_KEY", nil)
+        bedrock_secret = nonblank(bedrock_cfg["secret_key"]) || ENV.fetch("BEDROCK_SECRET_KEY", nil)
+        if bedrock_access && bedrock_secret
+          c.bedrock_api_key       = bedrock_access
+          c.bedrock_secret_key    = bedrock_secret
           c.bedrock_region        = ENV["BEDROCK_REGION"] || "us-east-1"
-          c.bedrock_session_token = ENV["BEDROCK_SESSION_TOKEN"] if ENV["BEDROCK_SESSION_TOKEN"]
+          session = nonblank(bedrock_cfg["session_token"]) || ENV.fetch("BEDROCK_SESSION_TOKEN", nil)
+          c.bedrock_session_token = session if session
         end
 
         prov_cfg = provider_cfg
@@ -701,9 +728,6 @@ module Rubino
           base = present_base_url(prov_cfg)
           c.anthropic_api_base = base if base
           c.anthropic_api_key  = anthropic_compatible_api_key!(prov_cfg)
-        elsif @provider == "openai"
-          base = present_base_url(prov_cfg)
-          c.openai_api_base = base if base
         elsif native_ruby_llm_provider?(@provider)
           # A provider that ruby_llm supports natively but we don't special-case
           # above (deepseek, mistral, perplexity, xai, …). It has a stable
@@ -781,6 +805,15 @@ module Rubino
         key unless key.to_s.empty?
       end
 
+      # config `providers.<name>.api_key` first, then the given ENV var — the
+      # same precedence as #native_provider_api_key, but resolved by an
+      # explicit provider NAME rather than the current @provider, since this
+      # runs unconditionally for all four "dedicated wiring" providers
+      # (openai/anthropic/gemini/bedrock) regardless of which one is active.
+      def resolved_native_key(provider_name, env_var)
+        nonblank(@config.provider_config(provider_name)["api_key"]) || ENV.fetch(env_var, nil)
+      end
+
       # The configured base_url, normalised to nil when blank/whitespace so a
       # config like `base_url: ""` (or a stripped-to-empty env interpolation)
       # is treated as "unset" instead of being passed through as an EMPTY api_base.
@@ -789,6 +822,17 @@ module Rubino
       def present_base_url(prov_cfg)
         raw = prov_cfg["base_url"].to_s.strip
         raw.empty? ? nil : raw
+      end
+
+      # nil-safe blank check for a STRING config value: blank/whitespace-only
+      # and nil both become nil, so a config value and an ENV var can be
+      # `||`-chained without an empty string ever winning over a real fallback.
+      # Deliberately its own method, not a reuse of #presence(arr) below (image
+      # attachments) — that one only checks `.empty?`, so a whitespace-only
+      # string ("   ") would pass through as "present" there.
+      def nonblank(value)
+        str = value.to_s.strip
+        str.empty? ? nil : str
       end
 
       # An openai_compatible provider has NO native default endpoint — base_url is
