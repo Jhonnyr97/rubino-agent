@@ -159,11 +159,19 @@ module Rubino
             "base_url" => nil,
             "timeout" => 30
           },
-          # Embeddings aux endpoint (opt-in, no default — must be explicitly
-          # configured in config.yml when `memory.sqlite.vector: true`).
-          # Point this at a local embedding model (e.g. an oMLX/ds4 embeddings
+          # Embeddings aux endpoint. Inert at these defaults (provider:"main",
+          # model:"") — same "nothing configured" shape every other auxiliary
+          # block uses; memory.sqlite.vector stays the real opt-in gate, so no
+          # embed call is ever made unless that's explicitly set to true. Point
+          # this at a local embedding model (e.g. an oMLX/ds4 embeddings
           # endpoint) to get semantic recall with NO paid API — local-first,
           # off by default. See docs/memory.md.
+          "embedding" => {
+            "provider" => "main",
+            "model" => "",
+            "base_url" => nil,
+            "timeout" => 30
+          }
         },
         "chat" => {
           # A bare `rubino chat` (no --new/--resume/--continue) auto-resumes the
