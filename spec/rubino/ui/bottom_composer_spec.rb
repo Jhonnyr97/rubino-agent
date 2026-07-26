@@ -2001,15 +2001,14 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(c.buffer).to eq("[Pasted text #1 +50 lines] [Pasted text #2 +6 lines]")
     end
 
-    it "coalesces two consecutive collapsed pastes into the first placeholder" do
+    it "creates its own placeholder for a second paste immediately following one (no silent merge)" do
       c = paste_into(build, big)
       paste_into(c, second_big)
 
-      expect(c.buffer).to eq("[Pasted text #1 +56 lines]")
-      expect(c.buffer.scan("[Pasted text").size).to eq(1)
+      expect(c.buffer).to eq("[Pasted text #1 +50 lines][Pasted text #2 +6 lines]")
     end
 
-    it "expands a coalesced paste to both bodies in order for the model" do
+    it "expands two back-to-back pastes to both bodies for the model" do
       c = paste_into(build, big)
       paste_into(c, second_big)
 
@@ -2022,7 +2021,7 @@ RSpec.describe Rubino::UI::BottomComposer do
         metadata: { paste_expansions: pairs }
       )
 
-      expect(msg.to_context[:content]).to eq("#{big}\n#{second_big}")
+      expect(msg.to_context[:content]).to eq("#{big}#{second_big}")
     end
 
     it "creates a second placeholder when typed text separates two pastes" do
@@ -2033,13 +2032,13 @@ RSpec.describe Rubino::UI::BottomComposer do
       expect(c.buffer).to eq("[Pasted text #1 +50 lines]x[Pasted text #2 +6 lines]")
     end
 
-    it "coalesces two identical consecutive collapsed pastes without losing either body" do
+    it "keeps two identical consecutive collapsed pastes as distinct placeholders" do
       body = Array.new(6) { "same" }.join("\n")
       c = paste_into(build, body)
       paste_into(c, body)
 
-      expect(c.buffer).to eq("[Pasted text #1 +12 lines]")
-      expect(store.expand(c.buffer)).to eq("#{body}\n#{body}")
+      expect(c.buffer).to eq("[Pasted text #1 +6 lines][Pasted text #2 +6 lines]")
+      expect(store.expand(c.buffer)).to eq("#{body}#{body}")
     end
 
     it "backspace deletes the placeholder WHOLE (never a half-eaten token)" do

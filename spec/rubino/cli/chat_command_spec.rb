@@ -1908,19 +1908,23 @@ RSpec.describe Rubino::CLI::ChatCommand do
   # Regression: rubino chat used to exit with only "Session ended." and
   # leave the user no way to find this conversation again — the session id
   # lives in SQLite, not on screen. print_resume_hint emits the exact
-  # `rubino chat --resume <handle>` line, preferring the title when set.
+  # `rubino chat --resume <short-id>` line. It used to prefer the title when
+  # one was set, but a title is free text — it can contain spaces/quotes that
+  # break shell copy-paste and, unlike the id, has no uniqueness guarantee —
+  # so the hint always shows the short (8-char) alphanumeric id now, matching
+  # #print_auto_resume_line and the prefix length #find_by_id_or_title accepts.
   describe "#print_resume_hint" do
     subject(:cmd) { described_class.new({}) }
 
     let(:ui) { Rubino::UI::Null.new }
 
-    it "prefers the title when one is set" do
-      cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: "audit work" })
+    it "always shows the short id, even when a title is set" do
+      cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-12345678-long", title: "audit work" })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
-      expect(msg[:message]).to eq(%(Resume with: rubino chat --resume "audit work"))
+      expect(msg[:message]).to eq("Resume with: rubino chat --resume abc-1234")
     end
 
-    it "falls back to the id when the title is missing or blank" do
+    it "shows the id when the title is missing or blank" do
       cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: nil })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
       expect(msg[:message]).to eq("Resume with: rubino chat --resume abc-123")
@@ -1936,7 +1940,7 @@ RSpec.describe Rubino::CLI::ChatCommand do
       ENV["RUBINO_INVOKED_AS"] = "rubino-dev"
       cmd.send(:session_resolver).print_resume_hint(ui, { id: "abc-123", title: "audit work" })
       msg = ui.messages.find { |m| m[:level] == :info && m[:message].to_s.start_with?("Resume with:") }
-      expect(msg[:message]).to eq(%(Resume with: rubino-dev chat --resume "audit work"))
+      expect(msg[:message]).to eq("Resume with: rubino-dev chat --resume abc-123")
     ensure
       ENV["RUBINO_INVOKED_AS"] = prev
     end

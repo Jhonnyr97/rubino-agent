@@ -95,17 +95,19 @@ module Rubino
         # On exit, hand the user back the exact command to return to this chat.
         # Claude Code prints no equivalent hint; without this, the session id
         # is buried in ~/.rubino state and the user has to guess at --resume
-        # or scroll back through history. Prefer the human-friendly title when
-        # one is set; fall back to the id otherwise.
+        # or scroll back through history. Always the SHORT id (matches the
+        # #print_auto_resume_line convention and #find_by_id_or_title's 8+
+        # char prefix match) — a quoted title used to appear here instead, but
+        # a title is free-text (spaces, quoting pitfalls, no uniqueness
+        # guarantee) where the id is a stable, always-valid, copy-pasteable
+        # token.
         def print_resume_hint(ui, session)
           return unless session
 
-          id    = session[:id]
-          title = session[:title]
-          handle = title && !title.to_s.strip.empty? ? %("#{title}") : id
-          return unless handle
+          id = session[:id]
+          return unless id
 
-          ui.info("Resume with: #{launch_command} chat --resume #{handle}")
+          ui.info("Resume with: #{launch_command} chat --resume #{id.to_s[0..7]}")
         end
 
         # The command the user should type to relaunch — normally `rubino`, but
