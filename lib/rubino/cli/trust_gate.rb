@@ -25,7 +25,7 @@ module Rubino
       # "user declined" (gateworthy + not trusted) from "nothing to trust here"
       # (not gateworthy) and word the line honestly.
       def self.gateworthy?(dir)
-        Context::FileDiscovery.new(base_path: dir).discover_files.any? ||
+        Context::FileDiscovery.new(base_path: dir).context_file? ||
           File.directory?(File.join(dir, Skills::PromptIndex::DEFAULT_SKILL_DIR))
       rescue StandardError
         false

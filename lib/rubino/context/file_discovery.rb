@@ -40,7 +40,30 @@ module Rubino
         nil
       end
 
+      # Cheap existence probe for TrustGate.gateworthy? — does this dir ship
+      # ANY project-context file across the same precedence tiers as
+      # +load_project_context+, without paying for reading/scanning/
+      # truncating content (and without the security-scan side effect).
+      # Callers only need a boolean "is there something to gate here", not
+      # the file itself.
+      def context_file?
+        !!(find_rubino_md ||
+           find_one_in_cwd(AGENTS_FILE_NAMES) ||
+           find_one_in_cwd(CLAUDE_FILE_NAMES) ||
+           cursorrules_present?)
+      rescue StandardError
+        false
+      end
+
       private
+
+      # Existence-only counterpart to load_cursorrules: true when either
+      # .cursorrules or at least one .cursor/rules/*.mdc file is present.
+      def cursorrules_present?
+        return true if File.exist?(File.join(@base_path, ".cursorrules"))
+
+        !Dir.glob(File.join(@base_path, ".cursor", "rules", "*.mdc")).empty?
+      end
 
       # -- tier 1: .rubino.md / RUBINO.md (walk up to git root) ------------
 
